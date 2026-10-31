@@ -219,11 +219,17 @@ export async function runAgent(
       } catch (err) {
         // 执行器抛错（元素消失、CDP 断开）不该毁掉整个任务：
         // 记成 failed，下一轮快照会看到真实页面状态。
-        outcome = { ok: false, message: err instanceof Error ? err.message : String(err) }
+        outcome = {
+          ok: false,
+          message: err instanceof Error ? err.message : String(err),
+          failure: 'exec'
+        }
       }
 
       step.status = outcome.ok ? 'ok' : 'failed'
       step.result = outcome.message
+      // 分类跟着走：界面用它选文案，不再去猜 message 里的措辞
+      if (outcome.failure) step.failure = outcome.failure
       step.durationMs = Date.now() - step.at
       task.steps.push(step)
       deps.emit({ type: 'step', step: { ...step } })

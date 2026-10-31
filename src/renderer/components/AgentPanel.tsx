@@ -15,7 +15,7 @@ import type { Settings, TestResult } from '@shared/types'
 import { PROVIDERS } from '@shared/presets'
 import { Button, Icon, Modal, cx, useToast } from './ui'
 import { bridge, errorMessage, onAgentEvent } from '@renderer/lib/api'
-import { maskKey, providerNeedKey, resolveEndpoint } from '@renderer/lib/format'
+import { maskKey, providerNeedKey, resolveEndpoint, stepResultText } from '@renderer/lib/format'
 
 type AgentStatus = 'idle' | 'running' | 'waiting' | 'done' | 'error'
 
@@ -502,7 +502,11 @@ export function AgentPanel({
                           ) : null}
                         </div>
                         {step.thought ? <div className="sthought">{step.thought}</div> : null}
-                        {step.result ? <div className="sres">{step.result}</div> : null}
+                        {step.result ? (
+                          <div className="sres" title={step.failure ? step.result : undefined}>
+                            {stepResultText(step)}
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                   )

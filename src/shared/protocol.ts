@@ -101,10 +101,27 @@ export interface RiskVerdict {
 
 /* ────────────────────────────── 执行结果 ────────────────────────────── */
 
+/**
+ * 失败分类。**不要用 message 的字符串来判**，也不要把它直接渲染给用户。
+ *
+ * `message` 是写给模型看的：它进下一轮 prompt，所以必须具体、必须带上下文，
+ * 比如「模型引用了不存在的元素 e3」。这句话对模型有用（它会换一个元素），
+ * 对用户毫无意义 —— 用户不知道 e3 是什么，也不知道该做什么。
+ * 两套文案由这个字段连接，而不是靠匹配字符串：
+ * 字符串会改，改了以后匹配会静默失效，而类型不会。
+ */
+export type ActionFailure =
+  /** 元素编号缺失或不在当轮快照里 —— 页面变了，或模型看错了 */
+  | 'not-found'
+  /** 页面接受了请求但没做成：脚本未就绪、CDP 断开、页面抛错 */
+  | 'exec'
+
 export interface ActionResult {
   ok: boolean
   /** 给模型看的一句话结果 */
   message: string
+  /** 失败分类，仅 ok === false 时有值 */
+  failure?: ActionFailure
   /** 执行后 URL 是否发生变化，循环据此决定是否等待 */
   navigated?: boolean
   /** extract 的产出 */
@@ -122,8 +139,10 @@ export interface AgentStep {
   thought: string
   action: Action
   status: StepStatus
-  /** 执行结果或失败原因 */
+  /** 执行结果或失败原因。**面向模型**，渲染层不要直接展示 */
   result?: string
+  /** 失败分类。界面据此选文案，比解析 result 可靠 */
+  failure?: ActionFailure
   /** 人话描述，例：点击「加入购物车」 */
   label: string
   at: number

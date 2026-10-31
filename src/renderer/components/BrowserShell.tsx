@@ -18,6 +18,7 @@ import {
   chromeMajor,
   formatDuration,
   osShortLabel,
+  stepResultText,
   tzOffsetLabel
 } from '@renderer/lib/format'
 
@@ -117,7 +118,8 @@ export function BrowserShell({
   const lastStep = task?.steps[task.steps.length - 1]
   const agentTitle = lastStep?.label ?? (task ? '影子正在执行' : '影子待命')
   const agentDesc = task
-    ? `${task.summary || lastStep?.result || '影子在后台继续，左侧浏览不受影响'}`
+    ? task.summary ||
+      (lastStep?.result ? stepResultText(lastStep) : '影子在后台继续，左侧浏览不受影响')
     : '打开一个任务后，影子会在这个独立空间里执行，不影响你当前浏览。'
 
   async function guard(fn: () => Promise<void>, fallback: string): Promise<void> {

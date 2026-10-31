@@ -6,7 +6,7 @@
  */
 
 import type { FingerprintConfig, Profile, ProfileStatus, TaskRecord, TaskStatus } from '@shared/types'
-import type { StepStatus } from '@shared/protocol'
+import type { ActionFailure, StepStatus } from '@shared/protocol'
 
 /* ────────────────────────────── 时间 ────────────────────────────── */
 
@@ -208,6 +208,32 @@ export function stepStatusText(status: StepStatus): string {
       return '已跳过'
     default:
       return '等待确认'
+  }
+}
+
+/**
+ * 步骤结果的人话。
+ *
+ * 不直接展示 `step.result`：那是写给模型的一句话，要进下一轮 prompt，
+ * 所以它必须具体到「模型引用了不存在的元素 e3」。这对模型有用（它据此换个元素），
+ * 对用户是一句内部措辞 —— 用户不知道 e3 是什么，也不知道自己能做什么。
+ *
+ * 分类缺失时退回原文而不是编一个更笼统的说法：老记录里没有这个字段，
+ * 拿「操作没做成」盖掉原本具体的失败原因，是把信息变少而不是变准。
+ */
+export function stepResultText(step: {
+  status: StepStatus
+  result?: string
+  failure?: ActionFailure
+}): string {
+  if (!step.failure) return step.result ?? stepStatusText(step.status)
+  switch (step.failure) {
+    case 'not-found':
+      return '页面上没找到要操作的元素，已跳过 —— 页面可能已经变了'
+    case 'exec':
+      return '页面没有接受这次操作'
+    default:
+      return step.result ?? stepStatusText(step.status)
   }
 }
 

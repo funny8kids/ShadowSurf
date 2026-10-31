@@ -16,6 +16,7 @@ import {
   formatRelative,
   isToday,
   profileNo,
+  stepResultText,
   stepStatusText,
   taskProgress,
   taskStatusText,
@@ -338,7 +339,7 @@ export function TaskList({ tasks, profiles, loading, query, onNew, onOpenProfile
                   selected.steps.slice(0, 8).map((s) => (
                     <div className="out-row" key={s.index}>
                       <span className="txt">{s.label}</span>
-                      <b>{s.result ?? stepStatusText(s.status)}</b>
+                      <b title={s.failure ? s.result : undefined}>{stepResultText(s)}</b>
                     </div>
                   ))
                 )}

@@ -392,3 +392,77 @@ test('凡是用 instanceof ApprovalRequiredError 的地方，必须是值导入'
       '。把 `import type { ApprovalRequiredError }` 改成 `import { ApprovalRequiredError }`。'
   )
 })
+
+/* ────────── 11. 闸门前缀：写入方与淘汰策略必须共用一个常量 ────────── */
+
+/**
+ * `闸门·` 这个前缀有两个消费者：写入方（`modules/audit.ts` 决定 action 叫什么）
+ * 和淘汰策略（`store/index.ts` 决定谁不被裁）。
+ *
+ * 两边各写一份字面量的后果是**静默的**：改了一边，记录照旧在写、审计链照旧通过，
+ * 只是这批记录不再受保护了 —— 等真出事了才发现窗口里一条闸门记录都没有。
+ * 所以这里断言：字面量只能出现在定义它的那个文件里，其余地方必须用常量。
+ */
+test('闸门前缀字面量只能出现在定义处，其他文件必须用 GATE_ACTION_PREFIX', () => {
+  const DEFINITION = 'src/main/store/index.ts'
+  const offenders: string[] = []
+
+  for (const file of walk(join(ROOT, 'src/main'))) {
+    const path = rel(file)
+    if (path === DEFINITION) continue
+    if (stripComments(readFileSync(file, 'utf8')).includes('闸门·')) offenders.push(path)
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    '这些文件里直接写了「闸门·」字面量：' +
+      offenders.join(', ') +
+      '。改用 `import { GATE_ACTION_PREFIX } from "@main/store"` —— ' +
+      '字面量写死的另一边会和淘汰策略对不上，而且不会报错。'
+  )
+})
+
+/* ────────── 12. 失败分类必须覆盖每个失败返回 ────────── */
+
+/**
+ * `ActionResult.failure` 是界面选文案的依据。漏一处的后果不是崩溃，是那句
+ * 写给模型的话原样漏到界面上 —— 「模型引用了不存在的元素 e3」。
+ *
+ * 形状断言而不是逐行点名：将来新增失败分支自动被覆盖，不需要有人记得来改这条。
+ *
+ * 一个必须排除的情况：注入到页面的那段脚本字符串里也有 `{ok:false,...}`，
+ * 那是**页面侧**的返回值，由 `toActionResult` 统一补分类，不在这里管。
+ * 用「位置落在单引号字符串里就跳过」来排除 —— 单引号奇偶性是粗判，
+ * 但本文件里没有嵌套引号的写法，够用且不会随格式化失效。
+ */
+function inStringLiteral(text: string, at: number): boolean {
+  let singles = 0
+  for (let i = 0; i < at; i += 1) {
+    if (text[i] === "'" && text[i - 1] !== '\\') singles += 1
+  }
+  return singles % 2 === 1
+}
+
+test('actions.ts 里每个失败返回都必须带 failure 分类', () => {
+  const code = stripComments(read('src/main/agent/actions.ts'))
+  const offenders: string[] = []
+
+  for (const m of code.matchAll(/ok:\s*false/g)) {
+    const at = m.index ?? 0
+    if (inStringLiteral(code, at)) continue
+    // 窗口取到对象字面量结束：正常写法是 { ok: false, message: ..., failure: 'x' }
+    const window = code.slice(at, at + 200)
+    if (!/failure:\s*'(?:not-found|exec)'/.test(window)) {
+      offenders.push(code.slice(Math.max(0, at - 60), at + 60).replace(/\s+/g, ' '))
+    }
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    '这些 `ok: false` 没带 failure 分类：\n' +
+      offenders.join('\n') +
+      "\n改成 `{ ok: false, message: '…', failure: 'not-found' | 'exec' }`。"
+  )
+})

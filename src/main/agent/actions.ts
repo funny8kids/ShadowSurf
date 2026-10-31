@@ -111,13 +111,18 @@ function sleep(ms: number): Promise<void> {
 
 function toActionResult(raw: unknown): ActionResult {
   if (!isRecord(raw)) {
-    return { ok: false, message: '页面没有返回执行结果' }
+    return { ok: false, message: '页面没有返回执行结果', failure: 'exec' }
   }
   const ok = raw.ok === true
   const fallback = ok ? '已执行' : '执行失败'
   const message =
     typeof raw.message === 'string' && raw.message.length > 0 ? raw.message : fallback
   const result: ActionResult = { ok, message }
+  if (!ok) {
+    // 页面自己报的失败一律归 exec。页面脚本不会区分「找不到元素」和「点不动」，
+    // 而这两个的差别只对模型有意义（它据此决定换元素还是重试），对用户是同一件事。
+    result.failure = 'exec'
+  }
   if (raw.navigated === true) {
     result.navigated = true
   }
@@ -186,16 +191,16 @@ export async function executeAction(
   if (NEEDS_ID.has(action.type)) {
     const id = typeof action.id === 'string' ? action.id.trim() : ''
     if (!id) {
-      return { ok: false, message: `${action.type} 动作缺少元素编号` }
+      return { ok: false, message: `${action.type} 动作缺少元素编号`, failure: 'not-found' }
     }
     // 防幻觉核心：编号必须存在于当轮快照
     if (!findElement(snapshot, id)) {
-      return { ok: false, message: `模型引用了不存在的元素 ${id}` }
+      return { ok: false, message: `模型引用了不存在的元素 ${id}`, failure: 'not-found' }
     }
   }
 
   if (action.type === 'navigate' && !isHttpUrl(action.url)) {
-    return { ok: false, message: '只允许 http/https 地址' }
+    return { ok: false, message: '只允许 http/https 地址', failure: 'exec' }
   }
 
   // 序列化两次：外层是 JS 字符串字面量，页面侧再 JSON.parse 还原动作
@@ -214,7 +219,7 @@ export async function executeAction(
     raw = await runInAgentWorld(cdp, expression, { retry: false })
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
-    return { ok: false, message: `执行失败：${detail}` }
+    return { ok: false, message: `执行失败：${detail}`, failure: 'exec' }
   }
 
   const result = toActionResult(raw)
