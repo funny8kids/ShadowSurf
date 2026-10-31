@@ -1,13 +1,17 @@
 /**
  * 页面内采集脚本。
  *
- * 通过 CDP 注入到目标页面的执行上下文，因此**不能走模块系统**，只能以字符串常量导出。
+ * 通过 CDP 注入到目标页面的 **isolated world**（worldName = shadow-agent），
+ * 因此**不能走模块系统**，只能以字符串常量导出。
  *
  * 三条硬规矩：
  * 1. 脚本内部只用 ES5（老页面里没有箭头函数、const、模板字符串），避免注入即报错。
  * 2. 脚本内部**不使用模板字符串**，也不出现反斜杠转义，全部靠字符串拼接 +
  *    String.fromCharCode 构造正则，避免与外层模板字符串互相打架。
- * 3. 元素编号 e1..eN 通过 `data-ss-id` 落在真实 DOM 上，模型永远看不到选择器。
+ * 3. 元素编号 e1..eN 只活在 isolated world 的 WeakMap 里，**绝不落到真实 DOM**。
+ *    两条都不能省：写进 DOM 的话页面脚本能读、能改（风险闸门的输入被篡改），
+ *    而 `querySelectorAll('[data-ss-id]').length > 0` 本身就是一行机器人指纹；
+ *    只靠 isolated world 的全局则挡不住 DOM 标记。
  */
 export const PAGE_AGENT_SOURCE = `
 (function () {
@@ -29,6 +33,12 @@ export const PAGE_AGENT_SOURCE = `
   })();
   // 编号白名单，防止模型塞进选择器碎片
   var ID_RE = new RegExp('^e[0-9]+$');
+
+  // 元素 → 编号。isolated world 私有，页面脚本读不到也改不了。
+  // WeakMap 是单向的，反向查（编号 → 元素）只能靠 _order：
+  // 下标对齐，_order[i] 就是编号 e(i+1) 的那个元素。单轮上限 150，线性扫足够。
+  var _idOf = new WeakMap();
+  var _order = [];
 
   var SEL = 'a[href], button, input, select, textarea, summary,' +
     ' [role=button], [role=link], [role=textbox], [role=checkbox], [role=radio],' +
@@ -184,6 +194,9 @@ export const PAGE_AGENT_SOURCE = `
     var vw = window.innerWidth || 0;
     var vh = window.innerHeight || 0;
 
+    // 上一轮的元素不能带着旧编号留下来，否则 findEl 会点到已经过期的元素
+    _order = [];
+
     var nodes = document.querySelectorAll(SEL);
     var picked = [];
     var i;
@@ -210,10 +223,7 @@ export const PAGE_AGENT_SOURCE = `
       return a.rect.left - b.rect.left;
     });
 
-    // 4：清掉上一轮编号，按最终顺序重写 e1..eN
-    var stale = document.querySelectorAll('[data-ss-id]');
-    for (i = 0; i < stale.length; i++) { stale[i].removeAttribute('data-ss-id'); }
-
+    // 4：按最终顺序重写 e1..eN。只写进 isolated world 的 WeakMap，不碰 DOM
     var truncated = picked.length > max;
     var count = Math.min(picked.length, max);
     var elements = [];
@@ -222,7 +232,8 @@ export const PAGE_AGENT_SOURCE = `
       el = picked[i].el;
       rect = picked[i].rect;
       var id = 'e' + (i + 1);
-      el.setAttribute('data-ss-id', id);
+      _idOf.set(el, id);
+      _order.push(el);
       var item = {
         id: id,
         tag: el.tagName.toLowerCase(),
@@ -275,7 +286,14 @@ export const PAGE_AGENT_SOURCE = `
   function findEl(id) {
     var sid = String(id || '');
     if (!ID_RE.test(sid)) { return null; }
-    return document.querySelector('[data-ss-id="' + sid + '"]');
+    var i;
+    var el;
+    for (i = 0; i < _order.length; i++) {
+      el = _order[i];
+      // 快照之后被页面摘掉的元素当作不存在，和以前 querySelector 的行为保持一致
+      if (el && el.isConnected && _idOf.get(el) === sid) { return el; }
+    }
+    return null;
   }
 
   function notFound(action) {
@@ -451,6 +469,7 @@ export const PAGE_AGENT_SOURCE = `
 
   function ping() { return { ok: true, v: 1 }; }
 
+  // 挂在 isolated world 的全局上：名字照旧，但页面脚本的 window 上看不到它
   window.__SS__ = { v: 1, snapshot: snapshot, act: act, ping: ping };
 })();
 `

@@ -14,6 +14,7 @@
     "mock": "node tools/mock-llm.mjs",
     "shot": "node tools/shot-prototype.mjs",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "verify:injection": "node tools/check-injection.mjs && node tools/run-electron.mjs tools/probe-mask.cjs",
     "check": "npm run typecheck && npm run test"
   },
   "dependencies": {

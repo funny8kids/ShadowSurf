@@ -6,17 +6,13 @@
  */
 import type { Action, ActionResult, PageSnapshot, SnapshotElement } from '@shared/protocol'
 import type { CdpBridge } from '@main/core/cdp'
+import { runInAgentWorld } from '@main/agent/snapshot'
 
 /** 这三个动作必须带编号 */
 const NEEDS_ID = new Set<Action['type']>(['click', 'type', 'press'])
 
 /** navigate 之后页面正在跳，等一拍再让循环继续，避免拿到半截快照 */
 const NAVIGATE_SETTLE_MS = 900
-
-interface CdpEvalResponse {
-  result?: { value?: unknown }
-  exceptionDetails?: { text?: string; exception?: { description?: string } }
-}
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null
@@ -35,23 +31,6 @@ function isHttpUrl(url?: string): boolean {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-async function evaluate(cdp: CdpBridge, expression: string): Promise<unknown> {
-  const res = await cdp.send<CdpEvalResponse>('Runtime.evaluate', {
-    expression,
-    returnByValue: true,
-    awaitPromise: true,
-    userGesture: true
-  })
-  if (res.exceptionDetails) {
-    const detail =
-      res.exceptionDetails.exception?.description ??
-      res.exceptionDetails.text ??
-      '页面脚本执行失败'
-    throw new Error(detail)
-  }
-  return res.result?.value
 }
 
 function toActionResult(raw: unknown): ActionResult {
@@ -106,7 +85,9 @@ export async function executeAction(
 
   let raw: unknown
   try {
-    raw = await evaluate(cdp, expression)
+    // 必须在 isolated world 里求值：主世界的 window 上没有 __SS__，
+    // 页面脚本也没法抢先定义一个假的把结果伪造掉
+    raw = await runInAgentWorld(cdp, expression)
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
     return { ok: false, message: `执行失败：${detail}` }

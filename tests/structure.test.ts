@@ -101,22 +101,43 @@ test(
 )
 
 test(
-  'WebRTC 包装器不得把原生构造器留在 prototype.constructor 上',
+  '包装器不得直接把 prototype 指向原生 prototype（构造器身份 + 闸门绕过同一根因）',
   {
     skip:
-      '当前 fingerprint.ts 有 `_PC.prototype = RTC.prototype`，于是 RTCPeerConnection.prototype.constructor ' +
-      '指回原生 RTC —— 页面执行 new (RTCPeerConnection.prototype.constructor)() 就能拿到未经 _guard 包装的实例，' +
-      '直接看到真实 host/srflx 候选。修复后取消 skip。' +
-      '注：这条与 toString 无关，toString 伪装不能补救构造器身份泄漏。'
+      '当前 fingerprint.ts 有两处 `X.prototype = Native.prototype`：' +
+      '① `_PC.prototype = RTC.prototype`（:682）→ RTCPeerConnection.prototype.constructor 指回原生 RTC，' +
+      '页面 new (RTCPeerConnection.prototype.constructor)() 拿到未经 _guard 包装的实例，直接看到真实 host/srflx 候选；' +
+      '② `_Patched.prototype = _DTF.prototype`（:370）→ Intl.DateTimeFormat.prototype.constructor === _DTF（原生），' +
+      '而 Intl.DateTimeFormat === _Patched，自相矛盾，一次恒等比较即可判定被 hook。' +
+      '注意与 toString 无关：toString 伪装补救不了构造器身份泄漏。' +
+      '修复方式：改为 Object.create(Native.prototype, { constructor: { value: 包装器 } })，' +
+      '既让 .constructor 指向包装器，又保持 instanceof 成立；切勿直接改写共享的 Native.prototype.constructor。'
   },
   () => {
     const fp = read('src/main/core/fingerprint.ts')
-    assert.ok(
-      !/_PC\.prototype\s*=\s*RTC\.prototype/.test(fp),
-      '_PC.prototype 指向原生 prototype，导致 .constructor 泄漏原生构造器，_guard 可被绕过'
+    const offenders = [...fp.matchAll(/\b(\w+)\.prototype\s*=\s*(\w+)\.prototype/g)].map(
+      (m) => `${m[1]}.prototype = ${m[2]}.prototype`
+    )
+    assert.deepEqual(
+      offenders,
+      [],
+      `包装器直接复用了原生 prototype，导致 prototype.constructor 泄漏原生构造器：${offenders.join('、')}`
     )
   }
 )
+
+test('伪装台账 _masked / _fakeSrc / _maskOne 只能声明一次', () => {
+  // 曾经踩过：顶部新增了一份声明、底部遗留一份没删。
+  // var 是函数作用域提升，底部那次赋值会把数组重置为空，
+  // 于是 toString 收口只遍历到 _patched 自己，所有中途 patch 的函数仍吐真实源码 ——
+  // 「看起来修好了，功能全失效」，且人工 review 看不出来。
+  // 同理重复赋值 _maskOne 会让底部 2 参数版本覆盖顶部 3 参数版本、丢掉 length 校正。
+  const fp = read('src/main/core/fingerprint.ts')
+  for (const name of ['_masked', '_fakeSrc', '_maskOne']) {
+    const hits = [...fp.matchAll(new RegExp(`var ${name}\\b`, 'g'))].length
+    assert.ok(hits <= 1, `${name} 被声明了 ${hits} 次；重复声明会重置状态或覆盖前一个实现`)
+  }
+})
 
 /* ────────────────────────── 3. 导航守卫（已修复，护栏） ────────────────────────── */
 
