@@ -51,10 +51,11 @@
 
 import { _electron as electron } from 'playwright-core'
 import { createServer } from 'node:http'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, statSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
+import { createHash } from 'node:crypto'
 import { execSync } from 'node:child_process'
 
 const require = createRequire(import.meta.url)
@@ -68,6 +69,31 @@ const sha = (() => {
   } catch {
     return 'nogit'
   }
+})()
+
+/**
+ * 构建态指纹。没有这三个字段，产物里「改完没提交」和「提交后没构建」长得一模一样。
+ *
+ * 这个坑已经真实发生过一次：本脚本启动的是 `out/`（构建产物），而 `sha` 取的是
+ * `git rev-parse HEAD`（源码）。两者不一致时，AC 的结论会指向错误的代码版本 ——
+ * 有人因此得出了「AC-16 是假阳性」的结论，白绕一圈。
+ *
+ * 判读规则：
+ *   dirty=true  → 工作区有未提交改动，本次读数**不代表 HEAD**
+ *   outSha1     → 与上次不同即产物变了；与 dirty 一起看才能确定测的是哪份代码
+ */
+const buildState = (() => {
+  const out = { dirty: null, outSha1: null, outMtime: null }
+  try {
+    const st = execSync('git status --porcelain', { cwd: ROOT }).toString()
+    out.dirty = st.trim().length > 0
+  } catch {}
+  try {
+    const buf = readFileSync(resolve(ROOT, 'out/main/index.js'))
+    out.outSha1 = createHash('sha1').update(buf).digest('hex').slice(0, 12)
+    out.outMtime = statSync(resolve(ROOT, 'out/main/index.js')).mtime.toISOString()
+  } catch {}
+  return out
 })()
 
 /* ────────────────────────────── 页面探针 ────────────────────────────── */
@@ -296,15 +322,17 @@ async function pageProbe() {
   })
 
   /* 11：Electron 特有探测面（探针，先采基线） */
+  // 关键：必须把「符号不存在」和「符号存在但拒绝」分开记。
+  // 两者在检测方眼里完全不是一回事：前者是可伪造的缺口，后者与真 headless Chrome 不可区分。
   const widevine = await (async () => {
     try {
-      if (!navigator.requestMediaKeySystemAccess) return 'no-api'
+      if (typeof navigator.requestMediaKeySystemAccess !== 'function') return 'no-api'
       await navigator.requestMediaKeySystemAccess('com.widevine.alpha', [
         { initDataTypes: ['cenc'], audioCapabilities: [{ contentType: 'audio/mp4; codecs="mp4a.40.2"' }] }
       ])
       return 'available'
     } catch (e) {
-      return 'unavailable:' + (e && e.name ? e.name : 'err')
+      return 'rejected:' + (e && e.name ? e.name : 'err')
     }
   })()
 
@@ -312,9 +340,16 @@ async function pageProbe() {
     chrome: typeof window.chrome,
     // Object.keys 对 window.chrome 不可靠（属性不可枚举），必须用 `in`
     chromeIn: window.chrome ? ['loadTimes', 'csi', 'app', 'runtime'].filter((k) => k in window.chrome) : [],
+    // 真实 Chrome 156 实测：getOwnPropertyNames(window.chrome) === ['app','csi','loadTimes']（3 个，顺序不定）
+    // Electron 45.2.1 原生：0 个。这是「差额可枚举」的那一类缺口，能直接做门禁。
+    chromeOwn: window.chrome ? Object.getOwnPropertyNames(window.chrome).sort() : null,
     chromeLoadTimes: window.chrome ? typeof window.chrome.loadTimes : 'no-chrome',
     chromeCsi: window.chrome ? typeof window.chrome.csi : 'no-chrome',
     chromeRuntime: window.chrome ? typeof window.chrome.runtime : 'no-chrome',
+    // EME 两个符号：真实 Chrome 156 有、Electron 原生没有。
+    // 但「播不了 Widevine」本身不是 tell —— 真 headless Chrome 也抛 NotSupportedError。
+    emeRequest: typeof navigator.requestMediaKeySystemAccess,
+    emeMediaKeys: typeof window.MediaKeys,
     process: typeof window.process,
     require: typeof window.require,
     module: typeof window.module,
@@ -455,6 +490,157 @@ async function pageProbe() {
     }
   })()
 
+  /* 16：Intl 构造器一致性 —— 包装清单不全时会露出「有的用伪 locale、有的用宿主 locale」 */
+  const intlConsistency = (() => {
+    let base
+    try {
+      const d = new Intl.DateTimeFormat().resolvedOptions()
+      base = { locale: d.locale, timeZone: d.timeZone }
+    } catch (e) {
+      return { error: e.message }
+    }
+    const entries = []
+    // Intl 上的构造器是数据属性还是访问器属性 —— 决定了 `Intl[nm] = W` 这种
+    // 直接赋值能不能生效。访问器属性没有 setter 时赋值**静默失败**（非严格模式），
+    // 结果就是「枚举到了、也进 _IN 了，但根本没换掉」。
+    const descOf = (k) => {
+      try {
+        const dd = Object.getOwnPropertyDescriptor(Intl, k)
+        if (!dd) return 'none'
+        if (dd.get || dd.set) return 'accessor'
+        return dd.writable ? 'data-writable' : 'data-readonly'
+      } catch (e) {
+        return 'err'
+      }
+    }
+    for (const k of Object.getOwnPropertyNames(Intl)) {
+      if (typeof Intl[k] !== 'function') continue
+      // Locale 不是 formatter，没有 resolvedOptions
+      if (k === 'Locale') continue
+      // 这三个读数决定「判据选得对不对」，不能省：
+      //   hasSLO   —— 源码里 _IN 的筛选条件就是它；缺它的构造器根本不会被接管
+      //   hasRO    —— 我主张的判据（resolvedOptions 存在即格式化器）
+      //   noNewOk  —— **是否真被换过**。唯一不可自欺的判据：
+      //               注入的包装器是 `function W(locales, options) { return new Orig(...) }`，
+      //               所以**不带 new 调用会成功**；原生 Intl 构造器不带 new 一律 TypeError。
+      //   注意：不能用 `Intl[k].prototype.constructor === Intl[k]` 判断 ——
+      //   原生构造器本来就满足这条，那个断言恒真，是个空断言（我第一版就写错了）。
+      const hasSLO = typeof Intl[k].supportedLocalesOf === 'function'
+      const hasRO = !!Intl[k].prototype && typeof Intl[k].prototype.resolvedOptions === 'function'
+      let noNewOk = null
+      try {
+        Intl[k]('en-US')
+        noNewOk = true
+      } catch (e) {
+        noNewOk = false
+      }
+      try {
+        const inst = new Intl[k]()
+        if (!inst || typeof inst.resolvedOptions !== 'function') continue
+        const ro = inst.resolvedOptions()
+        // 探「显式 locale 是否被尊重」：不尊重 = 这个构造器根本不读 locales 参数，
+        // 那 _IN 那套「把 undefined 换成 _lang」的包装对它天然无效，修法要另想。
+        let explicit = null
+        let enus = null
+        try {
+          explicit = new Intl[k]('de-DE').resolvedOptions().locale
+        } catch (e) {}
+        try {
+          // 这一条是关键：如果显式传 'en-US'（就是 _lang 的值）能回 en-US，
+          // 说明构造器尊重 locale、包装器却**没有把 _lang 填进去**；
+          // 如果显式 'en-US' 也回 zh-CN，那是 V8 自身的怪癖，与注入无关。
+          enus = new Intl[k]('en-US').resolvedOptions().locale
+        } catch (e) {}
+        entries.push({ k, locale: ro.locale, timeZone: ro.timeZone, hasSLO, hasRO, noNewOk, explicit, enus, desc: descOf(k) })
+      } catch (e) {
+        // DisplayNames 之类需要必填参数，构造不出来 —— 记下来但不算不一致
+        entries.push({ k, error: e.name, hasSLO, hasRO, noNewOk, desc: descOf(k) })
+      }
+    }
+    return { base, entries }
+  })()
+
+  /* 16b：成对读数一致性 —— 同一事实的两个 API 必须给出同一个答案。
+     这类断言不依赖「我事先知道有哪些 API」，所以能抓到未来新增的漏点。
+     已知最容易漏的一对：`Intl.NumberFormat` 被换成了包装器，但
+     `Number.prototype.toLocaleString` 内部构造的是 %Intl.NumberFormat% **内在对象**，
+     不读全局属性 —— 于是它继续用宿主 locale，和 resolvedOptions 直接矛盾。 */
+  const pairs = (() => {
+    const out = {}
+    try {
+      out.intlNumberLocale = new Intl.NumberFormat().resolvedOptions().locale
+      out.intlNumberFormat = new Intl.NumberFormat().format(1234.56)
+    } catch (e) {
+      out.intlNumberError = e.message
+    }
+    try {
+      out.numberToLocaleString = (1234.56).toLocaleString()
+    } catch (e) {
+      out.numberToLocaleString = 'THROW:' + e.message
+    }
+    try {
+      out.bigintToLocaleString = (1234567n).toLocaleString()
+    } catch (e) {
+      out.bigintToLocaleString = 'THROW:' + e.message
+    }
+    try {
+      out.dateToLocaleString = new Date(2026, 0, 15, 12, 0, 0).toLocaleString()
+      out.intlDateFormat = new Intl.DateTimeFormat(undefined, {
+        dateStyle: 'short',
+        timeStyle: 'medium'
+      }).format(new Date(2026, 0, 15, 12, 0, 0))
+    } catch (e) {
+      out.dateError = e.message
+    }
+    try {
+      out.intlNumberParts = new Intl.NumberFormat().formatToParts(1234.56).map((p) => p.value).join('')
+    } catch (e) {
+      out.intlNumberParts = 'THROW'
+    }
+    return out
+  })()
+
+  /* 17：RTC 全局接口 —— 要么全在，要么全不在。删一半比不删更可疑 */
+  const rtcGlobals = Object.getOwnPropertyNames(window)
+    .filter((k) => /^RTC/.test(k))
+    .sort()
+
+  /* 21：hook 住在哪一层 —— 实例上多出来的自有属性是最硬的一种 tell。
+     真实 Chrome 156 实测：`Object.getOwnPropertyNames(new RTCPeerConnection())` 是 []。
+     把 hook 直接挂到实例上（而不是原型）会得到 ['addEventListener','onicecandidate'] 之类，
+     而 `_maskOne` 只修 name/length/toString，**修不了属性住在哪一层**。
+     注意判据必须是 getOwnPropertyNames，**不能是 for..in**：
+     WebIDL 原型方法本身 enumerable，真 Chrome 的 for..in 也列一堆，用它会得到假绿。 */
+  const rtcInstance = (() => {
+    const out = { own: null, error: null }
+    try {
+      const pc = new RTCPeerConnection()
+      out.own = Object.getOwnPropertyNames(pc).sort()
+      try {
+        pc.close()
+      } catch (e) {}
+    } catch (e) {
+      out.error = e && e.name ? e.name : 'err'
+    }
+    return out
+  })()
+
+  /* 6b：plugins 的行为证据（Symbol.toStringTag 可以一行伪造，方法造不出来） */
+  const pluginBehavior = (() => {
+    try {
+      const p = navigator.plugins
+      if (!p || p.length === 0) return { empty: true }
+      const first = p[0]
+      return {
+        itemWorks: typeof p.item === 'function' && p.item(0) === first,
+        namedItemWorks: typeof p.namedItem === 'function' && p.namedItem(first.name) === first,
+        hasRefresh: typeof p.refresh === 'function'
+      }
+    } catch (e) {
+      return { error: e.message }
+    }
+  })()
+
   return {
     mask,
     markers,
@@ -463,10 +649,14 @@ async function pageProbe() {
     nav,
     plugins,
     mimeTypes,
+    pluginBehavior,
     screen: screenProbe,
     identity,
     webgl,
     rtcCandidates,
+    rtcGlobals,
+    intlConsistency,
+    pairs,
     electronSurface,
     behavior,
     worker,
@@ -670,16 +860,21 @@ function judge(fp, d) {
   /* 6 —— plugins 的值（这条最容易假阳性） */
   const hasPdf = d.plugins.some((n) => /pdf/i.test(n))
   const pluginReal = d.behavior.pluginArrayTag === '[object PluginArray]'
-  // 三个条件缺一不可：
-  //   length>0 且含 PDF —— 锁值，不锁外观（getter 的 toString 早就 native 了）
-  //   tag 必须是 PluginArray —— 挡住「直接赋值 navigator.plugins = [...]」这种改法：
-  //     那样 _maskAt 会照旧登记原生 getter，看起来已处理，实际是个裸数组
-  const pluginOk = d.plugins.length > 0 && hasPdf && d.mimeTypes.length > 0 && pluginReal
+  // Symbol.toStringTag 一行就能伪造 tag，所以还要行为证据：item / namedItem 造不出来
+  const pb = d.pluginBehavior || {}
+  const pluginBehaviorOk = pb.empty ? true : pb.itemWorks === true && pb.namedItemWorks === true
+  const pluginOk = d.plugins.length > 0 && hasPdf && d.mimeTypes.length > 0 && pluginReal && pluginBehaviorOk
   add(
     'AC-06',
-    'navigator.plugins 的值必须非空、含 PDF 条目、且仍是 PluginArray',
-    'length>0 且含 PDF 条目，mimeTypes 非空，tag=[object PluginArray]',
-    { length: d.plugins.length, names: d.plugins, mimeCount: d.mimeTypes.length, tag: d.behavior.pluginArrayTag },
+    'navigator.plugins 的值必须非空、含 PDF 条目、且行为像 PluginArray',
+    'length>0 且含 PDF，mimeTypes 非空，tag=[object PluginArray]，item/namedItem 可用',
+    {
+      length: d.plugins.length,
+      names: d.plugins,
+      mimeCount: d.mimeTypes.length,
+      tag: d.behavior.pluginArrayTag,
+      behavior: pb
+    },
     pluginOk,
     pluginOk
       ? '注意：这是**真 PluginArray**，说明 plugins 根本没被伪造 —— 本次通过靠的是 Electron 自带的 Chromium 默认列表恰好和 Chrome 一样，不是伪装生效。这条只能防「列表被清空」「被换成裸数组」这类回归，不能证明「已伪造」。'
@@ -756,7 +951,73 @@ function judge(fp, d) {
     '先采基线，不断死',
     d.electronSurface,
     null,
-    'window.chrome / process / Widevine 在 Electron 下大概率缺失。采一轮基线写进 JSON，下一轮再升条件断言。附 toString 异常栈形状：' + d.toStringStack,
+    'window.chrome 存在但 loadTimes/csi/app/runtime 全无（真实 Chrome 156 的 getOwnPropertyNames(window.chrome) = app/csi/loadTimes 共 3 个，本处 0 个）；' +
+      'process/require/module 全 undefined；' +
+      'toString 栈形状 = ' +
+      d.toStringStack +
+      '：这是**已接受的代价**（触发需检测方主动踩异常路径），不是待修项 —— ' +
+      'Proxy 方案会把这条换成「fn.name 与 toString 名字矛盾」，那个被检查得更频繁，AC-15 已钉住。' +
+      '注意：chrome.runtime 真实 Chrome 也没有，别顺手 stub 它，那会造出新的假红。' +
+      'EME 见 AC-19/AC-20。',
+    { gate: false }
+  )
+
+  /* 19 —— window.chrome 的形状
+     基线来自真实 Chrome 156.0.0.0 实测：getOwnPropertyNames(window.chrome) = ['app','csi','loadTimes']
+     Electron 45.2.1 原生 = 0 个。所以这不是「可能有缺口」，是确定且可枚举的差额。
+     为什么现在不 gate：注入侧还没实现，断死会长期红且没人能修 —— 与「探针先采基线」同一条口径。
+     改成门禁的条件：把 { gate: false } 换成 { gate: true }，并在 injectFingerprint 里补三个 stub。
+     stub 的硬要求：值必须从 performance.timing / performance.navigation 派生，不能写常量 ——
+     常量跨页完全相同，本身就是比「缺 chrome.loadTimes」更容易被抓的指纹。
+     chrome.runtime 不要补：真实 Chrome 也没有，补了就是新的假红。 */
+  const CHROME_OWN = ['app', 'csi', 'loadTimes']
+  const chromeOwn = Array.isArray(d.electronSurface.chromeOwn) ? d.electronSurface.chromeOwn : []
+  const chromeOwnMissing = CHROME_OWN.filter((k) => !chromeOwn.includes(k))
+  add(
+    'AC-19',
+    'window.chrome 自有属性 = 真实 Chrome 的 3 个',
+    CHROME_OWN,
+    { own: chromeOwn, missing: chromeOwnMissing },
+    chromeOwnMissing.length === 0 && chromeOwn.length === CHROME_OWN.length,
+    chromeOwn.length === 0
+      ? '当前 0 个（Electron 原生即 0），真实 Chrome 156 是 3 个。差额可枚举、可 stub，且不需要内核工作。'
+      : '缺 ' + chromeOwnMissing.join(', ') + '（真实 Chrome 有这 3 个）',
+    { gate: false }
+  )
+
+  /* 20 —— EME stage-1 行为
+     先认一个错：本条第一版断言的是「两个符号必须存在」。实测两个符号本来就在
+     （typeof navigator.requestMediaKeySystemAccess === 'function'、typeof window.MediaKeys === 'function'），
+     所以那是个空断言 —— 和 AC-01/AC-02 完全同一个坑：断的是「本来就是真的东西」。
+
+     真正的可观测点不是符号存在性，是 stage-1 的**行为**：
+       真 Chrome 156：requestMediaKeySystemAccess('com.widevine.alpha') → resolve
+                     紧接着 createMediaKeys() → reject NotSupportedError
+       本仓库实测：    requestMediaKeySystemAccess 直接 reject NotSupportedError
+     所以「播不了 Widevine」本身不是 tell（真 headless 也播不了，检测方不能因此判负），
+     但「stage-1 就拒绝」是 —— 大多数检测方只做 stage-1（一行 await，不踩异常路径，成本极低）。
+
+     修法不需要内核工作：stub 一个 resolved 的 access 对象（带 keySystem / getConfiguration），
+     让 createMediaKeys() 抛 NotSupportedError，就与 headless Chrome 不可区分。
+     改成门禁的条件：widevine 读数从 rejected:* 变成 available 后，把 gate 换成 true。 */
+  const emeStage1 = d.electronSurface.widevine
+  const emeGranted = emeStage1 === 'available'
+  add(
+    'AC-20',
+    'EME stage-1 必须 resolve（能否播 Widevine 与判定无关）',
+    'available',
+    {
+      stage1: emeStage1,
+      requestMediaKeySystemAccess: d.electronSurface.emeRequest,
+      MediaKeys: d.electronSurface.emeMediaKeys
+    },
+    emeGranted,
+    emeGranted
+      ? 'stage-1 resolve；stage-2（createMediaKeys）抛 NotSupportedError 是允许的 —— 真 headless Chrome 同样如此。'
+      : '符号都在（都是 function），所以「符号缺失」这个方向不成立；缺的是 stage-1 行为：本处直接 ' +
+        emeStage1 +
+        '，而真 Chrome 156 在 stage-1 是 resolve 的、stage-2 才抛 NotSupportedError。' +
+        '一行 await navigator.requestMediaKeySystemAccess("com.widevine.alpha") 就能分开两者。',
     { gate: false }
   )
 
@@ -836,6 +1097,135 @@ function judge(fp, d) {
       : ''
   )
 
+  /* 16 —— Intl 构造器一致性
+     包装清单靠手工维护，漏一个就是「有的 formatter 用伪 locale、有的用宿主 locale」——
+     一次 resolvedOptions 对比就能看出来，而且不需要任何参照值。
+
+     注意比较的是**语言子标签**不是完整 locale：ICU 对不同 API 的规范化不一致，
+     实测 DateTimeFormat('en-US') 回 "en-US" 而 PluralRules('en-US') 回 "en"，
+     按完整串比会把已包装的判成漏包装。真正的泄漏表现为语言不同（zh vs en）。 */
+  const ic = d.intlConsistency
+  const langOf = (s) => String(s || '').split('-')[0].toLowerCase()
+  const intlProblems = []
+  const intlNotes = []
+  if (ic.error) {
+    intlProblems.push('读数失败：' + ic.error)
+  } else {
+    const baseLang = langOf(ic.base.locale)
+    for (const e of ic.entries) {
+      if (e.error) {
+        intlNotes.push(`${e.k}: 无法构造（${e.error}）`)
+        continue
+      }
+      if (langOf(e.locale) !== baseLang) {
+        intlProblems.push(`${e.k}: locale=${e.locale}（宿主语言）≠ ${ic.base.locale}（环境语言）`)
+      } else if (e.locale !== ic.base.locale) {
+        intlNotes.push(`${e.k}: locale=${e.locale}（语言相同，规范化差异）`)
+      }
+      if (e.timeZone && e.timeZone !== ic.base.timeZone) {
+        intlProblems.push(`${e.k}: timeZone=${e.timeZone} ≠ ${ic.base.timeZone}`)
+      }
+    }
+  }
+  add(
+    'AC-16',
+    'Intl 全部构造器必须用同一套 locale/timeZone',
+    '语言子标签与 timeZone 与 DateTimeFormat 相同',
+    ic,
+    intlProblems.length === 0,
+    [intlProblems.join('；'), intlNotes.join('；')].filter(Boolean).join('  |  ') +
+      (intlProblems.length
+        ? '  ══ 诊断结论（推翻了「判据选错」这个假设）：两个漏点 hasSLO=true、hasRO=true、desc=data-writable，' +
+          '也就是**它们满足 _IN 的筛选条件、属性也可写**，却仍然漏。' +
+          '决定性读数：显式传 \'en-US\' 时两者都回 en-US（de-DE 也回 de-DE），说明构造器尊重 locale、' +
+          '只是**包装器没有把 _lang 填进去** —— 即它们在注入时刻没有被接管，而不是接管了没效果。' +
+          '所以「supportedLocalesOf 换成 resolvedOptions」这条修法**解决不了 AC-16**：两个判据在这两个构造器上取值相同。' +
+          '  ══ 真正的矛盾：同一文档里 Date.prototype.toLocaleString 渲染 ' +
+          JSON.stringify(d.pairs.dateToLocaleString) +
+          '（环境语言），而 Intl.v8BreakIterator 同时报 ' +
+          JSON.stringify((ic.entries.find((e) => e.k === 'v8BreakIterator') || {}).locale) +
+          '（宿主 ICU 默认）。检测方两行、无需参照值即可判定被插桩。' +
+          '  下一步该查的是「枚举时刻 vs 使用时刻的 Intl 形状是否一致」：' +
+          '在注入前后各打一次 Object.getOwnPropertyNames(Intl) 与各自的 typeof supportedLocalesOf，' +
+          '差异就是根因。单次早快照的枚举方式在这种「惰性安装」的构造器上天然不可靠。'
+        : '')
+  )
+
+  /* 17 —— RTC 全局接口一致性
+     「删掉 RTCPeerConnection」这个方向比抛错更原生，但清单靠字面量维护就会漏：
+     漏掉的后果是「RTCPeerConnection 不存在、RTCRtpSender 存在」——
+     真实 Chromium 里不存在这个组合，是比不删更强的信号。
+
+     所以断言的不是「全删」，而是**矛盾**：要么一个都没删，要么一个都不剩。
+     只删一半正是要拦的那种。 */
+  const hasPeer = d.rtcGlobals.includes('RTCPeerConnection')
+  const rtcConsistent = hasPeer || d.rtcGlobals.length === 0
+  add(
+    'AC-17',
+    'RTC 全局接口要么全在、要么全不在（不许删一半）',
+    hasPeer ? '未启用删除，全部存在' : '已启用删除，必须一个不剩',
+    { count: d.rtcGlobals.length, hasPeer, list: d.rtcGlobals },
+    rtcConsistent,
+    rtcConsistent
+      ? hasPeer
+        ? '当前 profile 未走删除路径（webrtc≠disabled），此断言只验证「没有部分删除」'
+        : ''
+      : `RTCPeerConnection 已删除，但仍有 ${d.rtcGlobals.length} 个 RTC 接口存在：${d.rtcGlobals.join(', ')}。修法应用运行时枚举（/^RTC/）而不是字面量数组` +
+        '  |  重要边界：本条只覆盖主世界。Object.getOwnPropertyNames(window) 在 Worker 里是另一套全局，' +
+        '所以 webrtc=disabled 时可能出现「主世界 23 个全删、Worker 里 23 个全在」—— ' +
+        '本条会绿，但矛盾比不删更大（一次 new Worker(blob) 就能比出来）。AC-17 通过 ≠ disabled 模式安全。'
+  )
+
+  /* 18 —— 成对读数一致性
+     同一事实的两个 API 必须给出同一个答案。这类断言不依赖「我事先知道有哪些 API」，
+     所以能抓到未来新增的漏点 —— 比逐个查覆盖率更抗变化。
+
+     已知最容易漏的一对：`Intl.NumberFormat` 被换成了包装器，但
+     `Number.prototype.toLocaleString` 内部构造的是 %Intl.NumberFormat% **内在对象**，
+     不读全局属性，所以它继续用宿主 locale —— 和 resolvedOptions 直接矛盾。 */
+  const pr = d.pairs
+  const pairProblems = []
+  const pairNotes = []
+  // 期望值在 Node 侧算：如果只拿页面自己的两个 API 互相比，
+  // 宿主 locale 与 profile locale 恰好同格式时会「一致地错」——那是假通过。
+  let expectedNumber = null
+  try {
+    expectedNumber = new Intl.NumberFormat(fp.locale).format(1234.56)
+  } catch (e) {
+    pairProblems.push('无法用 ' + fp.locale + ' 计算期望格式：' + e.message)
+  }
+  if (pr.intlNumberError) {
+    pairProblems.push('Intl.NumberFormat 读数失败：' + pr.intlNumberError)
+  } else {
+    if (expectedNumber !== null && pr.numberToLocaleString !== expectedNumber) {
+      pairProblems.push(
+        `Number.prototype.toLocaleString()="${pr.numberToLocaleString}"，但 ${fp.locale} 应为 "${expectedNumber}"`
+      )
+    }
+    if (pr.numberToLocaleString !== pr.intlNumberFormat) {
+      pairProblems.push(
+        `toLocaleString="${pr.numberToLocaleString}" 与 Intl.NumberFormat().format()="${pr.intlNumberFormat}" 不一致`
+      )
+    }
+    // 施压强度提示：profile locale 与英文数字格式相同的话，这条区分不出宿主
+    try {
+      if (expectedNumber === new Intl.NumberFormat('en-US').format(1234.56)) {
+        pairNotes.push(
+          `注意：${fp.locale} 与 en-US 的数字格式相同（都是 ${expectedNumber}），` +
+            '若宿主也是英文系，本条无法区分「用了 profile locale」和「用了宿主 locale」—— 需要一个 de-DE/fr-FR 类 profile 才真正施压'
+        )
+      }
+    } catch (e) {}
+  }
+  add(
+    'AC-18',
+    '成对读数一致（Number 的 toLocaleString 必须与 profile locale 一致）',
+    expectedNumber === null ? '两个 API 给出同一答案' : `"${expectedNumber}"（${fp.locale}）`,
+    pr,
+    pairProblems.length === 0,
+    [pairProblems.join('；'), pairNotes.join('；')].filter(Boolean).join('  |  ')
+  )
+
   /* 14 —— Worker 上下文（Page.addScriptToEvaluateOnNewDocument 不覆盖 Worker） */
   const w = d.worker
   const wProblems = []
@@ -854,9 +1244,10 @@ function judge(fp, d) {
     'UA/platform/cores/languages/timeZone 全部一致',
     w,
     null,
-    wProblems.length
+    (wProblems.length
       ? '已知缺口（P0）：Worker 里读到的是宿主真实值，主世界是伪装值 —— 一段 `new Worker(blob)` 就能同时拿到两套并判定伪装。修法：Target.setAutoAttach + waitForDebuggerOnStart，对 Worker 也注入。'
-      : 'Worker 与主世界一致',
+      : 'Worker 与主世界一致') +
+      '  |  同一条缺口也吃 AC-17：RTC 删除只作用于主世界，webrtc=disabled 时可能「主世界全删、Worker 全在」，AC-17 仍会绿 —— 通过 ≠ disabled 模式安全。',
     { gate: false }
   )
 }
@@ -925,7 +1316,7 @@ try {
     add('AC-12', '[nightly] 两个环境必须互不相同', '需要 --nightly', '未运行', null, '用 --nightly 跑，需要两次启动', { gate: false, skipped: true })
   }
 
-  payload = { sha, at: new Date().toISOString(), nightly: NIGHTLY, results, raw: runs.map((r) => ({ label: r.profile.name, platform: r.profile.platform, data: r.data })) }
+  payload = { sha, build: buildState, at: new Date().toISOString(), nightly: NIGHTLY, results, raw: runs.map((r) => ({ label: r.profile.name, platform: r.profile.platform, data: r.data })) }
   // 按 ID 排序：判定顺序服务于可读性（相邻的检查放在一起写），输出顺序服务于查找
   payload.results.sort((a, b) => a.id.localeCompare(b.id))
 
@@ -934,7 +1325,7 @@ try {
 } catch (err) {
   console.error('\n验证脚本自身出错：', err && err.message ? err.message : err)
   exitCode = 2
-  payload = { sha, at: new Date().toISOString(), nightly: NIGHTLY, error: String((err && err.stack) || err), results }
+  payload = { sha, build: buildState, at: new Date().toISOString(), nightly: NIGHTLY, error: String((err && err.stack) || err), results }
 } finally {
   try {
     server.close()
@@ -957,6 +1348,16 @@ if (payload) {
   }
   console.log('')
   console.log('反检测运行时验证  commit ' + sha + (NIGHTLY ? '  [nightly]' : '  [gate]'))
+  // 这行是防「测错版本」的唯一提示。本脚本跑的是 out/（构建产物），sha 是源码的 HEAD，
+  // 两者可以不一致 —— 不一致时必须当场喊出来，不能等有人拿读数去推结论。
+  console.log(
+    '  被测产物 out/main/index.js sha1=' +
+      String(buildState.outSha1) +
+      '  mtime=' +
+      String(buildState.outMtime) +
+      '  工作区' +
+      (buildState.dirty === null ? '状态未知' : buildState.dirty ? '有未提交改动（读数不代表 HEAD）' : '干净（读数代表 HEAD）')
+  )
   console.log('─'.repeat(112))
   console.log(pad('ID', 7) + pad('结论', 7) + pad('检查项', 44) + '实际读数')
   console.log('─'.repeat(112))

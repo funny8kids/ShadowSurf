@@ -329,3 +329,66 @@ test(
     )
   }
 )
+
+/* ────────────── 9. 页面可控文本影响判定的「例外」必须计数 ────────────── */
+
+/**
+ * 这一轮立了一条轴：**页面可控文本只能抬风险，不能降风险**。
+ *
+ * 但已经出现了一个合法的例外：`REVERSIBLE_CLEAR` —— 命中筛选类宾语时跳过 delete 规则。
+ * 它读的是 `hay`（含页面写的元素名），确实是在降风险。
+ *
+ * 严重度要诚实：**边际可利用性接近零**。页面本来就能把「清空购物车」写成「继续」，
+ * 那样任何规则都不命中，同样 L1 —— 这个例外没有给页面新增能力。
+ *
+ * 真正的问题是**先例**：下一个人会拿它当理由去加一个更大的例外。
+ * 所以这条断言不阻止这个例外，而是把例外数量**钉死为 1**：
+ * 将来谁加第二个，测试直接红，必须解释为什么。
+ */
+test('页面文本跳过规则的例外只允许有一个', () => {
+  const risk = read('src/main/agent/risk.ts')
+  const skips = [...risk.matchAll(/\.test\(\s*hay\s*\)[\s\S]{0,120}?continue/g)]
+  assert.equal(
+    skips.length,
+    1,
+    `出现了 ${skips.length} 处「页面文本跳过规则」的分支。每加一个都是在降风险侧开一个页面可写的输入，` +
+      '必须评审：它给页面新增了什么能力？如果答案是「没有」，说明这个例外不必要；' +
+      '如果答案是「有」，那就是一个洞。'
+  )
+})
+
+/* ────────────── 10. `instanceof` 的收窄依赖「值导入」 ────────────── */
+
+/**
+ * `catch (err) { if (err instanceof ApprovalRequiredError) ... }` 能把 `err` 从
+ * `unknown` 收窄，前提是 `ApprovalRequiredError` 是**值导入**。
+ *
+ * 一旦有人为了「只用于类型判断」把它改成 `import type`：
+ *   - typecheck 报 TS18046（`err` 仍是 unknown），
+ *   - **运行时完全无感地更糟**：`instanceof undefined` 抛 TypeError，
+ *     而那个 TypeError 会被外层 catch 当成「动作失败」吞掉。
+ *
+ * 形状刻意写成「只要出现 instanceof，就必须存在同名值导入」而不是点名文件 ——
+ * 将来在新模块里加 instanceof 也自动被覆盖，不需要有人记得来改这条。
+ */
+test('凡是用 instanceof ApprovalRequiredError 的地方，必须是值导入', () => {
+  const files = walk(join(ROOT, 'src/main'))
+  const offenders: string[] = []
+
+  for (const file of files) {
+    const code = stripComments(readFileSync(file, 'utf8'))
+    if (!/instanceof\s+ApprovalRequiredError\b/.test(code)) continue
+
+    // 值导入的两种写法都认：`import { X } from`、`import { X as Y } from`（别名也算值导入）
+    const valueImport = /import\s+(?!type\s)[^;]*?\{[^}]*\bApprovalRequiredError\b[^}]*\}\s*from/.test(code)
+    if (!valueImport) offenders.push(relative(ROOT, file))
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    '这些文件里 `instanceof ApprovalRequiredError` 收窄不到类型（缺值导入）：' +
+      offenders.join(', ') +
+      '。把 `import type { ApprovalRequiredError }` 改成 `import { ApprovalRequiredError }`。'
+  )
+})

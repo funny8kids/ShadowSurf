@@ -227,3 +227,59 @@ test(
     assert.equal(click('清除筛选').level, 'L1')
   }
 )
+
+test('同一意图连续评估两次，结果必须完全相同', () => {
+  // 兜住 RegExp.lastIndex 残留这类跨调用状态：只要有人给规则加了 /g，
+  // 第二次 exec 就会从上次位置继续，判定随调用次数漂移。
+  const intent = '采集这个页面的商品价格'
+  const a = assessRisk({ type: 'click', id: 'e1' }, intent, '删除')
+  const b = assessRisk({ type: 'click', id: 'e1' }, intent, '删除')
+  const c = assessRisk({ type: 'click', id: 'e1' }, intent, '删除')
+  assert.deepEqual(a, b)
+  assert.deepEqual(b, c)
+
+  const d = assessRisk({ type: 'click', id: 'e2' }, intent, '下一页')
+  const e = assessRisk({ type: 'click', id: 'e2' }, intent, '下一页')
+  assert.deepEqual(d, e)
+})
+
+test(
+  '「Continue with PayPal」必须判 L2',
+  {
+    skip:
+      '实测判 L1。根因：pay 规则是 `pay\\b`，而 PayPal 里 pay 后面跟 P（词字符）没有边界；' +
+      '`payment` 也不覆盖。所以「继续用 PayPal 付款」这种标准结账按钮会无确认自动执行。' +
+      '注意**不要**改成 `\\bpay\\b` 修 —— 那会让 Repay/Prepay/Postpay 掉到 L1（还款也是扣款）。' +
+      '正确修法是显式补 `paypal`。' +
+      '另外：「PayPal」单独成按钮实测也是 L1，但那个多半是**支付方式选择器**（可逆），' +
+      '要不要拦需要产品判断，我没有断言它 —— 别把这条用例扩大成「PayPal 一律 L2」。' +
+      '取消 skip 的条件：Continue with PayPal → L2，且 Repay/Prepay/Postpay 仍是 L2。'
+  },
+  () => {
+    assert.equal(click('Continue with PayPal').level, 'L2')
+    // 防回退：补词不能把这两条改坏
+    assert.equal(click('Repay').level, 'L2')
+    assert.equal(click('Pay with PayPal').level, 'L2')
+  }
+)
+
+test(
+  '否定但未点名动作时不得降级',
+  {
+    skip:
+      '实测「看看页面，别做任何操作」「看看页面，别点任何按钮」都判 L1 自动执行。' +
+      '根因：当前用 WRITE_HINTS 做「意图里有写信号就不算只读」，它覆盖了「点名动作」的否定' +
+      '（「不要提交订单」→ L2 ✓），但没覆盖「否定但没点名动作」——' +
+      '「别做任何操作」不含 点击 等写信号，而 READ_ONLY_HINTS 命中「看看」→ 降级成立。' +
+      '后果：用户说「别做任何操作」，模型提一个 submit，系统自动执行。' +
+      '修法：补「别 + 动词」否定词表（别把/别再/别去/别做/别点/别动/别碰/别改/别按/别选/别填），' +
+      '注意不要补裸「别」—— 会命中 特别/区别/性别/识别/分别/个别/告别/类别/级别/差别。' +
+      '取消 skip 的条件：这两条回到 L2，且「采集商品价格」仍是 L1。'
+  },
+  () => {
+    assert.equal(assessRisk({ type: 'click', id: 'e1' }, '看看页面，别做任何操作', '提交').level, 'L2')
+    assert.equal(assessRisk({ type: 'click', id: 'e1' }, '看看页面，别点任何按钮', '提交').level, 'L2')
+    // 防回退：正常只读意图仍要能降级
+    assert.equal(assessRisk({ type: 'click', id: 'e1' }, '采集商品价格', '提交').level, 'L1')
+  }
+)
