@@ -24,7 +24,7 @@ import { bridgeFor } from '@main/core/cdp'
 import { captureSnapshot } from '@main/agent/snapshot'
 import { ApprovalRequiredError, executeAction } from '@main/agent/actions'
 import { assessRisk } from '@main/agent/risk'
-import { appendAudit } from '@main/modules/audit'
+import { auditGate } from '@main/modules/audit'
 
 /** 步骤间默认等待，给页面留出渲染/请求的时间 */
 const DEFAULT_DELAY_MS = 300
@@ -372,7 +372,8 @@ export function registerScriptModule(ctx: ModuleContext): void {
           // 没确认就传 'none'：执行器自己重算等级，撞上 L2 会抛出来。
           // 这是预扫描漏掉时的硬兜底 —— 宁可停在半路，也不能悄悄执行。
           approvedBy: confirmed ? 'user' : 'none',
-          extra: semantic
+          extra: semantic,
+          onGate: (event) => auditGate(ctx.stores, event)
         })
       } catch (err) {
         if (err instanceof ApprovalRequiredError) {
@@ -404,11 +405,6 @@ export function registerScriptModule(ctx: ModuleContext): void {
       if (step.action === 'done') break
 
       if (i < total - 1) await sleep(clampDelay(step.delayMs))
-    }
-
-    // 整段回放被确认过就留痕：这是脚本路径唯一一次「闸门被显式推开」。
-    if (confirmed) {
-      appendAudit(ctx.stores, '脚本回放（已确认）', script.name, `${executed}/${total} 步`)
     }
 
     return { ok: true, executed, total }

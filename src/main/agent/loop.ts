@@ -25,6 +25,8 @@ import { captureSnapshot } from '@main/agent/snapshot'
 import type { Approval } from '@main/agent/actions'
 import { describeAction, executeAction } from '@main/agent/actions'
 import { assessRisk } from '@main/agent/risk'
+import { auditGate } from '@main/modules/audit'
+import { getStores } from '@main/store'
 import { chat, parseJSONLoose, type ChatMessage } from '@main/agent/llm'
 import { SYSTEM_PROMPT, buildUserMessage } from '@main/agent/prompt'
 
@@ -209,7 +211,10 @@ export async function runAgent(
           // 把不一致暴露出来而不是悄悄放行。
           approvedBy,
           intent: req.intent,
-          extra: semantic
+          extra: semantic,
+          // 闸门事件落到同一条审计链：原先 agent 这条路径跑 40 步一个字节都不留，
+          // 事后完全无法回答「它到底点过什么」。
+          onGate: (event) => auditGate(getStores(), event)
         })
       } catch (err) {
         // 执行器抛错（元素消失、CDP 断开）不该毁掉整个任务：

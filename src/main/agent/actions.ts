@@ -34,6 +34,23 @@ export type Approval = {
    * agent loop 传的是用户原话，与它自己那次判定同源，不会出现两份结论打架。
    */
   intent?: string
+  /**
+   * 闸门事件的落点。
+   *
+   * 用注入而不是在这里直接 `getStores()`：执行器被 `tools/probe-gate.mjs` 在
+   * 纯 Node 里加载，真去写审计库会让探针污染用户数据，也跑不起来。
+   */
+  onGate?: (event: GateEvent) => void
+}
+
+export interface GateEvent {
+  level: 'L1' | 'L2'
+  /** 真正做出决定的授权来源，不是调用方声明的 */
+  approvedBy: Approval['approvedBy']
+  action: Action
+  /** 命中的不可逆语义词 */
+  matched?: string
+  reason: string
 }
 
 /**
@@ -51,6 +68,19 @@ export class ApprovalRequiredError extends Error {
     this.name = 'ApprovalRequiredError'
     this.actionType = actionType
     this.matched = matched
+  }
+}
+
+/**
+ * 审计写不进去，于是 L2 动作不执行。
+ *
+ * 单独一个类型是因为它的处置方式不同：`ApprovalRequiredError` 是「补一个确认就能过」，
+ * 这个是「环境有问题，补什么确认都没用」。混成一个，调用方只能给用户看一句错的提示。
+ */
+export class AuditUnavailableError extends Error {
+  constructor(detail: string) {
+    super(`无法写入审计记录，动作已中止（${detail}）。请检查磁盘空间与审计文件权限`)
+    this.name = 'AuditUnavailableError'
   }
 }
 
@@ -112,9 +142,45 @@ export async function executeAction(
 ): Promise<ActionResult> {
   // A14：自己重算等级，不接收调用方传来的结论。
   // intent 缺省为 '' → hitReadOnlyIntent 返回 undefined → 永不降级 → 最保守。
-  const verdict = assessRisk(action, approval.intent ?? '', approval.extra)
-  if (verdict.level === 'L2' && approval.approvedBy === 'none') {
-    throw new ApprovalRequiredError(verdict.reason, action.type, verdict.matched)
+  //
+  // 元素可读名在这里自己取，不要调用方传：本地 HTTP API 手里只有 action.id，
+  // 拿不到元素名，于是「点『立即支付』」在它那条路径上扫到的语义是空的 ——
+  // 闸门看起来接了、其实对这路径完全不设防。谁调用都得有元素名，那就别指望调用方。
+  const target = typeof action.id === 'string' ? findElement(snapshot, action.id.trim()) : undefined
+  const extra = [target?.name ?? '', approval.extra ?? '']
+    .filter((v) => v.length > 0)
+    .join(' ')
+  const verdict = assessRisk(action, approval.intent ?? '', extra)
+
+  // 闸门事件先落审计再抛错：被拦下的动作是最该留痕的，
+  // 原先三条路径里只有脚本那条会写审计，agent 跑了 40 步一个字节都不留。
+  //
+  // L2 走「没有记录就没有执行」：审计写不进去时宁可不动。
+  // 不可逆动作 + 事后查不到是谁放的 —— 这正是这一整轮要消掉的那类缺陷。
+  // L1 不拦：它可回退，为了记不上账而卡住正常浏览没有道理。
+  let gateLogged = true
+  try {
+    approval.onGate?.({
+      level: verdict.level === 'L2' ? 'L2' : 'L1',
+      approvedBy: approval.approvedBy,
+      action,
+      matched: verdict.matched,
+      reason: verdict.reason
+    })
+  } catch (err) {
+    gateLogged = false
+    if (verdict.level === 'L2') {
+      throw new AuditUnavailableError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  if (verdict.level === 'L2') {
+    if (!gateLogged) {
+      throw new AuditUnavailableError('审计未落盘')
+    }
+    if (approval.approvedBy === 'none') {
+      throw new ApprovalRequiredError(verdict.reason, action.type, verdict.matched)
+    }
   }
 
   if (NEEDS_ID.has(action.type)) {

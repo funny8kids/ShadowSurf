@@ -25,6 +25,7 @@ import type {
 } from '@shared/types'
 import { CollectionStore, type Stores } from '@main/store'
 import { bridgeFor } from '@main/core/cdp'
+import type { GateEvent } from '@main/agent/actions'
 import type { ModuleContext } from './context'
 
 /** 链首的 prev 占位：64 个 0，长度与 sha256 的 hex 一致，校验时不必特判 */
@@ -84,6 +85,33 @@ export function appendAudit(
   }
   stores.audit.add(entry)
   return entry
+}
+
+/**
+ * 把一次风险闸门判定写进审计链。
+ *
+ * 为什么单独抽一个函数：原先「动作要不要确认」这件事在 agent loop 里判、
+ * 在本地 API 里判、在脚本回放里判，三处各自决定要不要记审计 ——
+ * 结果只有脚本那条记了，agent 跑 40 步一个字节都不留。
+ * 现在判定下沉到执行器，留痕也一起下沉，三处共用这一个落点。
+ */
+export function auditGate(stores: Stores, event: GateEvent): void {
+  const action = event.action
+  const target = [action.type, action.id ? `#${action.id}` : '', action.url ?? '']
+    .filter((v) => v.length > 0)
+    .join(' ')
+
+  // matched 是从元素可读名里正则匹配出来的，元素名由页面决定 ——
+  // 页面可以写一个 10KB 的名字把审计撑爆，所以这里必须截断。
+  const matched = event.matched ? event.matched.slice(0, 24) : ''
+  const who = event.approvedBy === 'none' ? '未授权' : `授权=${event.approvedBy}`
+
+  appendAudit(
+    stores,
+    event.level === 'L2' ? '闸门·不可逆' : '闸门·可回退',
+    target,
+    `${who}；${event.reason}${matched ? `；命中「${matched}」` : ''}`
+  )
 }
 
 /** 最新在前，默认 200 条：面板只需要近期记录，全量拉过来既慢又没必要 */

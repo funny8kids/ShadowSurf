@@ -52,9 +52,20 @@ const snapshot = {
   elements: [
     {
       id: 'e1',
+      tag: 'a',
+      role: 'link',
+      name: '下一页',
+      disabled: false,
+      inViewport: true,
+      box: { x: 0, y: 0, w: 10, h: 10 }
+    },
+    {
+      // 名字本身带不可逆语义，调用方**不需要**把它传进来 —— 执行器自己从快照取。
+      // 本地 HTTP API 只有 action.id，拿不到元素名，靠的就是这条。
+      id: 'e2',
       tag: 'button',
       role: 'button',
-      name: '提交',
+      name: '立即支付',
       disabled: false,
       inViewport: true,
       box: { x: 0, y: 0, w: 10, h: 10 }
@@ -65,13 +76,14 @@ const snapshot = {
 }
 
 const click = { type: 'click', id: 'e1' }
+const payClick = { type: 'click', id: 'e2' }
 
 /**
  * @returns {'blocked'|'passed'} blocked = 抛了 ApprovalRequiredError
  */
-async function probe(executeAction, ApprovalRequiredError, approval) {
+async function probe(executeAction, ApprovalRequiredError, approval, action = click) {
   try {
-    await executeAction(stubCdp, click, snapshot, approval)
+    await executeAction(stubCdp, action, snapshot, approval)
     return 'passed'
   } catch (err) {
     if (err instanceof ApprovalRequiredError) return 'blocked'
@@ -106,6 +118,14 @@ const cases = [
     want: 'passed'
   },
   {
+    // 调用方不传 extra，只给 action.id —— 本地 HTTP API 就是这种形状。
+    // 执行器必须自己从快照取元素名，否则这条路径上的闸门等于没接。
+    name: '元素名只来自快照 + 无授权 → 拦下',
+    approval: { approvedBy: 'none' },
+    action: payClick,
+    want: 'blocked'
+  },
+  {
     name: 'L2 + 只读意图降级 + 无授权 → 放行',
     approval: { approvedBy: 'none', extra: '提交', intent: '采集这个页面的数据' },
     want: 'passed'
@@ -127,7 +147,12 @@ let failed = 0
 try {
   const actions = await server.ssrLoadModule('/src/main/agent/actions.ts')
   for (const c of cases) {
-    const got = await probe(actions.executeAction, actions.ApprovalRequiredError, c.approval)
+    const got = await probe(
+      actions.executeAction,
+      actions.ApprovalRequiredError,
+      c.approval,
+      c.action ?? click
+    )
     const ok = got === c.want
     if (!ok) failed += 1
     console.log(`${ok ? 'ok  ' : 'FAIL'} ${c.name} → ${got}（期望 ${c.want}）`)

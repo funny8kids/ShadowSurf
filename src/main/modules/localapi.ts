@@ -24,8 +24,8 @@ import type { Action, ActionType } from '@shared/protocol'
 import { dataDir, getStores } from '@main/store'
 import { bridgeFor } from '@main/core/cdp'
 import { captureSnapshot } from '@main/agent/snapshot'
-import { ApprovalRequiredError, executeAction } from '@main/agent/actions'
-import { appendAudit } from '@main/modules/audit'
+import { ApprovalRequiredError, AuditUnavailableError, executeAction } from '@main/agent/actions'
+import { auditGate } from '@main/modules/audit'
 import type { ModuleContext } from './context'
 
 /* ────────────────────────────── 常量 ────────────────────────────── */
@@ -403,7 +403,7 @@ async function handleProfiles(
 
   if (verb === 'act') {
     if (method !== 'POST') throw new ApiError(404, 'E_NOT_FOUND', '执行动作请用 POST')
-    const profile = requireProfile(id)
+    requireProfile(id)
     const body = await readJsonBody(req)
     const payload = body !== null && typeof body === 'object' ? (body as Record<string, unknown>) : {}
     const action = toAction(payload.action)
@@ -422,7 +422,8 @@ async function handleProfiles(
     let result
     try {
       result = await executeAction(cdp, action, snap, {
-        approvedBy: confirmed ? 'api' : 'none'
+        approvedBy: confirmed ? 'api' : 'none',
+        onGate: (event) => auditGate(getStores(), event)
       })
     } catch (err) {
       if (err instanceof ApprovalRequiredError) {
@@ -433,23 +434,16 @@ async function handleProfiles(
           `${err.message}；确认无副作用后在请求体加 "confirm": true 重试`
         )
       }
+      if (err instanceof AuditUnavailableError) {
+        // 503：环境问题，调用方补什么字段都没用，重试才有意义
+        throw new ApiError(503, 'E_AUDIT_UNAVAILABLE', err.message)
+      }
       throw err
     }
 
     if (!result.ok) {
       // 动作被拒（编号不存在 / 页面脚本未就绪）属于调用方问题，用 400 让客户端能区分于服务故障
       throw new ApiError(400, 'E_ACTION_FAILED', result.message)
-    }
-
-    // 走过确认的动作必须留痕：这是唯一一条「闸门被显式推开」的路径，
-    // 事后追「谁让这个动作执行的」只能靠这里。
-    if (confirmed) {
-      appendAudit(
-        getStores(),
-        'API 确认执行',
-        profile.name,
-        `${action.type}${action.id ? ` #${action.id}` : ''}${action.url ? ` ${action.url}` : ''}`
-      )
     }
 
     sendJson(res, 200, { ok: true, data: result })
