@@ -3,10 +3,56 @@
  *
  * 防幻觉的唯一闸门就在这里：模型给的 id 必须出现在**当轮快照**的 elements 里，
  * 否则直接拒绝，绝不去 DOM 上碰运气。模型因此无法指向列表之外的任何元素。
+ *
+ * 风险闸门也在这里（A14）。原本只有 agent loop 调 `assessRisk`，本地 HTTP API
+ * 和脚本回放两条路径直接调执行器，把闸门整个绕过去了 —— 它们的注释里写着
+ * 「必须自己调 assessRisk」，但「必须」只是注释，没有任何东西强制。
+ * 现在执行器自己算等级：调用方只能声明**谁授权了**，不能声明**几级**。
  */
 import type { Action, ActionResult, PageSnapshot, SnapshotElement } from '@shared/protocol'
 import type { CdpBridge } from '@main/core/cdp'
 import { runInAgentWorld } from '@main/agent/snapshot'
+import { assessRisk } from '@main/agent/risk'
+
+/**
+ * 授权凭据。
+ *
+ * 这里**故意不放 `level`**。早先的设想是让调用方把 `assessRisk` 的结论传进来，
+ * 但那样闸门的强度就等于「调用方有没有老实调用」—— 而绕过闸门的两条路径
+ * 恰恰就是没老实调用的那两条。等级必须由执行器自己算，调用方只能证明授权来源。
+ */
+export type Approval = {
+  /** 'none' = 没有授权，只允许执行非 L2 动作 */
+  approvedBy: 'none' | 'user' | 'api'
+  /** 目标元素可读名 + 模型自述。页面可控，只会抬高等级，不会被用来降低 */
+  extra?: string
+  /**
+   * 闸门判定时用的只读意图。
+   *
+   * 不传 = 按空意图重算 = 永不降级 = 最保守等级。
+   * 外部 API 与脚本回放都没有「用户意图」这个东西可传，所以它们天然最保守；
+   * agent loop 传的是用户原话，与它自己那次判定同源，不会出现两份结论打架。
+   */
+  intent?: string
+}
+
+/**
+ * L2 动作在没有授权时被拦下。
+ *
+ * 用异常而不是 `{ok:false}`：`ok:false` 在执行器里表示「动作跑了但页面说失败」，
+ * 调用方会把它当成业务失败继续往下走；授权缺失是**根本没跑**，语义不同。
+ */
+export class ApprovalRequiredError extends Error {
+  readonly actionType: Action['type']
+  readonly matched?: string
+
+  constructor(reason: string, actionType: Action['type'], matched?: string) {
+    super(reason)
+    this.name = 'ApprovalRequiredError'
+    this.actionType = actionType
+    this.matched = matched
+  }
+}
 
 /** 这三个动作必须带编号 */
 const NEEDS_ID = new Set<Action['type']>(['click', 'type', 'press'])
@@ -53,13 +99,24 @@ function toActionResult(raw: unknown): ActionResult {
 
 /**
  * 执行一个动作。
- * 先做编号校验，再交给页面脚本；navigate 额外等 900ms。
+ *
+ * 顺序：授权 → 编号校验 → 交给页面脚本；navigate 额外等 900ms。
+ * 授权排在最前，是因为「能不能做」比「做哪一步」更外层：没授权的动作
+ * 连元素都不该去找，否则一次点击的成败会被元素是否存在掩盖过去。
  */
 export async function executeAction(
   cdp: CdpBridge,
   action: Action,
-  snapshot: PageSnapshot
+  snapshot: PageSnapshot,
+  approval: Approval
 ): Promise<ActionResult> {
+  // A14：自己重算等级，不接收调用方传来的结论。
+  // intent 缺省为 '' → hitReadOnlyIntent 返回 undefined → 永不降级 → 最保守。
+  const verdict = assessRisk(action, approval.intent ?? '', approval.extra)
+  if (verdict.level === 'L2' && approval.approvedBy === 'none') {
+    throw new ApprovalRequiredError(verdict.reason, action.type, verdict.matched)
+  }
+
   if (NEEDS_ID.has(action.type)) {
     const id = typeof action.id === 'string' ? action.id.trim() : ''
     if (!id) {

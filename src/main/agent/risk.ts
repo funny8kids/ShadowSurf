@@ -130,7 +130,24 @@ const WRITE_HINTS = [
   '下载'
 ]
 
+/**
+ * 意图里的否定词 + 动作词。
+ *
+ * 「帮我看看这个页面，别做任何操作」—— 句子里有一个只读动词「看看」，
+ * 语义却恰恰是「不要动」。只按「含只读动词」放行，等于把最强烈的不许动
+ * 读成了自动放行。而「不要点击」因为碰巧含「点击」（在 WRITE_HINTS 里）
+ * 反而被判得更严 —— 同一件事，否定得越彻底判得越松，这是反的。
+ *
+ * 刻意收窄到「否定词 + 动作词」的组合，不收单字「别」：
+ * 「特别看看」「区别」「告别」里都有「别」，那会把正常只读意图也判成写，
+ * 于是每次搜索框提交都弹确认，闸门噪音化。
+ */
+const NEGATED_ACTION =
+  /不要|勿|禁止|严禁|不可|不能|切勿|无需|不必|别(?:做|点|动|乱|碰|操|再|改|删|填)/
+
 function hitReadOnlyIntent(intent: string): string | undefined {
+  // 意图里出现「别动」类说法时，不认任何只读豁免。
+  if (NEGATED_ACTION.test(intent)) return undefined
   const hit = READ_ONLY_HINTS.find((w) => intent.includes(w))
   if (!hit) return undefined
   // 意图里同时出现写信号 → 不算纯只读

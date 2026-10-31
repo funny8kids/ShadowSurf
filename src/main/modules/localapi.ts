@@ -24,7 +24,8 @@ import type { Action, ActionType } from '@shared/protocol'
 import { dataDir, getStores } from '@main/store'
 import { bridgeFor } from '@main/core/cdp'
 import { captureSnapshot } from '@main/agent/snapshot'
-import { executeAction } from '@main/agent/actions'
+import { ApprovalRequiredError, executeAction } from '@main/agent/actions'
+import { appendAudit } from '@main/modules/audit'
 import type { ModuleContext } from './context'
 
 /* ────────────────────────────── 常量 ────────────────────────────── */
@@ -402,10 +403,14 @@ async function handleProfiles(
 
   if (verb === 'act') {
     if (method !== 'POST') throw new ApiError(404, 'E_NOT_FOUND', '执行动作请用 POST')
-    requireProfile(id)
+    const profile = requireProfile(id)
     const body = await readJsonBody(req)
     const payload = body !== null && typeof body === 'object' ? (body as Record<string, unknown>) : {}
     const action = toAction(payload.action)
+    // 外部调用方没有「用户意图」可传，所以这里**不传 intent**：
+    // 执行器会按空意图重算，得到永不降级的最保守等级。
+    // 想让 L2 动作通过，只有一条路 —— 请求体里显式写 "confirm": true。
+    const confirmed = payload.confirm === true
 
     const tab = requireTab(id)
     const cdp = bridgeFor(tab.wc)
@@ -413,12 +418,40 @@ async function handleProfiles(
     // 外部调用方手里没有当轮快照，但编号校验是防幻觉的唯一闸门，不能因为走 API 就绕过：
     // 这里现采一帧再交给执行器，元素编号必须真实存在于当前页面。
     const snap = await captureSnapshot(cdp)
-    const result = await executeAction(cdp, action, snap)
+
+    let result
+    try {
+      result = await executeAction(cdp, action, snap, {
+        approvedBy: confirmed ? 'api' : 'none'
+      })
+    } catch (err) {
+      if (err instanceof ApprovalRequiredError) {
+        // 409 而不是 403：调用方补一个字段就能过，不是权限不够。
+        throw new ApiError(
+          409,
+          'E_APPROVAL_REQUIRED',
+          `${err.message}；确认无副作用后在请求体加 "confirm": true 重试`
+        )
+      }
+      throw err
+    }
 
     if (!result.ok) {
       // 动作被拒（编号不存在 / 页面脚本未就绪）属于调用方问题，用 400 让客户端能区分于服务故障
       throw new ApiError(400, 'E_ACTION_FAILED', result.message)
     }
+
+    // 走过确认的动作必须留痕：这是唯一一条「闸门被显式推开」的路径，
+    // 事后追「谁让这个动作执行的」只能靠这里。
+    if (confirmed) {
+      appendAudit(
+        getStores(),
+        'API 确认执行',
+        profile.name,
+        `${action.type}${action.id ? ` #${action.id}` : ''}${action.url ? ` ${action.url}` : ''}`
+      )
+    }
+
     sendJson(res, 200, { ok: true, data: result })
     return
   }

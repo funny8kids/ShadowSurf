@@ -16,13 +16,15 @@
 
 import { CH } from '@shared/ipc'
 import type { AutomationScript, ScriptRunResult, ScriptStep } from '@shared/types'
-import type { Action, ActionType, PageSnapshot, SnapshotElement } from '@shared/protocol'
+import type { Action, ActionResult, ActionType, PageSnapshot, SnapshotElement } from '@shared/protocol'
 import type { ModuleContext } from './context'
 
 import { CollectionStore } from '@main/store'
 import { bridgeFor } from '@main/core/cdp'
 import { captureSnapshot } from '@main/agent/snapshot'
-import { executeAction } from '@main/agent/actions'
+import { ApprovalRequiredError, executeAction } from '@main/agent/actions'
+import { assessRisk } from '@main/agent/risk'
+import { appendAudit } from '@main/modules/audit'
 
 /** 步骤间默认等待，给页面留出渲染/请求的时间 */
 const DEFAULT_DELAY_MS = 300
@@ -274,7 +276,7 @@ export function registerScriptModule(ctx: ModuleContext): void {
     scripts.remove(String(id))
   })
 
-  ctx.handle(CH.scripts.run, async (_event, scriptId, profileId): Promise<ScriptRunResult> => {
+  ctx.handle(CH.scripts.run, async (_event, scriptId, profileId, rawOptions): Promise<ScriptRunResult> => {
     const script = scripts.get(String(scriptId))
     if (!script) throw new Error('脚本不存在，可能已被删除')
 
@@ -282,20 +284,65 @@ export function registerScriptModule(ctx: ModuleContext): void {
     const total = steps.length
     if (total === 0) throw new Error('脚本还没有步骤，先添加一步或从历史任务导入')
 
+    const opts = (rawOptions !== null && typeof rawOptions === 'object' ? rawOptions : {}) as {
+      confirmed?: boolean
+      startAt?: number
+    }
+    const confirmed = opts.confirmed === true
+    // startAt 是「跑到第 N 步被闸门拦下 → 用户确认后从第 N 步续跑」。
+    // 不重跑前 N-1 步：它们已经在页面上留下状态，重跑等于执行两次。
+    const rawStart = opts.startAt
+    const startIndex =
+      typeof rawStart === 'number' && Number.isInteger(rawStart) && rawStart >= 1 && rawStart <= total
+        ? rawStart - 1
+        : 0
+
     const handle = ctx.wm.getTab(String(profileId))
     if (!handle) throw new Error('请先打开该环境再回放')
+
+    // ── 风险预扫描 ─────────────────────────────────────────────
+    // 回放没有「用户意图」可传：录制那一刻的意图不属于这次运行，页面也早换了。
+    // 所以先用录制时留下的文字扫一遍 —— 选择器和备注是人写的，
+    // 能覆盖绝大多数「按钮名里带支付 / 删除 / 发送」的情况，而且不需要页面。
+    //
+    // 只在还没确认时扫：确认过就不必再问第二遍。
+    const risky: Array<{ at: number; label: string; reason: string }> = []
+    if (!confirmed) {
+      for (let i = startIndex; i < total; i += 1) {
+        const step = steps[i]
+        const hint = [step.selector, step.note]
+          .filter((v): v is string => typeof v === 'string' && v.length > 0)
+          .join(' ')
+        const risk = assessRisk({ type: step.action }, '', hint)
+        if (risk.level === 'L2') risky.push({ at: i + 1, label: hint, reason: risk.reason })
+      }
+      if (risky.length > 0) {
+        const first = risky[0]
+        return {
+          ok: false,
+          executed: 0,
+          total,
+          failedAt: first.at,
+          needsConfirm: true,
+          error:
+            `第 ${first.at} 步${first.label ? `（${first.label}）` : ''}${first.reason}` +
+            (risky.length > 1 ? `；另有 ${risky.length - 1} 步同类` : '') +
+            '。确认后整段回放才会执行'
+        }
+      }
+    }
 
     const cdp = bridgeFor(handle.wc)
     try {
       await cdp.attach()
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err)
-      return { ok: false, executed: 0, total, failedAt: 1, error: `无法连接页面：${detail}` }
+      return { ok: false, executed: 0, total, failedAt: startIndex + 1, error: `无法连接页面：${detail}` }
     }
 
     let executed = 0
 
-    for (let i = 0; i < total; i += 1) {
+    for (let i = startIndex; i < total; i += 1) {
       const step = steps[i]
       const at = i + 1
 
@@ -310,7 +357,37 @@ export function registerScriptModule(ctx: ModuleContext): void {
         return { ok: false, executed, total, failedAt: at, error: `第 ${at} 步：${detail}` }
       }
 
-      const result = await executeAction(cdp, action, snapshot)
+      // 元素名只有运行时才知道：录制时选择器可能只写着 #btn1，实际按钮叫「立即支付」。
+      // 预扫描看不到这一层，所以执行器这道闸必须再判一次。
+      const target = action.id
+        ? snapshot.elements.find((el) => el.id === action.id)
+        : undefined
+      const semantic = [target?.name ?? '', step.note ?? '', step.selector ?? '']
+        .filter((v) => v.length > 0)
+        .join(' ')
+
+      let result: ActionResult
+      try {
+        result = await executeAction(cdp, action, snapshot, {
+          // 没确认就传 'none'：执行器自己重算等级，撞上 L2 会抛出来。
+          // 这是预扫描漏掉时的硬兜底 —— 宁可停在半路，也不能悄悄执行。
+          approvedBy: confirmed ? 'user' : 'none',
+          extra: semantic
+        })
+      } catch (err) {
+        if (err instanceof ApprovalRequiredError) {
+          return {
+            ok: false,
+            executed,
+            total,
+            failedAt: at,
+            needsConfirm: true,
+            error: `第 ${at} 步：${err.message}（前 ${executed} 步已执行）`
+          }
+        }
+        throw err
+      }
+
       if (!result.ok) {
         return {
           ok: false,
@@ -327,6 +404,11 @@ export function registerScriptModule(ctx: ModuleContext): void {
       if (step.action === 'done') break
 
       if (i < total - 1) await sleep(clampDelay(step.delayMs))
+    }
+
+    // 整段回放被确认过就留痕：这是脚本路径唯一一次「闸门被显式推开」。
+    if (confirmed) {
+      appendAudit(ctx.stores, '脚本回放（已确认）', script.name, `${executed}/${total} 步`)
     }
 
     return { ok: true, executed, total }

@@ -142,7 +142,7 @@ const api: ShadowSurfAPI = {
     get: (id) => invoke(CH.scripts.get, id),
     save: (script) => invoke(CH.scripts.save, script),
     remove: (id) => invoke(CH.scripts.remove, id),
-    run: (scriptId, profileId) => invoke(CH.scripts.run, scriptId, profileId)
+    run: (scriptId, profileId, options) => invoke(CH.scripts.run, scriptId, profileId, options)
   },
 
   audit: {

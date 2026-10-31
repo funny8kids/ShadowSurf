@@ -243,8 +243,20 @@ export interface ScriptsAPI {
   get(id: string): Promise<AutomationScript>
   save(script: Partial<AutomationScript> & { name: string }): Promise<AutomationScript>
   remove(id: string): Promise<void>
-  /** 在当前环境里回放，复用同一套动作协议 */
-  run(scriptId: string, profileId: string): Promise<ScriptRunResult>
+  /**
+   * 在当前环境里回放，复用同一套动作协议。
+   *
+   * 脚本里含不可逆步骤时第一次调用会返回 `needsConfirm`，页面一步都不动；
+   * 用户确认后用 `{ confirmed: true, startAt: failedAt }` 重发才会真正执行。
+   */
+  run(scriptId: string, profileId: string, options?: ScriptRunOptions): Promise<ScriptRunResult>
+}
+
+export interface ScriptRunOptions {
+  /** 用户已确认整段回放含不可逆步骤 */
+  confirmed?: boolean
+  /** 从第几步开始（1 起）。用于确认后从被拦下的那一步续跑 */
+  startAt?: number
 }
 
 export interface AuditAPI {

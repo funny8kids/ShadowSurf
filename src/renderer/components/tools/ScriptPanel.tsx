@@ -22,6 +22,7 @@ import type {
   ScriptStep,
   TaskRecord
 } from '@shared/types'
+import type { ScriptRunOptions } from '@shared/ipc'
 import type { ActionType, AgentStep } from '@shared/protocol'
 import { Button, Icon, Modal, cx, useToast } from '@renderer/components/ui'
 import { bridge, errorMessage } from '@renderer/lib/api'
@@ -134,6 +135,8 @@ export function ScriptPanel({ profiles }: PanelProps) {
 
   const [pendingSelect, setPendingSelect] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<AutomationScript | null>(null)
+  /** 回放被风险闸门拦下，等用户看过原因再决定续不续 */
+  const [pendingRun, setPendingRun] = useState<ScriptRunResult | null>(null)
 
   const loadScripts = useCallback(async () => {
     setLoading(true)
@@ -317,10 +320,16 @@ export function ScriptPanel({ profiles }: PanelProps) {
 
   /* ────────────────────────────── 回放 ────────────────────────────── */
 
-  async function run() {
+  async function run(options?: ScriptRunOptions) {
     if (!draft) return
     if (!draft.id) {
       toast.push('先保存脚本，再选择环境回放', 'err')
+      return
+    }
+    // 按钮已按 dirty 禁用，但确认弹窗是直接调 run() 的，绕过了按钮。
+    // 主进程读的是库里的版本，草稿没保存时「用户看到要跑的」和「实际跑的」不是同一份。
+    if (dirty) {
+      toast.push('有未保存的修改，先保存再回放', 'err')
       return
     }
     if (!runProfileId) {
@@ -328,10 +337,16 @@ export function ScriptPanel({ profiles }: PanelProps) {
       return
     }
     setRunning(true)
-    setResult(null)
+    if (!options) setResult(null)
     try {
-      const res = await bridge().scripts.run(draft.id, runProfileId)
+      const res = await bridge().scripts.run(draft.id, runProfileId, options)
       setResult(res)
+      if (res.needsConfirm) {
+        // 这不是失败，是「还没做」。用弹窗而不是 toast：用户需要读到原因再决定，
+        // toast 会自己消失，而这一步一旦点错就收不回来了。
+        setPendingRun(res)
+        return
+      }
       toast.push(
         res.ok ? `回放完成：${res.executed}/${res.total} 步` : `第 ${res.failedAt} 步失败`,
         res.ok ? 'ok' : 'err'
@@ -343,6 +358,20 @@ export function ScriptPanel({ profiles }: PanelProps) {
     } finally {
       setRunning(false)
     }
+  }
+
+  /**
+   * 确认后从被拦下的那一步续跑。
+   *
+   * 不从头再来：前面几步已经在页面上留下状态，重放等于执行两次。
+   * 闸门在预扫描阶段拦下时 executed 是 0，续跑点就是第一步风险动作，
+   * 和运行中拦下的情况共用同一条路径。
+   */
+  async function confirmRun() {
+    const pending = pendingRun
+    setPendingRun(null)
+    if (!pending || !pending.failedAt) return
+    await run({ confirmed: true, startAt: pending.failedAt })
   }
 
   /* ────────────────────────────── 从任务导入 ────────────────────────────── */
@@ -806,6 +835,29 @@ export function ScriptPanel({ profiles }: PanelProps) {
         }
       >
         当前脚本的改动还没有保存，切换后这些改动会丢失。
+      </Modal>
+
+      <Modal
+        open={pendingRun !== null}
+        title="这段回放含不可逆步骤"
+        icon="alert"
+        onClose={() => setPendingRun(null)}
+        footer={
+          <>
+            <Button onClick={() => setPendingRun(null)}>取消</Button>
+            <Button variant="danger" onClick={() => void confirmRun()}>
+              确认并继续
+            </Button>
+          </>
+        }
+      >
+        <p>{pendingRun?.error}</p>
+        <p>
+          {pendingRun && pendingRun.executed > 0
+            ? `前 ${pendingRun.executed} 步已经执行，确认后从第 ${pendingRun.failedAt} 步继续，不会重放前面的步骤。`
+            : `确认后从第 ${pendingRun?.failedAt ?? 1} 步开始执行。`}
+        </p>
+        <p>取消则页面停在当前状态，脚本不会自动回滚。</p>
       </Modal>
 
       <Modal

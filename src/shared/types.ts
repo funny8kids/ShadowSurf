@@ -302,6 +302,13 @@ export interface ScriptRunResult {
   total: number
   failedAt?: number
   error?: string
+  /**
+   * 回放停在某一步等人工确认。
+   *
+   * 和普通失败的区别是「再跑一次就好」：带上 `confirmed: true` 和
+   * `startAt: failedAt` 重发，会从停下的那一步续跑，不重放已经执行过的步骤。
+   */
+  needsConfirm?: boolean
 }
 
 /* ────────────────────────────── 审计日志 ────────────────────────────── */

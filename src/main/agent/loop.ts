@@ -155,11 +155,10 @@ export async function runAgent(
       const target = action.id
         ? snapshot.elements.find((el) => el.id === action.id)
         : undefined
-      const verdict = assessRisk(
-        action,
-        req.intent,
-        [target?.name ?? '', thought].filter((v) => v.length > 0).join(' ')
-      )
+      // 单独取出来：执行器要用**同一份**语义重算，两份 extra 不一致会让
+      // 闸门判 L1、执行器判 L2，凭空多出一次「未授权」异常。
+      const semantic = [target?.name ?? '', thought].filter((v) => v.length > 0).join(' ')
+      const verdict = assessRisk(action, req.intent, semantic)
       if (verdict.level === 'L2') {
         deps.emit({ type: 'need-confirm', reason: verdict.reason, action, stepIndex })
         const approved = await deps.askConfirm(verdict.reason, action, stepIndex)
@@ -196,7 +195,15 @@ export async function runAgent(
 
       let outcome: ActionResult
       try {
-        outcome = await executeAction(cdp, action, snapshot)
+        outcome = await executeAction(cdp, action, snapshot, {
+          // 只有闸门真的拦过、用户真的点了「允许」，才算拿到 user 授权。
+          // L1（含「只读意图降级」）不预支授权：那种情况下执行器用同一份 intent
+          // 重算出来也是 L1，根本不会走到这条判断上；万一哪天两份结论不一致，
+          // 这里传 'none' 会让执行器抛错，把不一致暴露出来而不是悄悄放行。
+          approvedBy: verdict.level === 'L2' ? 'user' : 'none',
+          intent: req.intent,
+          extra: semantic
+        })
       } catch (err) {
         // 执行器抛错（元素消失、CDP 断开）不该毁掉整个任务：
         // 记成 failed，下一轮快照会看到真实页面状态。
