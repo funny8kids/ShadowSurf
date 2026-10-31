@@ -15,10 +15,30 @@
  */
 
 const { app, BrowserWindow } = require('electron')
-const { readFileSync } = require('node:fs')
+const { readFileSync, writeFileSync, mkdirSync } = require('node:fs')
 const { resolve } = require('node:path')
 
 const SRC_FILE = resolve(__dirname, '../artifacts/injection-windows.js')
+const PAGE_FILE = resolve(__dirname, '../artifacts/probe-page.html')
+
+/**
+ * 探针页面必须跑在**安全上下文**里。
+ *
+ * 一开始用的是 `data:text/html,...`，结果 `Navigator.prototype.gpu` 查不到 ——
+ * 因为 WebGPU 的 IDL 属性带 `[SecureContext]`，data: URL 不算安全上下文。
+ * 换成 file://（被当作 potentially trustworthy）才和真实 https 页面的能力面对齐，
+ * 否则台账自检会报一堆假阳性，把真的死条目淹掉。
+ */
+function writeProbePage() {
+  mkdirSync(resolve(__dirname, '../artifacts'), { recursive: true })
+  writeFileSync(
+    PAGE_FILE,
+    '<!doctype html><html><head><meta charset="utf-8"><title>probe</title></head>' +
+      '<body><div id="app">probe</div></body></html>',
+    'utf8'
+  )
+  return 'file:///' + PAGE_FILE.replace(/\\/g, '/')
+}
 
 /** 每条探针都是「读一个值」，避免写成「看起来对」 */
 const PROBES = [
@@ -148,7 +168,8 @@ app.whenReady().then(async () => {
 
   const win = new BrowserWindow({ show: false, width: 800, height: 600 })
   const wc = win.webContents
-  await wc.loadURL('data:text/html,<!doctype html><title>probe</title><body>probe</body>')
+  const pageUrl = writeProbePage()
+  await wc.loadURL(pageUrl)
 
   wc.debugger.attach('1.3')
   await wc.debugger.sendCommand('Page.enable')
@@ -163,7 +184,8 @@ app.whenReady().then(async () => {
     const beforeHooks = await evaluate(wc, byId('enumerable-hooks').expr)
 
     await wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: src })
-    await wc.loadURL('data:text/html,<!doctype html><title>probe</title><body>probe</body>')
+    // 重新加载同一个页面，让新文档注入生效
+    await wc.loadURL(pageUrl)
 
     for (const p of PROBES) {
       const actual = await evaluate(wc, p.expr)
@@ -171,6 +193,16 @@ app.whenReady().then(async () => {
       rows.push({ id: p.id, expect: p.expect, actual, pass })
       if (!pass) failures.push(p.id)
     }
+
+    // 台账自检：每一条 _maskAll / _maskAt 登记的属性，必须真的是那个对象的 own property。
+    //
+    // 为什么需要：`_maskAt` 拿不到描述符就 `return`，而且整段套在 try/catch 里 ——
+    // 登记一个不存在的属性（比如把 EventTarget 的 addEventListener 写进
+    // RTCPeerConnection.prototype 的列表）**完全没有任何症状**：
+    // 不报错、不影响功能、探针也照样绿，但那一处其实从来没被伪装过。
+    const misses = await checkMaskInventory(wc, src)
+    rows.push({ id: 'mask-inventory', expect: [], actual: misses, pass: misses.length === 0 })
+    if (misses.length > 0) failures.push('mask-inventory')
 
     console.log('\n注入前基线：')
     console.log(`  getter.toString()      = ${before}`)
@@ -206,4 +238,44 @@ async function evaluate(wc, expression) {
     return `<throw> ${text}`
   }
   return res.result.value
+}
+
+/**
+ * 从生成的注入脚本里抽出所有 _maskAll / _maskAt 的登记项，
+ * 逐个回到页面里确认「那个属性真的存在于那个对象上」。
+ *
+ * 返回缺失清单；空数组表示台账里没有死条目。
+ */
+async function checkMaskInventory(wc, src) {
+  const entries = []
+
+  // _maskAll(OWNER, ["a", "b", ...])，列表可能跨多行
+  for (const m of src.matchAll(/_maskAll\(\s*([^,]+?)\s*,\s*\[([\s\S]*?)\]\s*\)/g)) {
+    const owner = m[1].trim()
+    for (const n of m[2].matchAll(/"([^"]+)"/g)) {
+      entries.push({ owner, prop: n[1] })
+    }
+  }
+
+  // _maskAt(OWNER, "prop", "name")
+  for (const m of src.matchAll(/_maskAt\(\s*([^,]+?)\s*,\s*"([^"]+)"/g)) {
+    entries.push({ owner: m[1].trim(), prop: m[2] })
+  }
+
+  const misses = []
+  for (const e of entries) {
+    // 用 getOwnPropertyDescriptor 而不是 `in`：后者会沿原型链，
+    // 而 _maskAt 只读 own property，沿原型链能查到也算「登记了但不生效」
+    const expr = `(function () {
+      try {
+        var o = ${e.owner};
+        if (!o) { return 'owner-missing'; }
+        return Object.getOwnPropertyDescriptor(o, ${JSON.stringify(e.prop)}) ? 'ok' : 'prop-missing';
+      } catch (err) { return 'throw'; }
+    })()`
+    const r = await evaluate(wc, expr)
+    if (r !== 'ok') misses.push(`${e.owner}.${e.prop} → ${r}`)
+  }
+
+  return misses
 }

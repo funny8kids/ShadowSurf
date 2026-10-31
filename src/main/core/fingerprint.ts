@@ -391,12 +391,12 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   // 原生是 `Intl.DateTimeFormat.prototype.constructor === Intl.DateTimeFormat`。
   // 只把 prototype 指过去、不修 constructor，读一次就发现指向的是被我们藏起来的
   // 那个原生构造器 —— 而且它是全页共享的，不修等于把「原版」留了个把手。
-  L.push('      try {')
-  L.push('        Object.defineProperty(_DTF.prototype, "constructor", { value: _Patched, configurable: true, writable: true });')
+  L.push('      try { Object.defineProperty(_DTF.prototype, "constructor", { value: _Patched, configurable: true, writable: true }); } catch (e) {}')
   // 原生构造器的 prototype 是 writable:false / configurable:false。
   // 赋值语句造出来的描述符是 writable:true / configurable:true —— 一行就能查出来。
-  L.push('        Object.defineProperty(_Patched, "prototype", { writable: false, enumerable: false, configurable: false });')
-  L.push('      } catch (e) {}')
+  // 必须**单独一个 try**：和上面那句共用一个 try 的话，constructor 那步一旦抛错，
+  // 这步就被跳过，而 catch 吞掉异常 —— 结果就是「悄悄没锁上」，探针也看不出来。
+  L.push('      try { Object.defineProperty(_Patched, "prototype", { writable: false, enumerable: false, configurable: false }); } catch (e) {}')
   // 包装函数的 name 默认取变量名 —— 直接把 `_Patched` 这个名字送给了检测脚本。
   // 实测 `Intl.DateTimeFormat.name === "_Patched"`、`RTCPeerConnection.name === "_PC"`，
   // 等于把「这里被 hook 过」和「hook 变量的命名习惯」一起交出去。
@@ -963,7 +963,10 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('      if (window.RTCPeerConnection) {')
   // 构造器必须保留 prototype，方法必须去掉 —— keepProto 只在构造器这里为 true
   L.push('        _maskOne(window.RTCPeerConnection, "RTCPeerConnection");')
-  L.push('        _maskAll(window.RTCPeerConnection.prototype, ["createDataChannel", "createOffer", "addEventListener"]);')
+  // 注意：addEventListener 不在这里。它是 EventTarget.prototype 的成员，
+  // 不是 RTCPeerConnection.prototype 的 own property —— 写进来 _maskAt 读不到描述符、
+  // 直接 return，属于「登记了但永远不生效」的死条目。实例级的那层在 _guard 里单独处理。
+  L.push('        _maskAll(window.RTCPeerConnection.prototype, ["createDataChannel", "createOffer"]);')
   L.push('      }')
   L.push('      if (window.Intl) {')
   L.push('        _maskOne(Intl.DateTimeFormat, "DateTimeFormat");')
