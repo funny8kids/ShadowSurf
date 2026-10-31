@@ -22,6 +22,7 @@ import type {
 import type { Settings, TaskRecord } from '@shared/types'
 
 import { captureSnapshot } from '@main/agent/snapshot'
+import type { Approval } from '@main/agent/actions'
 import { describeAction, executeAction } from '@main/agent/actions'
 import { assessRisk } from '@main/agent/risk'
 import { chat, parseJSONLoose, type ChatMessage } from '@main/agent/llm'
@@ -159,6 +160,11 @@ export async function runAgent(
       // 闸门判 L1、执行器判 L2，凭空多出一次「未授权」异常。
       const semantic = [target?.name ?? '', thought].filter((v) => v.length > 0).join(' ')
       const verdict = assessRisk(action, req.intent, semantic)
+      // 授权默认没有。只有 askConfirm 真的返回 true 才升级 ——
+      // 这里刻意不写成 `verdict.level === 'L2' ? 'user' : 'none'`：
+      // 那等于把「我判定这是 L2」当成「用户批准过」，用结论代替证据。
+      // 现在这句话与「谁真的点了按钮」一一对应，删掉确认分支也骗不过去。
+      let approvedBy: Approval['approvedBy'] = 'none'
       if (verdict.level === 'L2') {
         deps.emit({ type: 'need-confirm', reason: verdict.reason, action, stepIndex })
         const approved = await deps.askConfirm(verdict.reason, action, stepIndex)
@@ -179,6 +185,7 @@ export async function runAgent(
           deps.emit({ type: 'step', step: { ...rejected } })
           continue
         }
+        approvedBy = 'user'
       }
 
       // ── act ─────────────────────────────────────────────────
@@ -196,11 +203,11 @@ export async function runAgent(
       let outcome: ActionResult
       try {
         outcome = await executeAction(cdp, action, snapshot, {
-          // 只有闸门真的拦过、用户真的点了「允许」，才算拿到 user 授权。
-          // L1（含「只读意图降级」）不预支授权：那种情况下执行器用同一份 intent
-          // 重算出来也是 L1，根本不会走到这条判断上；万一哪天两份结论不一致，
-          // 这里传 'none' 会让执行器抛错，把不一致暴露出来而不是悄悄放行。
-          approvedBy: verdict.level === 'L2' ? 'user' : 'none',
+          // 只有 askConfirm 真的返回 true 才会是 'user'。L1（含只读意图降级）
+          // 不预支授权：那种情况下执行器用同一份 intent 重算出来也是 L1，
+          // 根本走不到判断上；万一两份结论不一致，'none' 会让执行器抛错，
+          // 把不一致暴露出来而不是悄悄放行。
+          approvedBy,
           intent: req.intent,
           extra: semantic
         })
