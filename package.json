@@ -16,8 +16,8 @@
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "verify:injection": "node tools/check-injection.mjs && node tools/run-electron.mjs tools/probe-mask.cjs",
     "verify:gate": "node tools/probe-gate.mjs",
-    "verify:anticheat": "node tools/verify-anticheat.mjs",
-    "verify:anticheat:nightly": "node tools/verify-anticheat.mjs --nightly",
+    "verify:anticheat": "node tools/check-build-fresh.mjs && node tools/verify-anticheat.mjs",
+    "verify:anticheat:nightly": "node tools/check-build-fresh.mjs && node tools/verify-anticheat.mjs --nightly",
     "check": "npm run typecheck && npm run test"
   },
   "dependencies": {
