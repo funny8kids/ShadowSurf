@@ -25,6 +25,10 @@ interface RiskRule {
 const RULES: RiskRule[] = [
   {
     category: 'pay',
+    // 左边界**故意不加**。我一度改成 `\bpay\b` 想修「Repay 被匹配成 pay」，
+    // 那是错的：Repay（还款）/ Prepay（预付）/ Postpay（后付）本身就是支付动作，
+    // 加了左边界它们会掉成 L1 自动执行 —— 用「诊断文案不精确」换「漏判扣款」。
+    // 真正的缺陷只是 matched 报的是 "pay" 而不是 "Repay"，属显示问题，分级是对的。
     re: /支付|付款|付钱|转账|汇款|充值|打款|确认支付|立即支付|pay\b|payment|checkout|purchase|transfer|buy\s*now|place\s*order|confirm\s*pay/i,
     reason: '这一步会发起支付并产生扣款，确认后才会执行'
   },
@@ -51,7 +55,7 @@ const RULES: RiskRule[] = [
   {
     category: 'send',
     // 「发送」= 消息已经送达对方、撤不回来。私信、群发、推送、通知都属此类。
-    re: /发送|群发|推送|发消息|发私信|发送给|broadcast|notify|send\b/i,
+    re: /发送|群发|推送|发消息|发私信|发送给|转发|broadcast|notify|send\b|\bforward\b/i,
     reason: '这一步会把内容发送给对方且无法撤回，确认后才会执行'
   },
   {
@@ -64,7 +68,22 @@ const RULES: RiskRule[] = [
   }
 ]
 
-/** 意图里出现这些词，说明用户只想看/取，不想要副作用 → L2 降 L1 */
+/**
+ * 可逆的「清除」类动作。
+ *
+ * 「清空筛选」「移除筛选条件」命中的是 delete 规则里的「清空 / 移除」，
+ * 但它只影响当前视图，不删任何数据 —— 每次都弹确认会把闸门变成噪音，
+ * 而噪音化的闸门等于没有闸门：用户会条件反射地点「允许」。
+ *
+ * 要求动词后面**紧跟**筛选类宾语，所以「清空购物车」「移除成员」「取消订单」
+ * 都不会命中。
+ */
+const REVERSIBLE_CLEAR =
+  /(清空|清除|重置|移除|取消|关闭)\s*(筛选|过滤|条件|搜索|筛选器|过滤条件|筛选条件|搜索条件)|(clear|reset)\s+(filter|filters|search)/i
+
+/**
+ * 意图里出现这些词，说明用户只想看/取，不想要副作用 → L2 降 L1
+ */
 const READ_ONLY_HINTS = [
   '收集',
   '采集',
@@ -79,8 +98,44 @@ const READ_ONLY_HINTS = [
   '整理'
 ]
 
+/**
+ * 意图里的「写」信号。出现任意一个，就不再认为这是纯只读任务。
+ *
+ * 这是安全官在 A14 评审时点出来的洞：「清空搜索框，然后搜索」这种意图里
+ * 含「清空」二字，命中 delete 规则；而意图又含「搜索」（只读提示词）——
+ * 于是 delete 被降级成 L1 自动执行。用户本意是清空搜索框，模型却可能清掉别的东西。
+ *
+ * 只读豁免的前提应该是**意图里没有任何写动作**，而不是「碰巧含某个只读动词」。
+ */
+const WRITE_HINTS = [
+  '清空',
+  '清除',
+  '删除',
+  '移除',
+  '提交',
+  '保存',
+  '发送',
+  '发布',
+  '下单',
+  '购买',
+  '支付',
+  '付款',
+  '填写',
+  '填入',
+  '输入',
+  '点击',
+  '勾选',
+  '选择',
+  '上传',
+  '下载'
+]
+
 function hitReadOnlyIntent(intent: string): string | undefined {
-  return READ_ONLY_HINTS.find((w) => intent.includes(w))
+  const hit = READ_ONLY_HINTS.find((w) => intent.includes(w))
+  if (!hit) return undefined
+  // 意图里同时出现写信号 → 不算纯只读
+  const write = WRITE_HINTS.find((w) => intent.includes(w))
+  return write ? undefined : hit
 }
 
 /** 把动作里所有可能承载语义的字段拼成一串，统一扫描 */
@@ -153,6 +208,12 @@ export function assessRisk(action: Action, intent: string, extra = ''): RiskVerd
   for (const rule of RULES) {
     const m = rule.re.exec(hay)
     if (!m) {
+      continue
+    }
+    // 「清空筛选」这类只豁免 delete 这一条，不能整体短路 ——
+    // 否则「清空筛选并支付」会在 delete 处直接返回 L1，把扣款放过去。
+    // 跳过 delete 后仍会继续走 publish / send / submit，都没命中才落到 L1。
+    if (rule.category === 'delete' && REVERSIBLE_CLEAR.test(hay)) {
       continue
     }
     const matched = m[0]

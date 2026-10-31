@@ -333,6 +333,58 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('      return fn;')
   L.push('    };')
 
+  /* 原生 arity 是**外部事实**，一旦我们把函数换掉就再也推导不出来。
+     必须在任何 patch 发生之前拍快照 —— 收口时再去读 `d.value.length`，
+     读到的是我们自己写的包装的形参个数，那是「假修」：
+     `HTMLCanvasElement.prototype.toBlob` 原生是 1 参，我们的包装写成 0 参，
+     快照拿到的就是 0，于是这条断言永远是绿的、而页面看到的值是错的。
+     这里同时是 _maskAll 的唯一数据源，避免「快照表」和「登记表」漂移。 */
+  L.push('    var _arity = [];')
+  L.push('    var _snapAll = function (obj, names) {')
+  L.push('      if (!obj) { return; }')
+  L.push('      for (var i = 0; i < names.length; i++) {')
+  L.push('        try {')
+  L.push('          var d = Object.getOwnPropertyDescriptor(obj, names[i]);')
+  L.push('          if (d && typeof d.value === "function") { _arity.push([obj, names[i], d.value.length]); }')
+  L.push('        } catch (e) {}')
+  L.push('      }')
+  L.push('    };')
+  L.push('    var _arityOf = function (obj, prop) {')
+  L.push('      for (var i = 0; i < _arity.length; i++) {')
+  L.push('        if (_arity[i][0] === obj && _arity[i][1] === prop) { return _arity[i][2]; }')
+  L.push('      }')
+  L.push('      return undefined;')
+  L.push('    };')
+  L.push('')
+  L.push('    // [宿主对象, 属性名列表] —— 快照与登记共用这一张表')
+  L.push('    var _MASK_TABLE = [')
+  L.push('      [Navigator.prototype, ["userAgent", "appVersion", "platform", "vendor",')
+  L.push('        "hardwareConcurrency", "deviceMemory", "language", "languages", "webdriver",')
+  L.push('        "pdfViewerEnabled", "plugins", "mimeTypes", "maxTouchPoints", "gpu"]],')
+  L.push('      [Screen.prototype, ["width", "height", "availWidth", "availHeight", "colorDepth", "pixelDepth"]],')
+  L.push('      [window, ["devicePixelRatio"]],')
+  L.push('      [Date.prototype, ["getTimezoneOffset", "toTimeString", "toDateString", "toString",')
+  L.push('        "toLocaleString", "toLocaleDateString", "toLocaleTimeString", "getFullYear", "getMonth",')
+  L.push('        "getDate", "getDay", "getHours", "getMinutes", "getSeconds"]],')
+  L.push('      [Element.prototype, ["getBoundingClientRect", "getClientRects"]],')
+  L.push('      [window.AudioBuffer && AudioBuffer.prototype, ["getChannelData"]],')
+  L.push('      [window.CanvasRenderingContext2D && CanvasRenderingContext2D.prototype, ["measureText", "getImageData"]],')
+  L.push('      [window.HTMLCanvasElement && HTMLCanvasElement.prototype, ["toDataURL", "toBlob"]],')
+  L.push('      [window.WebGLRenderingContext && WebGLRenderingContext.prototype, ["getParameter"]],')
+  L.push('      [window.WebGL2RenderingContext && WebGL2RenderingContext.prototype, ["getParameter"]],')
+  L.push('      [window.Geolocation && Geolocation.prototype, ["getCurrentPosition", "watchPosition"]],')
+  L.push('      [window.AnalyserNode && AnalyserNode.prototype, ["getFloatFrequencyData"]],')
+  // RTCPeerConnection 在脚本后段会被换成 _PC，但 _PC.prototype === RTC.prototype，
+  // 所以这里用 window.RTCPeerConnection.prototype 在两个时刻指向同一个对象
+  L.push('      [window.RTCPeerConnection && window.RTCPeerConnection.prototype,')
+  L.push('        ["createDataChannel", "createOffer", "createAnswer", "setLocalDescription", "addIceCandidate"]]')
+  L.push('    ];')
+  L.push('    for (var _ti = 0; _ti < _MASK_TABLE.length; _ti++) {')
+  L.push('      _snapAll(_MASK_TABLE[_ti][0], _MASK_TABLE[_ti][1]);')
+  L.push('    }')
+  L.push('    _snapAll(document.fonts, ["check"]);')
+  L.push('    _snapAll(window.speechSynthesis, ["getVoices"]);')
+
   /* navigator */
   L.push('')
   L.push('    try {')
@@ -667,21 +719,16 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('      var RTC = window.RTCPeerConnection || window.webkitRTCPeerConnection;')
   L.push('      if (RTC && RTC.prototype) {')
   L.push("        if (C.webrtc === 'disabled') {")
-  L.push('          var _deny = function () {')
-  L.push("            throw new Error('RTCPeerConnection is disabled by policy');")
-  L.push('          };')
-  // 只挡 createOffer / createDataChannel 只等于「禁止主动发起」。
-  // 被动应答这条路完全不经过这两个方法：
-  //   new RTCPeerConnection() → setRemoteDescription(offer) → createAnswer()
-  //   → setLocalDescription(answer) ← 这一步才真正触发 ICE 收集
-  // 远端一个 offer 发过来就能建连、就能收候选，而用户选的是「禁用 WebRTC」。
-  // 三个入口都得堵：createAnswer（生成应答）、setLocalDescription（触发收集）、
-  // addIceCandidate（接受对端候选）。
-  L.push('          RTC.prototype.createDataChannel = _deny;')
-  L.push('          RTC.prototype.createOffer = _deny;')
-  L.push('          RTC.prototype.createAnswer = _deny;')
-  L.push('          RTC.prototype.setLocalDescription = _deny;')
-  L.push('          RTC.prototype.addIceCandidate = _deny;')
+  // 「禁用 WebRTC」最原生的形态就是**接口根本不存在** —— Chromium 在
+  // WebRTC 被策略关掉时就是把这个接口从全局摘掉，而不是留一个会抛错的桩。
+  // 早先的做法是保留构造器、把 createOffer/createAnswer 等换成抛错函数：
+  // 那既不像原生（原生禁用时没有这个全局），又留下一整组被 patch 过的方法
+  // 需要逐个伪装。直接删掉，检测面归零。
+  L.push('          var _RTC_KEYS = ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel",')
+  L.push('            "RTCSessionDescription", "RTCIceCandidate", "RTCIceTransport", "RTCDtlsTransport"];')
+  L.push('          for (var _ri = 0; _ri < _RTC_KEYS.length; _ri++) {')
+  L.push('            try { delete window[_RTC_KEYS[_ri]]; } catch (e) {}')
+  L.push('          }')
   L.push("        } else if (C.webrtc === 'proxy') {")
   L.push('          var _priv = function (ip) {')
   L.push("            if (!ip || /\.local$/i.test(ip)) { return true; }")
@@ -940,7 +987,9 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('                configurable: d.configurable, enumerable: d.enumerable, writable: d.writable, value: f')
   L.push('              });')
   L.push('            }')
-  L.push('            _maskOne(f, nm);')
+  L.push('            // 长度取**patch 前**拍的原生快照。收口时读 d.value.length 是假修：')
+  L.push('            // 那一刻 d.value 已经是我们的包装了，读到的是包装的形参个数。')
+  L.push('            _maskOne(f, nm, _arityOf(obj, prop));')
   L.push('          }')
   L.push('        } catch (e) {}')
   L.push('      };')
@@ -948,35 +997,16 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('        for (var i = 0; i < names.length; i++) { _maskAt(obj, names[i], names[i], keepProto); }')
   L.push('      };')
   L.push('')
-  L.push('      _maskAll(Navigator.prototype, ["userAgent", "appVersion", "platform", "vendor",')
-  L.push('        "hardwareConcurrency", "deviceMemory", "language", "languages", "webdriver",')
-  L.push('        "pdfViewerEnabled", "plugins", "mimeTypes", "maxTouchPoints", "gpu"]);')
-  L.push('      _maskAll(Screen.prototype, ["width", "height", "availWidth", "availHeight", "colorDepth", "pixelDepth"]);')
-  L.push('      _maskAll(window, ["devicePixelRatio"]);')
-  L.push('      _maskAll(Date.prototype, ["getTimezoneOffset", "toTimeString", "toDateString", "toString",')
-  L.push('        "toLocaleString", "toLocaleDateString", "toLocaleTimeString", "getFullYear", "getMonth",')
-  L.push('        "getDate", "getDay", "getHours", "getMinutes", "getSeconds"]);')
-  L.push('      _maskAll(Element.prototype, ["getBoundingClientRect", "getClientRects"]);')
-  L.push('      if (window.AudioBuffer) { _maskAll(AudioBuffer.prototype, ["getChannelData"]); }')
-  L.push('      if (window.CanvasRenderingContext2D) {')
-  L.push('        _maskAll(CanvasRenderingContext2D.prototype, ["measureText", "getImageData"]);')
+  // 登记直接遍历顶部那张 _MASK_TABLE，不再另抄一份列表 ——
+  // 两份列表必然漂移，而漂移的结果是「某一处静默没登记」，正是这一轮反复踩的坑
+  L.push('      for (var _mi = 0; _mi < _MASK_TABLE.length; _mi++) {')
+  L.push('        _maskAll(_MASK_TABLE[_mi][0], _MASK_TABLE[_mi][1]);')
   L.push('      }')
-  L.push('      if (window.HTMLCanvasElement) { _maskAll(HTMLCanvasElement.prototype, ["toDataURL", "toBlob"]); }')
-  L.push('      if (window.WebGLRenderingContext) { _maskAll(WebGLRenderingContext.prototype, ["getParameter"]); }')
-  L.push('      if (window.WebGL2RenderingContext) { _maskAll(WebGL2RenderingContext.prototype, ["getParameter"]); }')
-  L.push('      if (document.fonts) { _maskAt(document.fonts, "check", "check"); }')
-  L.push('      if (window.speechSynthesis) { _maskAt(speechSynthesis, "getVoices", "getVoices"); }')
-  // 这三组是中途 patch 的，早期版本的台账声明在末尾，它们根本登记不上，
-  // 于是 toString() 直接吐出 `function (ok) { _reply(ok); }` 这种源码
-  L.push('      if (window.Geolocation) { _maskAll(Geolocation.prototype, ["getCurrentPosition", "watchPosition"]); }')
-  L.push('      if (window.AnalyserNode) { _maskAll(AnalyserNode.prototype, ["getFloatFrequencyData"]); }')
+  L.push('      _maskAt(document.fonts, "check", "check");')
+  L.push('      _maskAt(window.speechSynthesis, "getVoices", "getVoices");')
   L.push('      if (window.RTCPeerConnection) {')
   // 构造器必须保留 prototype，方法必须去掉 —— keepProto 只在构造器这里为 true
   L.push('        _maskOne(window.RTCPeerConnection, "RTCPeerConnection");')
-  // 注意：addEventListener 不在这里。它是 EventTarget.prototype 的成员，
-  // 不是 RTCPeerConnection.prototype 的 own property —— 写进来 _maskAt 读不到描述符、
-  // 直接 return，属于「登记了但永远不生效」的死条目。实例级的那层在 _guard 里单独处理。
-  L.push('        _maskAll(window.RTCPeerConnection.prototype, ["createDataChannel", "createOffer", "createAnswer", "setLocalDescription", "addIceCandidate"]);')
   L.push('      }')
   L.push('      if (window.Intl) {')
   L.push('        _maskOne(Intl.DateTimeFormat, "DateTimeFormat");')

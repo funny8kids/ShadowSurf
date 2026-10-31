@@ -183,6 +183,10 @@ app.whenReady().then(async () => {
     const before = await evaluate(wc, byId('getter-toString').expr)
     const beforeHooks = await evaluate(wc, byId('enumerable-hooks').expr)
 
+    // 原生 arity 基线 —— 必须在注入前拍，之后再也拿不到
+    const tableLit = extractMaskTable(src)
+    const beforeArity = tableLit ? await evaluate(wc, arityExpr(tableLit)) : []
+
     await wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: src })
     // 重新加载同一个页面，让新文档注入生效
     await wc.loadURL(pageUrl)
@@ -194,15 +198,25 @@ app.whenReady().then(async () => {
       if (!pass) failures.push(p.id)
     }
 
-    // 台账自检：每一条 _maskAll / _maskAt 登记的属性，必须真的是那个对象的 own property。
-    //
-    // 为什么需要：`_maskAt` 拿不到描述符就 `return`，而且整段套在 try/catch 里 ——
-    // 登记一个不存在的属性（比如把 EventTarget 的 addEventListener 写进
-    // RTCPeerConnection.prototype 的列表）**完全没有任何症状**：
-    // 不报错、不影响功能、探针也照样绿，但那一处其实从来没被伪装过。
-    const misses = await checkMaskInventory(wc, src)
-    rows.push({ id: 'mask-inventory', expect: [], actual: misses, pass: misses.length === 0 })
-    if (misses.length > 0) failures.push('mask-inventory')
+    // 台账自检 + arity 比对
+    if (!tableLit) {
+      rows.push({ id: 'mask-inventory', expect: [], actual: '<找不到 _MASK_TABLE>', pass: false })
+      failures.push('mask-inventory')
+    } else {
+      const misses = await checkMaskInventory(wc, tableLit)
+      rows.push({ id: 'mask-inventory', expect: [], actual: misses, pass: misses.length === 0 })
+      if (misses.length > 0) failures.push('mask-inventory')
+
+      const afterArity = await evaluate(wc, arityExpr(tableLit))
+      const drift = []
+      for (let i = 0; i < beforeArity.length; i++) {
+        if (beforeArity[i] !== afterArity[i]) {
+          drift.push(`${beforeArity[i]} → ${afterArity[i]}`)
+        }
+      }
+      rows.push({ id: 'arity-preserved', expect: [], actual: drift, pass: drift.length === 0 })
+      if (drift.length > 0) failures.push('arity-preserved')
+    }
 
     console.log('\n注入前基线：')
     console.log(`  getter.toString()      = ${before}`)
@@ -241,41 +255,64 @@ async function evaluate(wc, expression) {
 }
 
 /**
- * 从生成的注入脚本里抽出所有 _maskAll / _maskAt 的登记项，
- * 逐个回到页面里确认「那个属性真的存在于那个对象上」。
+ * 从生成的注入脚本里抽出 _MASK_TABLE 的数组字面量。
  *
- * 返回缺失清单；空数组表示台账里没有死条目。
+ * 不在探针里另抄一份表：两份必然漂移，而漂移的结果正是「某处静默没被检查」。
  */
-async function checkMaskInventory(wc, src) {
-  const entries = []
+function extractMaskTable(src) {
+  const m = /_MASK_TABLE\s*=\s*(\[[\s\S]*?\n\s*\]);/.exec(src)
+  return m ? m[1] : null
+}
 
-  // _maskAll(OWNER, ["a", "b", ...])，列表可能跨多行
-  for (const m of src.matchAll(/_maskAll\(\s*([^,]+?)\s*,\s*\[([\s\S]*?)\]\s*\)/g)) {
-    const owner = m[1].trim()
-    for (const n of m[2].matchAll(/"([^"]+)"/g)) {
-      entries.push({ owner, prop: n[1] })
+/**
+ * 在页面里把 _MASK_TABLE 求值，输出「行号:属性名:length」的扁平列表。
+ *
+ * 用「patch 前的长度」做基线，patch 后对比 —— 这是唯一能证明
+ * 包装函数没有把原生 arity 改掉的证据。收口时读 d.value.length 是假修：
+ * 那一刻 d.value 已经是包装本身了。
+ */
+function arityExpr(lit) {
+  return `(function () {
+    var T = ${lit};
+    var out = [];
+    for (var i = 0; i < T.length; i++) {
+      var obj = T[i][0], names = T[i][1];
+      if (!obj) { continue; }
+      for (var n = 0; n < names.length; n++) {
+        var d = null;
+        try { d = Object.getOwnPropertyDescriptor(obj, names[n]); } catch (e) {}
+        if (!d || typeof d.value !== 'function') { continue; }
+        out.push(i + ':' + names[n] + ':' + d.value.length);
+      }
     }
-  }
+    return out;
+  })()`
+}
 
-  // _maskAt(OWNER, "prop", "name")
-  for (const m of src.matchAll(/_maskAt\(\s*([^,]+?)\s*,\s*"([^"]+)"/g)) {
-    entries.push({ owner: m[1].trim(), prop: m[2] })
-  }
-
-  const misses = []
-  for (const e of entries) {
-    // 用 getOwnPropertyDescriptor 而不是 `in`：后者会沿原型链，
-    // 而 _maskAt 只读 own property，沿原型链能查到也算「登记了但不生效」
-    const expr = `(function () {
-      try {
-        var o = ${e.owner};
-        if (!o) { return 'owner-missing'; }
-        return Object.getOwnPropertyDescriptor(o, ${JSON.stringify(e.prop)}) ? 'ok' : 'prop-missing';
-      } catch (err) { return 'throw'; }
+/**
+ * 台账自检：_MASK_TABLE 里每一条登记，必须真的是那个对象的 own property。
+ *
+ * 为什么需要：`_maskAt` 拿不到描述符就 `return`，而且整段套在 try/catch 里 ——
+ * 登记一个不存在的属性**完全没有任何症状**：不报错、不影响功能、探针也绿，
+ * 但那一处从来没被伪装过。用 getOwnPropertyDescriptor 而不是 `in`：
+ * 后者沿原型链，能查到也算「登记了但不生效」。
+ */
+async function checkMaskInventory(wc, lit) {
+  return evaluate(
+    wc,
+    `(function () {
+      var T = ${lit};
+      var miss = [];
+      for (var i = 0; i < T.length; i++) {
+        var obj = T[i][0], names = T[i][1];
+        if (!obj) { miss.push(i + ':owner-missing'); continue; }
+        for (var n = 0; n < names.length; n++) {
+          var d = null;
+          try { d = Object.getOwnPropertyDescriptor(obj, names[n]); } catch (e) {}
+          if (!d) { miss.push(i + '.' + names[n] + ':prop-missing'); }
+        }
+      }
+      return miss;
     })()`
-    const r = await evaluate(wc, expr)
-    if (r !== 'ok') misses.push(`${e.owner}.${e.prop} → ${r}`)
-  }
-
-  return misses
+  )
 }

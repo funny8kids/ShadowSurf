@@ -33,6 +33,9 @@ function walk(dir: string, out: string[] = []): string[] {
 const sources = (): string[] => walk(join(ROOT, 'src'))
 const rel = (file: string): string => relative(ROOT, file).replace(/\\/g, '/')
 const read = (file: string): string => readFileSync(join(ROOT, file), 'utf8')
+/** 去掉注释再匹配：说明「为什么不再用 data-ss-id」的注释不该被判成违规 */
+const stripComments = (text: string): string =>
+  text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1')
 
 /* ────────────────────────── 1. 闸门覆盖（债务） ────────────────────────── */
 
@@ -63,29 +66,35 @@ test(
 
 /* ────────────────────────── 2. 反检测面（债务） ────────────────────────── */
 
-test(
-  '元素编号不得写进主世界 DOM，且 __SS__ 不得挂主世界',
-  {
-    skip:
-      '当前 page-agent.ts:225 用 setAttribute(\'data-ss-id\') 把编号写进 DOM，:454 把 window.__SS__ 挂主世界。' +
-      '修复方式：编号改 isolated world 内的 WeakMap<Element,string>；脚本经 ' +
-      'Page.addScriptToEvaluateOnNewDocument({ worldName }) 注入，Runtime.evaluate 带 contextId。' +
-      '注意 isolated world 与主世界共享 DOM，只做 isolated world 不够，WeakMap 是必须的。'
-  },
-  () => {
-    const pageAgent = read('src/main/agent/page-agent.ts')
-    assert.ok(
-      !/setAttribute\(\s*['"]data-ss-id['"]/.test(pageAgent),
-      'page-agent.ts 仍把编号写进页面 DOM，任何页面脚本都能读写并篡改闸门输入'
-    )
+test('元素编号不得写进主世界 DOM，且 __SS__ 必须跑在 isolated world', () => {
+  const pageAgent = read('src/main/agent/page-agent.ts')
+  assert.ok(
+    !/setAttribute\(\s*['"]data-ss-id['"]/.test(pageAgent),
+    'page-agent.ts 仍把编号写进页面 DOM，任何页面脚本都能读写并篡改闸门输入'
+  )
 
-    const offenders = sources()
-      .filter((file) => !file.endsWith('page-agent.ts'))
-      .filter((file) => /window\.__SS__\s*=/.test(readFileSync(file, 'utf8')))
-      .map(rel)
-    assert.deepEqual(offenders, [], `__SS__ 只应存在于 page-agent.ts，但也在：${offenders.join(', ')}`)
-  }
-)
+  // 全仓库都不该再出现这个属性名 —— 换个属性名绕过等于没修
+  const attrLeak = sources()
+    .filter((file) => /data-ss-id/.test(stripComments(readFileSync(file, 'utf8'))))
+    .map(rel)
+  assert.deepEqual(attrLeak, [], `仍有文件在代码里使用 data-ss-id：${attrLeak.join(', ')}`)
+
+  const offenders = sources()
+    .filter((file) => !file.endsWith('page-agent.ts'))
+    .filter((file) => /window\.__SS__\s*=/.test(readFileSync(file, 'utf8')))
+    .map(rel)
+  assert.deepEqual(offenders, [], `__SS__ 只应存在于 page-agent.ts，但也在：${offenders.join(', ')}`)
+
+  // 只把脚本挪进函数不够：注入和求值两边都必须带 worldName，
+  // 少一边就会出现「写进隔离世界、却从主世界读」的诡异不一致
+  const snapshot = read('src/main/agent/snapshot.ts')
+  assert.ok(/const WORLD_NAME = '[^']+'/.test(snapshot), 'snapshot.ts 未定义 WORLD_NAME')
+  const worldHits = [...snapshot.matchAll(/worldName:\s*WORLD_NAME/g)].length
+  assert.ok(
+    worldHits >= 2,
+    `worldName 只出现 ${worldHits} 次；addScriptToEvaluateOnNewDocument 与 Runtime.evaluate 都必须带`
+  )
+})
 
 /* ────────────────────────── 2b. toString 伪装（债务，最高杠杆） ────────────────────────── */
 
@@ -100,31 +109,71 @@ test(
   }
 )
 
-test(
-  '包装器不得直接把 prototype 指向原生 prototype（构造器身份 + 闸门绕过同一根因）',
-  {
-    skip:
-      '当前 fingerprint.ts 有两处 `X.prototype = Native.prototype`：' +
-      '① `_PC.prototype = RTC.prototype`（:682）→ RTCPeerConnection.prototype.constructor 指回原生 RTC，' +
-      '页面 new (RTCPeerConnection.prototype.constructor)() 拿到未经 _guard 包装的实例，直接看到真实 host/srflx 候选；' +
-      '② `_Patched.prototype = _DTF.prototype`（:370）→ Intl.DateTimeFormat.prototype.constructor === _DTF（原生），' +
-      '而 Intl.DateTimeFormat === _Patched，自相矛盾，一次恒等比较即可判定被 hook。' +
-      '注意与 toString 无关：toString 伪装补救不了构造器身份泄漏。' +
-      '修复方式：改为 Object.create(Native.prototype, { constructor: { value: 包装器 } })，' +
-      '既让 .constructor 指向包装器，又保持 instanceof 成立；切勿直接改写共享的 Native.prototype.constructor。'
-  },
-  () => {
-    const fp = read('src/main/core/fingerprint.ts')
-    const offenders = [...fp.matchAll(/\b(\w+)\.prototype\s*=\s*(\w+)\.prototype/g)].map(
-      (m) => `${m[1]}.prototype = ${m[2]}.prototype`
-    )
-    assert.deepEqual(
-      offenders,
-      [],
-      `包装器直接复用了原生 prototype，导致 prototype.constructor 泄漏原生构造器：${offenders.join('、')}`
-    )
+/**
+ * 这条原来断言的是「不得出现 `X.prototype = Native.prototype`」。
+ * 实现方选了另一条同样成立的路线：保留复用，但紧跟一句
+ * `defineProperty(Native.prototype, "constructor", { value: 包装器 })`。
+ * 所以断言要跟着改成**不变量**（每处复用都得有对应修复），
+ * 而不是钉住某一种写法 —— 否则修好了测试还红，测试就从护栏变成噪音。
+ *
+ * 注意：结构断言只能看「有没有写那句话」，看不到「运行时是否真的指对了」。
+ * 后者由 tools/verify-anticheat.mjs 的 AC-08 在真实 Chromium 里验。
+ */
+test('复用原生 prototype 时必须把 constructor 指回包装器', () => {
+  const fp = read('src/main/core/fingerprint.ts')
+  const reused = [...fp.matchAll(/\b(\w+)\.prototype\s*=\s*(\w+)\.prototype/g)].length
+  const repaired = [...fp.matchAll(/Object\.defineProperty\(\s*\w+\.prototype,\s*"constructor"/g)].length
+  assert.ok(
+    repaired >= reused,
+    `有 ${reused} 处复用原生 prototype，但只有 ${repaired} 处修了 constructor —— ` +
+      '未修的那些会把原生构造器泄漏出去，页面一次 `new (X.prototype.constructor)()` 就绕过全部包装'
+  )
+})
+
+/**
+ * 覆盖性断言：比逐条断言更抗未来改动。
+ *
+ * 逐条断言只能证明「我想到的那几个是对的」，覆盖性断言能证明
+ * 「不存在我没想到的」。上一轮实际漏登记过 4 处（Geolocation 两个方法、
+ * AnalyserNode、RTCPeerConnection），逐条断言全部漏过，就是这条会抓到。
+ */
+test('每个被替换的原型方法都必须登记进伪装台账', () => {
+  const fp = read('src/main/core/fingerprint.ts')
+
+  // 别名表：var C2D = window.CanvasRenderingContext2D && CanvasRenderingContext2D.prototype
+  const alias = new Map<string, string>()
+  for (const m of fp.matchAll(/var\s+(\w+)\s*=\s*[^\n]*?\b(\w+)\.prototype\b/g)) alias.set(m[1], m[2])
+
+  // 被替换的原型成员：X.prototype.p = ... / ALIAS.p = ...
+  // 只认「绑定到某个 .prototype 的别名」，页面局部对象（out / pc / fonts）不算
+  const replaced = new Set<string>()
+  for (const m of fp.matchAll(/\w+\.prototype\.(\w+)\s*=\s*(?:function|_)/g)) replaced.add(m[1])
+  for (const m of fp.matchAll(/\b(\w+)\.(\w+)\s*=\s*(?:function|_)/g)) {
+    if (alias.has(m[1])) replaced.add(m[2])
   }
-)
+
+  // 台账：_MASK_TABLE 里的名字数组 + _maskAt / _maskOne 的字符串参数。
+  // 台账已从「逐个 _maskAll 调用」收敛成一张 _MASK_TABLE 表（快照与登记共用），
+  // 所以这里要按表解析 —— 否则登记全在表里、断言却还在找逐个调用，会误报全红。
+  const registered = new Set<string>()
+  for (const m of fp.matchAll(/_MASK_TABLE[\s\S]*?\n  L\.push\('    \];'\)/g)) {
+    for (const s of m[0].matchAll(/"([^"]+)"/g)) registered.add(s[1])
+  }
+  for (const m of fp.matchAll(/_maskAll\([^,]+,\s*\[([\s\S]*?)\]/g)) {
+    for (const s of m[1].matchAll(/"([^"]+)"/g)) registered.add(s[1])
+  }
+  for (const m of fp.matchAll(/_maskAt\([^,]+,\s*"([^"]+)"/g)) registered.add(m[1])
+  for (const m of fp.matchAll(/_maskOne\([^,]+,\s*"([^"]+)"/g)) registered.add(m[1])
+
+  assert.ok(replaced.size > 10, `只解析出 ${replaced.size} 个替换点，正则可能已失效`)
+
+  const missing = [...replaced].filter((p) => !registered.has(p)).sort()
+  assert.deepEqual(
+    missing,
+    [],
+    `这些成员被替换了但没登记进台账，toString() 会吐出真实源码：${missing.join(', ')}`
+  )
+})
 
 test('伪装台账 _masked / _fakeSrc / _maskOne 只能声明一次', () => {
   // 曾经踩过：顶部新增了一份声明、底部遗留一份没删。
@@ -225,5 +274,58 @@ test(
       .sort()
 
     assert.deepEqual(implSet, specSet, '实现与 openapi 契约的动作类型不一致')
+  }
+)
+
+/* ────────────────── 7. 降级路径的输入来源（安全轴） ────────────────── */
+
+/**
+ * 这一轮定死了一条轴：**抬风险可以吃页面文本，降风险只能吃用户输入。**
+ *
+ * 起因是一个被否掉的压噪方案——「元素 role 是 menuitem/link 且位于导航区时，
+ * 把『退出登录』降为 L1」。role 和位置都是页面自己写的，而 account 在
+ * NEVER_DOWNGRADE 里，等于给页面一个**确定性的降级开关**：
+ * 把按钮塞进 <nav>、role 设成 menuitem，一个本该永不可降级的账号动作就自动执行了。
+ *
+ * 不加语境判断时页面无法影响判定；加了反而把开关交出去。所以这里钉住的是
+ * 「降级函数的实参只能是 intent」，而不是某个具体规则的写法。
+ */
+test('降级判断只允许吃用户意图，不得吃页面可控输入', () => {
+  const risk = read('src/main/agent/risk.ts')
+  // 排除函数声明本身（形参是 `intent: string`），只看调用点
+  const calls = [...risk.matchAll(/(function\s+)?hitReadOnlyIntent\(\s*([^)]*?)\s*\)/g)].filter(
+    (m) => !m[1]
+  )
+  assert.ok(calls.length > 0, '找不到 hitReadOnlyIntent 调用点，正则可能已失效')
+  for (const m of calls) {
+    assert.equal(
+      m[2],
+      'intent',
+      `降级判断吃了「${m[2]}」而不是 intent —— 页面可控文本一旦能影响降级，就等于把闸门开关交给页面`
+    )
+  }
+})
+
+/* ────────────────── 8. 全局 toString patch（债务，架构级） ────────────────── */
+
+test(
+  '注入脚本不得改写 Function.prototype.toString（应改用 Proxy 包装）',
+  {
+    skip:
+      '当前仍执行 `Function.prototype.toString = _patched`。实测代价：原生 toString 抛 TypeError 时' +
+      '栈里没有 JS 帧，patch 之后多出 `at toString` 一帧 —— 检测方一行 ' +
+      '`try{Function.prototype.toString.call(1)}catch(e){e.stack}` 就能判定「被插桩」，不需要任何前提。' +
+      '这是目前最便宜的 tell，比 `\'prototype\' in fn` 更普适（后者要先怀疑才去遍历）。' +
+      '改用 `new Proxy(原生函数, { apply })` 后 toString 自动转发到 target，' +
+      '台账 / _fakeSrc / _maskOne 的 name+length 校正全部不再需要。' +
+      '取消 skip 的条件：源码中不再出现对 Function.prototype.toString 的赋值，' +
+      '且 verify-anticheat 的 AC-11 读数从 has-own-frame 变为 clean。'
+  },
+  () => {
+    const fp = read('src/main/core/fingerprint.ts')
+    assert.ok(
+      !/Function\.prototype\.toString\s*=/.test(fp),
+      '注入脚本改写了 Function.prototype.toString，异常栈会多出一帧（最便宜的插桩检测信号）'
+    )
   }
 )

@@ -23,7 +23,7 @@
  * ─────────────────────────────────────────────────────────────────────
  * 门禁 vs 探针
  * ─────────────────────────────────────────────────────────────────────
- * gate=true   失败 → 退出码 1，接进 PR 门禁（AC-01~10、AC-13）
+ * gate=true   失败 → 退出码 1，接进 PR 门禁（AC-01~10、AC-13、AC-15）
  * gate=false  只记录读数，永远不判红（AC-11 Electron 探测面、AC-12 跨环境、AC-14 Worker）
  * 基线没拿到就断死，只会让门禁一上来就红，然后就没人看了 —— 所以先采数。
  *
@@ -136,7 +136,7 @@ async function pageProbe() {
   const mask = targets.map(([name, obj, prop]) => {
     const fn = fnOf(obj, prop)
     if (!fn) return { name, missing: true }
-    return { name, src: srcOf(fn), native: isNative(fn), hasProto: hasProto(fn) }
+    return { name, fnName: fn.name, src: srcOf(fn), native: isNative(fn), hasProto: hasProto(fn) }
   })
 
   /* 3：全局标记 —— 一个都不该有 */
@@ -669,18 +669,20 @@ function judge(fp, d) {
 
   /* 6 —— plugins 的值（这条最容易假阳性） */
   const hasPdf = d.plugins.some((n) => /pdf/i.test(n))
-  const pluginOk = d.plugins.length > 0 && hasPdf && d.mimeTypes.length > 0
   const pluginReal = d.behavior.pluginArrayTag === '[object PluginArray]'
+  // 三个条件缺一不可：
+  //   length>0 且含 PDF —— 锁值，不锁外观（getter 的 toString 早就 native 了）
+  //   tag 必须是 PluginArray —— 挡住「直接赋值 navigator.plugins = [...]」这种改法：
+  //     那样 _maskAt 会照旧登记原生 getter，看起来已处理，实际是个裸数组
+  const pluginOk = d.plugins.length > 0 && hasPdf && d.mimeTypes.length > 0 && pluginReal
   add(
     'AC-06',
-    'navigator.plugins 的值必须非空且含 PDF 条目',
-    'length>0 且含 PDF 条目，mimeTypes 非空',
+    'navigator.plugins 的值必须非空、含 PDF 条目、且仍是 PluginArray',
+    'length>0 且含 PDF 条目，mimeTypes 非空，tag=[object PluginArray]',
     { length: d.plugins.length, names: d.plugins, mimeCount: d.mimeTypes.length, tag: d.behavior.pluginArrayTag },
     pluginOk,
     pluginOk
-      ? pluginReal
-        ? '注意：这是**真 PluginArray**，说明 plugins 根本没被伪造 —— 本次通过靠的是 Electron 自带的 Chromium 默认列表恰好和 Chrome 一样，不是伪装生效。这条只能防「列表被清空」这类回归，不能证明「已伪造」。'
-        : ''
+      ? '注意：这是**真 PluginArray**，说明 plugins 根本没被伪造 —— 本次通过靠的是 Electron 自带的 Chromium 默认列表恰好和 Chrome 一样，不是伪装生效。这条只能防「列表被清空」「被换成裸数组」这类回归，不能证明「已伪造」。'
       : 'plugins 只在 _maskAll 清单里、没有 defVal 伪造值：toString 已伪装但值是 Electron 真实值，这是「外观修好了、值没修」的典型假阳性'
   )
 
@@ -805,6 +807,35 @@ function judge(fp, d) {
     [evProblems.join('；'), evNotes.join('、')].filter(Boolean).join('  |  ')
   )
 
+  /* 15 —— 函数身份自洽：fn.name 必须与 toString 里出现的名字一致
+     这条专门挡「用 Proxy 包一层」这种看起来干净的迁移方案。实测（Node 22 / Chromium 同规范）：
+       原生        Function.prototype.toString.call(Array.prototype.push) → function push() { [native code] }
+       Proxy 之后  Function.prototype.toString.call(proxy)              → function () { [native code] }
+     Proxy 没有 [[SourceText]]，toString 只能退回通用 NativeFunction 串，**名字丢了**，
+     而 proxy.name 仍然是 "push" —— 名字对得上、源码对不上，本身就是一对矛盾。
+     换句话说：Proxy 能消掉 has-own-frame，但会换来一个更常被检查的 tell。 */
+  const nameMismatch = []
+  for (const m of d.mask) {
+    if (m.missing) continue
+    const inSrc = /^function\s+(?:get\s+|set\s+)?([\w$]+)/.exec(m.src || '')
+    const expected = String(m.fnName || '').replace(/^(get|set)\s+/, '')
+    if (!inSrc) {
+      nameMismatch.push(m.name + ':toString 里没有函数名（' + (m.src || '').slice(0, 40) + '）')
+    } else if (inSrc[1] !== expected) {
+      nameMismatch.push(m.name + ':name=' + m.fnName + ' 但 toString 里是 ' + inSrc[1])
+    }
+  }
+  add(
+    'AC-15',
+    '函数身份自洽（fn.name 与 toString 内的名字一致）',
+    '全部一致',
+    nameMismatch.length ? nameMismatch : '全部一致',
+    nameMismatch.length === 0,
+    nameMismatch.length
+      ? '名字与源码对不上，站点不需要任何参照值就能判定「这个函数被换过」'
+      : ''
+  )
+
   /* 14 —— Worker 上下文（Page.addScriptToEvaluateOnNewDocument 不覆盖 Worker） */
   const w = d.worker
   const wProblems = []
@@ -895,6 +926,8 @@ try {
   }
 
   payload = { sha, at: new Date().toISOString(), nightly: NIGHTLY, results, raw: runs.map((r) => ({ label: r.profile.name, platform: r.profile.platform, data: r.data })) }
+  // 按 ID 排序：判定顺序服务于可读性（相邻的检查放在一起写），输出顺序服务于查找
+  payload.results.sort((a, b) => a.id.localeCompare(b.id))
 
   const failed = results.filter((r) => r.gate && !r.skipped && r.pass !== true)
   exitCode = failed.length > 0 ? 1 : 0

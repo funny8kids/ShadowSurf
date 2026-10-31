@@ -106,3 +106,124 @@ test('输入框里写「发送给张三」也要拦', () => {
   const verdict = assessRisk({ type: 'type', id: 'e2', text: '发送给张三' }, '填个备注')
   assert.equal(verdict.level, 'L2')
 })
+
+/* ──────────────── 对照集：闸门真正的分界线是「元素可读名」 ──────────────── */
+
+/**
+ * 下面两组是「应弹 / 不应弹」的对照，不是随便挑的例子。
+ *
+ * 起因：闸门改为把目标元素的可读名送进 haystack 之后，L2 弹窗频次会显著上升。
+ * 这是正确方向的代价，但**代价有多大必须量化**，否则「修复」和「体验不可用」
+ * 会被混为一谈。所以这里钉住两侧的边界，谁改规则谁先看这两组。
+ *
+ * 所有预期值都是**实测得到的**，不是按直觉写的 —— 边界词（加入购物车 / 立即购买 /
+ * 清空筛选）按直觉猜十次错九次。
+ */
+
+const click = (name: string) => assessRisk({ type: 'click', id: 'e1' }, '采集这个页面的商品价格', name)
+
+test('正常浏览操作不得触发确认', () => {
+  // 这些是「采集商品价格」这类任务里最高频的点击，一次都不该弹
+  const safe = ['搜索', '下一页', '查看更多', '加入购物车', '加入收藏', '重置', '下载图片']
+  for (const name of safe) {
+    assert.equal(click(name).level, 'L1', `点「${name}」不该要求确认`)
+  }
+})
+
+test('英文正常操作不得触发确认', () => {
+  // 特别注意 Sender name：send\b 不能匹配到 sender 里面去
+  const safe = ['Search', 'Next page', 'Add to cart', 'Sign in', 'Log in', 'Clear filters', 'Sender name']
+  for (const name of safe) {
+    assert.equal(click(name).level, 'L1', `点「${name}」不该要求确认`)
+  }
+})
+
+test('不可逆操作必须触发确认', () => {
+  const risky: Array<[string, string]> = [
+    ['立即购买', 'order'],
+    ['结算', 'order'],
+    ['提交订单', 'order'],
+    ['删除', 'delete'],
+    ['退订', 'delete'],
+    ['退出登录', 'account'],
+    ['发表评论', 'publish'],
+    ['发送', 'send'],
+    ['Checkout', 'pay'],
+    ['Buy now', 'pay'],
+    ['Place order', 'pay'],
+    ['Send', 'send']
+  ]
+  for (const [name, category] of risky) {
+    const v = click(name)
+    assert.equal(v.level, 'L2', `点「${name}」必须要求确认（应命中 ${category}）`)
+  }
+})
+
+/* ──────────────── 误伤修复后的回归护栏（曾经是 skip 债务） ──────────────── */
+
+/**
+ * 这三条原来是 skip，现在实现已经修好，转成永久护栏。
+ *
+ * 修法是给 delete 加了一条「动词必须紧跟筛选类宾语」的豁免：
+ * `(清空|清除|重置|移除|取消|关闭)\s*(筛选|过滤|条件|搜索|…)`。
+ * 关键是它**只豁免 delete 这一条**，不能整体短路——否则「清空筛选并支付」
+ * 会在 delete 处直接返回 L1，把扣款放过去。
+ *
+ * 所以护栏必须两侧都钉：豁免生效的一侧 + 豁免不能溢出的一侧。
+ */
+test('筛选类操作已豁免，但同类动词的其他宾语仍必须拦', () => {
+  assert.equal(click('清空筛选').level, 'L1')
+  assert.equal(click('移除筛选条件').level, 'L1')
+
+  // 豁免不能溢出：同样是「清空 / 移除」，宾语换成数据就必须拦
+  for (const name of ['清空购物车', '移除成员', '取消订单', '清空', '移除']) {
+    assert.equal(click(name).level, 'L2', `点「${name}」必须要求确认，豁免只针对筛选类宾语`)
+  }
+})
+
+test('「转发」已并入 send 规则', () => {
+  assert.equal(click('转发').level, 'L2')
+  assert.equal(click('转发').matched, '转发')
+  // 不能因为加词误伤正常浏览
+  for (const name of ['下一页', '搜索', '查看更多']) {
+    assert.equal(click(name).level, 'L1', `点「${name}」不该被 send 规则误伤`)
+  }
+})
+
+/**
+ * 这条是**反向**的：我原来提「`/pay\b/` 缺左边界，Repay 被判成 pay」，
+ * 实现方否掉了，理由成立 ——
+ *
+ *   Repay（还款）/ Prepay（预付）/ Postpay（后付）本身就是支付动作。
+ *   加左边界会让它们掉成 L1 自动执行，等于用「matched 文案更精确」
+ *   换「漏判扣款」。分级是对的，不精确的只是 matched 的取值，属显示问题。
+ *
+ * 所以断言要写成「必须判 L2」，锁住这个判断，防止将来有人只看 matched
+ * 不精确就顺手把左边界加上去。
+ */
+test('Repay / Prepay / Postpay 必须判 L2（不加左边界是有意的）', () => {
+  for (const name of ['Repay', 'Prepay', 'Postpay', 'pay']) {
+    const v = click(name)
+    assert.equal(v.level, 'L2', `「${name}」是支付动作，判 L1 等于漏判扣款`)
+  }
+})
+
+/* ──────────────── 仍然存在的缺口（债务） ──────────────── */
+
+test(
+  '「清除全部记录」必须判 L2',
+  {
+    skip:
+      '实测判 L1。根因是词表不对称：delete 规则有 删除|清空|移除|销毁|格式化|退订|取消订单，' +
+      '**没有「清除」**；而筛选豁免里用了「清除」。于是「清除全部记录」「清除历史」「清除缓存」' +
+      '两头都匹配不上，直接落到兜底的 L1 —— 这是不可逆的数据删除，必须拦。' +
+      '修法：delete 规则补「清除」，同时确认豁免的「清除」只对筛选类宾语生效（豁免在前，能挡住）。' +
+      '取消 skip 的条件：这三条回到 L2，且「清除筛选」仍是 L1。'
+  },
+  () => {
+    assert.equal(click('清除全部记录').level, 'L2')
+    assert.equal(click('清除历史').level, 'L2')
+    assert.equal(click('清除缓存').level, 'L2')
+    assert.equal(click('清除筛选').level, 'L1')
+  }
+)

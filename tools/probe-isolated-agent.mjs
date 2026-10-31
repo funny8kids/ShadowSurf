@@ -213,16 +213,100 @@ async function probeWorld(prefix) {
   }, prefix)
 }
 
+/* ────────────────────── 4b. isolated world 探针 ────────────────────── */
+
+/**
+ * 直接问 Chromium：这个页面上到底有几个叫 shadow-agent 的 isolated world，
+ * 脚本是不是就在里面。两条路交叉验证：
+ *   A. 用 app 自己的方式 Page.createIsolatedWorld({worldName}) 拿 contextId
+ *   B. 反过来 Runtime.enable 枚举所有现存上下文，按 name 找 shadow-agent
+ * A 和 B 指向同一个 id，才说明「createIsolatedWorld 拿到的就是脚本注入的那个世界」。
+ */
+async function probeIsolated(prefix) {
+  return await app.evaluate(async ({ webContents }, urlPrefix) => {
+    const all = webContents.getAllWebContents()
+    const target = all.find((w) => w.getURL().startsWith(urlPrefix))
+    if (!target) {
+      return { error: `找不到 ${urlPrefix} 的 webContents` }
+    }
+    const dbg = target.debugger
+    if (!dbg.isAttached()) dbg.attach('1.3')
+
+    const tree = await dbg.sendCommand('Page.getFrameTree')
+    const frameId = tree.frameTree.frame.id
+
+    // A：按名字取 world
+    const created = await dbg.sendCommand('Page.createIsolatedWorld', {
+      frameId,
+      worldName: 'shadow-agent',
+      grantUniveralAccess: false
+    })
+    const createdId = created.executionContextId
+
+    // B：枚举现存上下文。
+    // Runtime.enable 是幂等的：已经 enable 过就不会再上报已有上下文，
+    // 所以先 disable 一次强制它重新报一遍（本探针不用 Runtime 事件，disable 无副作用）
+    const seen = []
+    const onMsg = (_e, method, params) => {
+      if (method === 'Runtime.executionContextCreated') seen.push(params.context)
+    }
+    dbg.on('message', onMsg)
+    await dbg.sendCommand('Runtime.disable').catch(() => undefined)
+    await dbg.sendCommand('Runtime.enable')
+    await new Promise((r) => setTimeout(r, 300))
+    dbg.removeListener('message', onMsg)
+
+    const named = seen.filter((c) => c && c.name === 'shadow-agent')
+
+    const evalIn = async (contextId, expression) => {
+      try {
+        const r = await dbg.sendCommand('Runtime.evaluate', {
+          expression,
+          contextId,
+          returnByValue: true
+        })
+        if (r.exceptionDetails) return `EXC:${r.exceptionDetails.text}`
+        return r.result.value
+      } catch (err) {
+        return `ERR:${String(err).slice(0, 80)}`
+      }
+    }
+
+    return {
+      frameId,
+      createdId,
+      namedIds: named.map((c) => c.id),
+      namedFrameIds: named.map((c) => c.auxData && c.auxData.frameId),
+      totalContexts: seen.length,
+      createdSsType: await evalIn(createdId, 'typeof __SS__'),
+      createdV: await evalIn(createdId, 'typeof __SS__ === "object" ? __SS__.v : null'),
+      namedSsType: named[0] ? await evalIn(named[0].id, 'typeof __SS__') : '(无)',
+      namedV: named[0] ? await evalIn(named[0].id, 'typeof __SS__ === "object" ? __SS__.v : null') : '(无)',
+      namedPing: named[0]
+        ? await evalIn(named[0].id, 'typeof __SS__ === "object" && __SS__.ping().ok')
+        : '(无)'
+    }
+  }, prefix)
+}
+
 /* ────────────────────────── 5. 两个场景 ────────────────────────── */
+
+/** 同一个 step 会先发 running 再发 ok，取最后一条才是带结果的 */
+const clickResult = (events) =>
+  events
+    ?.filter((e) => e.type === 'step' && e.step.action?.type === 'click')
+    .pop()?.step.result ?? ''
 
 const clean = await runTask('打开探针页并点一下按钮')
 const cleanProbes = await probeWorld(ORIGIN + '/')
-const cleanStep = clean.events?.find((e) => e.type === 'step' && e.step.action?.type === 'click')
+const cleanIso = await probeIsolated(ORIGIN + '/')
+const cleanStep = clickResult(clean.events)
 
 const evil = await runTask('打开恶意页并点一下按钮')
 // 恶意页这次会被导航过去，URL 前缀换成 /evil
 const evilProbes = await probeWorld(ORIGIN + '/evil')
-const evilStep = evil.events?.find((e) => e.type === 'step' && e.step.action?.type === 'click')
+const evilIso = await probeIsolated(ORIGIN + '/evil')
+const evilStep = clickResult(evil.events)
 
 /* ────────────────────────── 6. 报告 ────────────────────────── */
 
@@ -247,6 +331,16 @@ line('任意 data-ss* 属性数', cleanProbes.anySsAttr)
 line('typeof window.__SS__', cleanProbes.ssType)
 line('window.__clicks', cleanProbes.clicks)
 line('#msg 文本', cleanProbes.msg)
+console.log('\n  isolated world 读数：')
+line('frameId', cleanIso.frameId ?? cleanIso.error)
+line('createIsolatedWorld 给的 id', cleanIso.createdId)
+line('Runtime.enable 枚举到的 shadow-agent', JSON.stringify(cleanIso.namedIds))
+line('两者是否同一个 world', cleanIso.createdId === cleanIso.namedIds?.[0])
+line('该上下文总数', cleanIso.totalContexts)
+line('createIsolatedWorld 里 typeof __SS__', cleanIso.createdSsType)
+line('枚举到的 world 里 typeof __SS__', cleanIso.namedSsType)
+line('__SS__.v', cleanIso.namedV)
+line('__SS__.ping().ok', cleanIso.namedPing)
 
 console.log('\n========== 场景 B：页面伪造 __SS__ ==========')
 if (evil.error) console.log('  Agent 运行失败:', evil.error)
@@ -261,18 +355,32 @@ line('typeof window.__SS__', evilProbes.ssType)
 line('window.__SS__.act() 自称', evilProbes.actSays)
 line('window.__clicks', evilProbes.clicks)
 line('#msg 文本', evilProbes.msg)
+console.log('\n  isolated world 读数：')
+line('createIsolatedWorld 给的 id', evilIso.createdId)
+line('Runtime.enable 枚举到的 shadow-agent', JSON.stringify(evilIso.namedIds))
+line('createIsolatedWorld 里 typeof __SS__', evilIso.createdSsType)
+line('枚举到的 world 里 typeof __SS__', evilIso.namedSsType)
+line('__SS__.ping().ok', evilIso.namedPing)
 
 const checks = [
   ['A: DOM 上无 [data-ss-id]', cleanProbes.taggedCount === 0],
   ['A: DOM 上无任何 data-ss* 属性', cleanProbes.anySsAttr === 0],
-  ['A: 主世界无 __SS__', cleanProbes.ssType === 'undefined'],
+  ['A: 主世界 typeof window.__SS__ === undefined', cleanProbes.ssType === 'undefined'],
+  ['A: isolated world 里 typeof __SS__ === object', cleanIso.namedSsType === 'object'],
+  ['A: isolated world 里 __SS__.v === 1', cleanIso.namedV === 1],
+  ['A: isolated world 里 ping 通', cleanIso.namedPing === true],
+  [
+    'A: createIsolatedWorld 拿到的就是脚本注入的那个 world',
+    cleanIso.createdId === cleanIso.namedIds?.[0] && cleanIso.createdSsType === 'object'
+  ],
   ['A: 快照返回 e1..eN 编号', clean.snap?.elements?.[0]?.id === 'e1'],
   ['A: 点 e1 真的点到了按钮', cleanProbes.clicks === 1 && cleanProbes.msg === '已点击 1'],
-  ['A: 动作结果来自真实执行', /已点击 e1/.test(cleanStep?.step.result ?? '')],
+  ['A: 动作结果来自真实执行', /已点击 e1/.test(cleanStep)],
   ['B: 主世界的假 __SS__ 确实存在', evilProbes.ssType === 'object'],
-  ['B: 假 __SS__ 没能劫持动作', /已点击 e1/.test(evilStep?.step.result ?? '')],
-  ['B: 结果不是页面伪造的那句话', !/伪造的成功/.test(evilStep?.step.result ?? '')],
-  ['B: 真实点击仍然落到按钮上', evilProbes.clicks === 1]
+  ['B: 假 __SS__ 没能劫持动作', /已点击 e1/.test(evilStep)],
+  ['B: 结果不是页面伪造的那句话', !/伪造的成功/.test(evilStep)],
+  ['B: 真实点击仍然落到按钮上', evilProbes.clicks === 1],
+  ['B: 恶意页的 isolated world 里 __SS__ 仍是真的', evilIso.createdSsType === 'object']
 ]
 console.log('\n断言：')
 let failed = 0
