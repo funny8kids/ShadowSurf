@@ -168,17 +168,52 @@ function isContextGone(detail: string): boolean {
 }
 
 /**
- * 在 isolated world 里求值。上下文失效时清缓存重建，并**只重试一次** ——
- * 重试一次是为了把「刚好在导航」的瞬时错误吃掉，又不至于在持续失败时打转。
+ * 只读探针：确认当前缓存的上下文还活着，死了就重建。
+ * 探针本身没有副作用，所以「先探再建」可以随便重来。
  */
-export async function runInAgentWorld(cdp: CdpBridge, expression: string): Promise<unknown> {
+async function liveWorld(cdp: CdpBridge): Promise<AgentWorld> {
+  try {
+    const world = await worldOf(cdp)
+    await evaluate(cdp, ALIVE_EXPR, world.contextId)
+    return world
+  } catch {
+    worlds.delete(cdp)
+    return await createWorld(cdp)
+  }
+}
+
+export interface RunInWorldOptions {
+  /**
+   * 上下文失效后是否重建并重试。
+   * 默认 true —— 快照、探针、补注入都是幂等的，重来一次没有代价。
+   * **有副作用的调用（act）必须传 false**：如果动作已经在页面里执行完、只是
+   * CDP 的响应随上下文一起没了，重试就会把一次点击变成两次。传 false 时改成
+   * 「先用只读探针确认上下文活着，再把动作发一次」，两种失败都不会重复执行。
+   */
+  retry?: boolean
+}
+
+/**
+ * 在 isolated world 里求值。
+ * 上下文失效时清缓存重建，幂等调用**只重试一次** —— 重试一次是为了把「刚好在
+ * 导航」的瞬时错误吃掉，又不至于在持续失败时打转。
+ */
+export async function runInAgentWorld(
+  cdp: CdpBridge,
+  expression: string,
+  options: RunInWorldOptions = {}
+): Promise<unknown> {
+  const retry = options.retry !== false
   watchContext(cdp)
-  const world = await worldOf(cdp)
+  let world = await worldOf(cdp)
+  if (!retry) {
+    world = await liveWorld(cdp)
+  }
   try {
     return await evaluate(cdp, expression, world.contextId)
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
-    if (!isContextGone(detail)) {
+    if (!retry || !isContextGone(detail)) {
       throw err
     }
     worlds.delete(cdp)

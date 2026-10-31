@@ -86,8 +86,9 @@ export async function executeAction(
   let raw: unknown
   try {
     // 必须在 isolated world 里求值：主世界的 window 上没有 __SS__，
-    // 页面脚本也没法抢先定义一个假的把结果伪造掉
-    raw = await runInAgentWorld(cdp, expression)
+    // 页面脚本也没法抢先定义一个假的把结果伪造掉。
+    // retry:false —— 动作有副作用，「已执行但响应丢失」时重试会变成点两次
+    raw = await runInAgentWorld(cdp, expression, { retry: false })
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
     return { ok: false, message: `执行失败：${detail}` }

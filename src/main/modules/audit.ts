@@ -149,9 +149,12 @@ export function verifyAudit(stores: Stores): AuditVerifyResult {
   return {
     ok: true,
     total: all.length,
+    // 「链路完整」这个说法必须去掉：digest 是无密钥 sha256，拿到算法就能把整条链
+    // 从任意一条开始重算，算出完全自洽的 hash 与 prev。这里能挡的只有
+    // 「改了内容但没重算」，挡不住任何有意的攻击者 —— 那是主动可伪造，不是边角漏检。
     message: truncated
-      ? `链路完整：${all.length} 条记录逐条校验通过（头部 ${startSeq - 1} 条已按上限裁剪）`
-      : `链路完整：${all.length} 条记录逐条校验通过`
+      ? `摘要无密钥，可被整体重算；尾部删除不可检测；共 ${all.length} 条（头部 ${startSeq - 1} 条已按上限裁剪）`
+      : `摘要无密钥，可被整体重算；尾部删除不可检测；共 ${all.length} 条`
   }
 }
 

@@ -15,6 +15,8 @@
     "shot": "node tools/shot-prototype.mjs",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "verify:injection": "node tools/check-injection.mjs && node tools/run-electron.mjs tools/probe-mask.cjs",
+    "verify:anticheat": "node tools/verify-anticheat.mjs",
+    "verify:anticheat:nightly": "node tools/verify-anticheat.mjs --nightly",
     "check": "npm run typecheck && npm run test"
   },
   "dependencies": {

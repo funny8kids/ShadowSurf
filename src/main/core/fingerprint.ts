@@ -393,6 +393,9 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   // 那个原生构造器 —— 而且它是全页共享的，不修等于把「原版」留了个把手。
   L.push('      try {')
   L.push('        Object.defineProperty(_DTF.prototype, "constructor", { value: _Patched, configurable: true, writable: true });')
+  // 原生构造器的 prototype 是 writable:false / configurable:false。
+  // 赋值语句造出来的描述符是 writable:true / configurable:true —— 一行就能查出来。
+  L.push('        Object.defineProperty(_Patched, "prototype", { writable: false, enumerable: false, configurable: false });')
   L.push('      } catch (e) {}')
   // 包装函数的 name 默认取变量名 —— 直接把 `_Patched` 这个名字送给了检测脚本。
   // 实测 `Intl.DateTimeFormat.name === "_Patched"`、`RTCPeerConnection.name === "_PC"`，
@@ -417,6 +420,7 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('          W.prototype = Orig.prototype;')
   L.push('          if (Orig.supportedLocalesOf) { W.supportedLocalesOf = Orig.supportedLocalesOf; }')
   L.push('          try { Object.defineProperty(Orig.prototype, "constructor", { value: W, configurable: true, writable: true }); } catch (e) {}')
+  L.push('          try { Object.defineProperty(W, "prototype", { writable: false, enumerable: false, configurable: false }); } catch (e) {}')
   // 同 _Patched：包装函数的 name 是变量名 W，必须改回构造器名
   L.push('          try {')
   L.push('            Object.defineProperty(W, "name", { value: nm, configurable: true });')
@@ -677,7 +681,12 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('            return false;')
   L.push('          };')
   L.push('          var _keep = function (cand) {')
-  L.push("            if (!cand || !cand.candidate || cand.candidate.indexOf(' typ host') === -1) { return cand; }")
+  L.push("            if (!cand || !cand.candidate) { return cand; }")
+  // srflx 必须整体丢弃。它带的是「STUN 服务器看到的你的公网 IP」，
+  // 而 UDP 不走 HTTP 代理 —— 也就是说这个地址是**真实 IP**，不是代理出口。
+  // 之前只过滤 host 候选，等于把最该藏的那个地址原样放行。
+  L.push("            if (cand.candidate.indexOf(' typ srflx') !== -1) { return null; }")
+  L.push("            if (cand.candidate.indexOf(' typ host') === -1) { return cand; }")
   L.push("            var m = /([0-9]{1,3}(\.[0-9]{1,3}){3}|[a-f0-9]{1,4}(:[a-f0-9]{0,4}){2,}|[^\s]+\.local)/i.exec(cand.candidate);")
   L.push('            if (m && _priv(m[1])) { return null; }')
   L.push('            return cand;')
@@ -708,10 +717,21 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('          };')
   L.push('          var _PC = function (cfg) { var pc = new RTC(cfg); _guard(pc); return pc; };')
   L.push('          _PC.prototype = RTC.prototype;')
-  L.push('          try { Object.setPrototypeOf(_PC, RTC); } catch (e) {}')
+  // setPrototypeOf(_PC, RTC) 会让 Object.getPrototypeOf(RTCPeerConnection) 变成 RTC，
+  // 而原生是 Function.prototype —— 又是一行可查的破绽。改成逐个搬运静态成员，
+  // 保住「函数对象的原型就是 Function.prototype」这个不变量。
+  L.push('          try {')
+  L.push('            var _statics = Object.getOwnPropertyNames(RTC);')
+  L.push('            for (var si = 0; si < _statics.length; si++) {')
+  L.push('              var sk = _statics[si];')
+  L.push('              if (sk === "prototype" || sk === "name" || sk === "length" || sk === "arguments" || sk === "caller") { continue; }')
+  L.push('              try { Object.defineProperty(_PC, sk, Object.getOwnPropertyDescriptor(RTC, sk)); } catch (e2) {}')
+  L.push('            }')
+  L.push('          } catch (e) {}')
   // 同 Intl：不修 constructor，`RTCPeerConnection.prototype.constructor` 就还是原生的，
   // 一次读取就能拿回未加固的构造器绕开 _guard
   L.push('          try { Object.defineProperty(RTC.prototype, "constructor", { value: _PC, configurable: true, writable: true }); } catch (e) {}')
+  L.push('          try { Object.defineProperty(_PC, "prototype", { writable: false, enumerable: false, configurable: false }); } catch (e) {}')
   // 原生 RTCPeerConnection.name === "RTCPeerConnection"、length === 0，
   // 包装函数不改就是 "_PC" / 1 —— 一次 name 读取就能确认被 hook
   L.push('          try {')

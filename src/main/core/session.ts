@@ -33,7 +33,38 @@ export async function applyProfileToSession(ses: Session, profile: Profile): Pro
 
   applySpellChecker(ses, fp.languages)
 
+  applyWebRtcPolicy(ses, profile)
+
   await applyProxy(ses, profile.proxy)
+}
+
+/**
+ * WebRTC 的 UDP **不走 HTTP 代理**，这是真实 IP 最主要的泄漏面。
+ *
+ * 只在页面 JS 里丢 srflx 候选是补丁级别的修法：ICE 收集本身仍在直连，
+ * 任何绕过我们那层包装的路径（Worker、iframe 里的新 RTCPeerConnection、
+ * 或者我们没覆盖到的 API）都能拿到真实公网地址。
+ * 必须在 Chromium 侧把「非代理 UDP」整个关掉，这才是根上的修法。
+ *
+ * 没有代理时不动（`real` 是用户明确要真实 WebRTC 的选项）。
+ */
+function applyWebRtcPolicy(ses: Session, profile: Profile): void {
+  const webrtc = profile.fingerprint.webrtc
+  const policy =
+    webrtc === 'disabled' || (webrtc === 'proxy' && profile.proxy)
+      ? 'disable_non_proxied_udp'
+      : 'default'
+
+  // Electron 各版本对 Session 上这个方法的存在性不一致，用能力检测而不是断言
+  const target = ses as Session & {
+    setWebRTCIPHandlingPolicy?: (p: string) => void
+  }
+  if (typeof target.setWebRTCIPHandlingPolicy !== 'function') return
+  try {
+    target.setWebRTCIPHandlingPolicy(policy)
+  } catch {
+    // 旧内核不支持该策略值时退化为默认，不阻断环境启动
+  }
 }
 
 export async function applyProxy(ses: Session, proxy: ProxyConfig | null): Promise<void> {

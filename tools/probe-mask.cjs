@@ -83,6 +83,35 @@ const PROBES = [
     expr: 'typeof window.__SS_FP__'
   },
   {
+    // 原生构造器的 prototype 是 writable:false / configurable:false / enumerable:false。
+    // 赋值语句 `F.prototype = X` 造出来的是 writable:true —— 一行就能查出来。
+    // 这里扫全部 9 个被包装过的构造器，而不是只抽查两个：
+    // 逐个点名验会漏掉「以后新增的包装忘了加锁定」。
+    id: 'ctor-proto-descriptors',
+    expect: [],
+    expr: `(function () {
+      var ctors = [Intl.DateTimeFormat, Intl.NumberFormat, Intl.Collator,
+                   Intl.RelativeTimeFormat, Intl.PluralRules, Intl.ListFormat,
+                   Intl.DisplayNames, Intl.Segmenter, RTCPeerConnection];
+      var bad = [];
+      for (var i = 0; i < ctors.length; i++) {
+        var d = Object.getOwnPropertyDescriptor(ctors[i], "prototype");
+        if (!d) { bad.push((ctors[i].name || i) + ":missing"); continue; }
+        if (d.writable !== false || d.configurable !== false || d.enumerable !== false) {
+          bad.push((ctors[i].name || i) + ":writable=" + d.writable);
+        }
+      }
+      return bad;
+    })()`
+  },
+  {
+    // 曾经用 setPrototypeOf(_PC, RTC) 继承静态成员，代价是
+    // Object.getPrototypeOf(RTCPeerConnection) 变成 RTC（原生是 Function.prototype）
+    id: 'rtc-fn-proto',
+    expect: true,
+    expr: 'Object.getPrototypeOf(RTCPeerConnection) === Function.prototype'
+  },
+  {
     // 这是 QA 那条「一行枚举全部 hook」的探针：
     // 原生方法/getter 都没有 prototype，我们所有包装函数都必须也没有
     id: 'enumerable-hooks',
@@ -129,8 +158,9 @@ app.whenReady().then(async () => {
 
   try {
     // 注入前的基线：先记下原生值，用来证明「改之前不是这样」
-    const before = await evaluate(wc, PROBES[0].expr)
-    const beforeHooks = await evaluate(wc, PROBES[12].expr)
+    const byId = (id) => PROBES.find((p) => p.id === id)
+    const before = await evaluate(wc, byId('getter-toString').expr)
+    const beforeHooks = await evaluate(wc, byId('enumerable-hooks').expr)
 
     await wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: src })
     await wc.loadURL('data:text/html,<!doctype html><title>probe</title><body>probe</body>')

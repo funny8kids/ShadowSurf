@@ -286,6 +286,13 @@
   color: var(--green);
 }
 
+/* 「内部一致」不是「未被篡改」：哈希链没有密钥，整链重算照样能自洽。
+   用琥珀色而不是绿色，是不让这个徽章给出它证明不了的结论。 */
+.au-verdict.warn {
+  color: var(--amber, #B45309);
+  border-color: var(--amber, #B45309);
+}
+
 .au-verdict.bad {
   color: var(--red);
 }
