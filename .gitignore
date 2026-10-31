@@ -11,3 +11,6 @@ arch.txt
 front.txt
 osf.txt
 tsconfig.*.tsbuildinfo
+
+# 探针产物：由 tools/check-injection.mjs 生成，每次跑都会变
+artifacts/
