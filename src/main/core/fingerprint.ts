@@ -364,7 +364,8 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('    var _MASK_TABLE = [')
   L.push('      [Navigator.prototype, ["userAgent", "appVersion", "platform", "vendor",')
   L.push('        "hardwareConcurrency", "deviceMemory", "language", "languages", "webdriver",')
-  L.push('        "pdfViewerEnabled", "plugins", "mimeTypes", "maxTouchPoints", "gpu"]],')
+  L.push('        "pdfViewerEnabled", "plugins", "mimeTypes", "maxTouchPoints", "gpu",')
+  L.push('        "requestMediaKeySystemAccess"]],')
   L.push('      [Screen.prototype, ["width", "height", "availWidth", "availHeight", "colorDepth", "pixelDepth"]],')
   L.push('      [window, ["devicePixelRatio"]],')
   L.push('      [Date.prototype, ["getTimezoneOffset", "toTimeString", "toDateString", "toString",')
@@ -383,8 +384,11 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('      [Number.prototype, ["toLocaleString"]],')
   L.push('      [typeof BigInt !== "undefined" && BigInt.prototype, ["toLocaleString"]],')
   L.push('      [String.prototype, ["localeCompare", "toLocaleUpperCase", "toLocaleLowerCase"]],')
-  // RTCPeerConnection 在脚本后段会被换成 _PC，但 _PC.prototype === RTC.prototype，
-  // 所以这里用 window.RTCPeerConnection.prototype 在两个时刻指向同一个对象
+  // RTCPeerConnection 的 hook 现在挂在**原型**上（实例级 hook 会让
+  // new 出来的对象多出 own property，真实 Chrome 是空的）。
+  // addEventListener 的原生归属层就是 EventTarget.prototype，必须登记在这里，
+  // 否则收口时拿不到 patch 前的 arity 快照（原生 2 参，包装写成 3 参会被查出）。
+  L.push('      [window.EventTarget && EventTarget.prototype, ["addEventListener"]],')
   L.push('      [window.RTCPeerConnection && window.RTCPeerConnection.prototype,')
   L.push('        ["createDataChannel", "createOffer", "createAnswer", "setLocalDescription", "addIceCandidate"]]')
   L.push('    ];')
@@ -775,84 +779,89 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('    try {')
   L.push('      var RTC = window.RTCPeerConnection || window.webkitRTCPeerConnection;')
   L.push('      if (RTC && RTC.prototype) {')
+  L.push('        var _priv = function (ip) {')
+  L.push("          if (!ip || /\\.local$/i.test(ip)) { return true; }")
+  L.push("          if (/^10\\./.test(ip) || /^192\\.168\\./.test(ip) || /^169\\.254\\./.test(ip) || /^127\\./.test(ip)) { return true; }")
+  L.push("          if (/^172\\.(1[6-9]|2[0-9]|3[01])\\./.test(ip)) { return true; }")
+  L.push("          if (/^(fc|fd|fe80)/i.test(ip)) { return true; }")
+  L.push('          return false;')
+  L.push('        };')
+  L.push('        var _keep = function (cand) { return cand; };')
   L.push("        if (C.webrtc === 'disabled') {")
-  // 「禁用 WebRTC」最原生的形态就是**接口根本不存在** —— Chromium 在
-  // WebRTC 被策略关掉时就是把这个接口从全局摘掉，而不是留一个会抛错的桩。
-  // 早先的做法是保留构造器、把 createOffer/createAnswer 等换成抛错函数：
-  // 那既不像原生（原生禁用时没有这个全局），又留下一整组被 patch 过的方法
-  // 需要逐个伪装。直接删掉，检测面归零。
-  L.push('          var _RTC_KEYS = ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel",')
-  L.push('            "RTCSessionDescription", "RTCIceCandidate", "RTCIceTransport", "RTCDtlsTransport"];')
-  L.push('          for (var _ri = 0; _ri < _RTC_KEYS.length; _ri++) {')
-  L.push('            try { delete window[_RTC_KEYS[_ri]]; } catch (e) {}')
-  L.push('          }')
+  // 「禁用」改成「不产生候选」，不再把接口从全局摘掉。
+  //
+  // 早先的做法是 delete window.RTCPeerConnection 等七个全局。方向是错的：
+  // Page.addScriptToEvaluateOnNewDocument 只作用于 frame，Worker 里接口原样还在，
+  // 于是主世界 typeof 是 undefined、Worker 里是 function —— 真实 Chromium 里
+  // WebRTC 是整特性开关、永远同真同假，这个组合不可能出现，等于自证。
+  //
+  // 而 session.ts 在网络层已经设了 disable_non_proxied_udp，候选本来就出不来，
+  // 删接口对「IP 泄漏」的边际贡献是 0 —— 它只改外观，外观恰好是矛盾来源。
+  // 现在改成：接口保留（与 Worker 一致），候选一律丢弃（与网络层一致）。
+  L.push('          _keep = function () { return null; };')
   L.push("        } else if (C.webrtc === 'proxy') {")
-  L.push('          var _priv = function (ip) {')
-  L.push("            if (!ip || /\.local$/i.test(ip)) { return true; }")
-  L.push("            if (/^10\./.test(ip) || /^192\.168\./.test(ip) || /^169\.254\./.test(ip) || /^127\./.test(ip)) { return true; }")
-  L.push("            if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(ip)) { return true; }")
-  L.push("            if (/^(fc|fd|fe80)/i.test(ip)) { return true; }")
-  L.push('            return false;')
-  L.push('          };')
-  L.push('          var _keep = function (cand) {')
+  L.push('          _keep = function (cand) {')
   L.push("            if (!cand || !cand.candidate) { return cand; }")
   // srflx 必须整体丢弃。它带的是「STUN 服务器看到的你的公网 IP」，
   // 而 UDP 不走 HTTP 代理 —— 也就是说这个地址是**真实 IP**，不是代理出口。
   // 之前只过滤 host 候选，等于把最该藏的那个地址原样放行。
   L.push("            if (cand.candidate.indexOf(' typ srflx') !== -1) { return null; }")
   L.push("            if (cand.candidate.indexOf(' typ host') === -1) { return cand; }")
-  L.push("            var m = /([0-9]{1,3}(\.[0-9]{1,3}){3}|[a-f0-9]{1,4}(:[a-f0-9]{0,4}){2,}|[^\s]+\.local)/i.exec(cand.candidate);")
+  L.push("            var m = /([0-9]{1,3}(\\.[0-9]{1,3}){3}|[a-f0-9]{1,4}(:[a-f0-9]{0,4}){2,}|[^\\s]+\\.local)/i.exec(cand.candidate);")
   L.push('            if (m && _priv(m[1])) { return null; }')
   L.push('            return cand;')
   L.push('          };')
-  L.push('          var _guard = function (pc) {')
-  L.push('            var add = pc.addEventListener;')
-  // 实例级 hook 也要登记：函数字面量的 name 是空串、且带 prototype，
-  // 一次 `"prototype" in pc.addEventListener` 就暴露了这里被动过手脚
-  L.push('            pc.addEventListener = _maskOne(_noProto(function (t, fn, o) {')
-  L.push("              if (t === 'icecandidate' && typeof fn === 'function') {")
-  L.push('                return add.call(this, t, function (e) { var c = _keep(e); if (c) { fn.call(this, c); } }, o);')
+  L.push('        }')
+  L.push('')
+  L.push('        if (C.webrtc === "disabled" || C.webrtc === "proxy") {')
+  /* hook 必须挂在**原型**上，不能挂在实例上。
+     早先是 `pc.addEventListener = ...` / `Object.defineProperty(pc, 'onicecandidate', ...)`，
+     于是 `new RTCPeerConnection()` 的 own property 是 ['addEventListener','onicecandidate']，
+     而真实 Chrome 是 []。检测方不用知道任何接口名，new 一个 PC 再读
+     getOwnPropertyNames 就能判定 —— 比 P0-9 的「清单不全」便宜得多。
+     _maskOne 修的是 name/length/toString，修不了「属性住在哪一层」。
+
+     挂到原型之后连构造器包装都不需要了：new 出来就是原生对象，
+     _PC 那一层（name / length / prototype.constructor / 静态成员搬运）整套 tell 一起消失。 */
+  L.push('          var _ET = window.EventTarget && window.EventTarget.prototype;')
+  L.push('          var _add = _ET && _ET.addEventListener;')
+  L.push('          if (typeof _add === "function") {')
+  L.push('            var _addHook = _noProto(function (t, fn, o) {')
+  L.push('              if (t === "icecandidate" && typeof fn === "function" && this instanceof RTC) {')
+  L.push('                return _add.call(this, t, function (e) { var c = _keep(e); if (c) { fn.call(this, c); } }, o);')
   L.push('              }')
-  L.push('              return add.apply(this, arguments);')
-  L.push('            }), "addEventListener", 2);')
-  L.push('            var on = null;')
-  L.push('            try {')
-  L.push("              Object.defineProperty(pc, 'onicecandidate', {")
-  L.push('                configurable: true,')
-  L.push('                get: _maskOne(_noProto(function () { return on; }), "get onicecandidate", 0),')
-  L.push('                set: _maskOne(_noProto(function (fn) {')
-  L.push('                  on = fn;')
-  L.push('                  if (typeof fn === "function") {')
-  L.push("                    add.call(pc, 'icecandidate', function (e) { var c = _keep(e); if (c) { fn.call(pc, c); } });")
-  L.push('                  }')
-  L.push('                }), "set onicecandidate", 1)')
-  L.push('              });')
-  L.push('            } catch (e) {}')
-  L.push('          };')
-  L.push('          var _PC = function (cfg) { var pc = new RTC(cfg); _guard(pc); return pc; };')
-  L.push('          _PC.prototype = RTC.prototype;')
-  // setPrototypeOf(_PC, RTC) 会让 Object.getPrototypeOf(RTCPeerConnection) 变成 RTC，
-  // 而原生是 Function.prototype —— 又是一行可查的破绽。改成逐个搬运静态成员，
-  // 保住「函数对象的原型就是 Function.prototype」这个不变量。
-  L.push('          try {')
-  L.push('            var _statics = Object.getOwnPropertyNames(RTC);')
-  L.push('            for (var si = 0; si < _statics.length; si++) {')
-  L.push('              var sk = _statics[si];')
-  L.push('              if (sk === "prototype" || sk === "name" || sk === "length" || sk === "arguments" || sk === "caller") { continue; }')
-  L.push('              try { Object.defineProperty(_PC, sk, Object.getOwnPropertyDescriptor(RTC, sk)); } catch (e2) {}')
+  L.push('              return _add.apply(this, arguments);')
+  L.push('            });')
+  L.push('            _maskOne(_addHook, "addEventListener", 2);')
+  L.push('            _ET.addEventListener = _addHook;')
+  L.push('')
+  /* onicecandidate 原生就是 RTCPeerConnection.prototype 上的 accessor。
+     把过滤塞进 setter 的包装里，仍然走原生 setter 存值 —— 实例上不会多出任何属性。
+     原始回调存在 WeakMap 里，getter 读回来的还是用户当初塞进去的那个函数。 */
+  L.push('            var _iceDesc = Object.getOwnPropertyDescriptor(RTC.prototype, "onicecandidate");')
+  L.push('            if (_iceDesc && typeof _iceDesc.get === "function" && typeof _iceDesc.set === "function") {')
+  L.push('              var _orig = typeof WeakMap === "function" ? new WeakMap() : null;')
+  L.push('              try {')
+  L.push('                Object.defineProperty(RTC.prototype, "onicecandidate", {')
+  L.push('                  configurable: true,')
+  L.push('                  enumerable: _iceDesc.enumerable,')
+  L.push('                  get: _maskOne(_noProto(function () {')
+  L.push('                    if (_orig && _orig.has(this)) { return _orig.get(this); }')
+  L.push('                    return _iceDesc.get.call(this);')
+  L.push('                  }), "get onicecandidate", 0),')
+  L.push('                  set: _maskOne(_noProto(function (fn) {')
+  L.push('                    if (typeof fn !== "function") {')
+  L.push('                      if (_orig) { _orig.delete(this); }')
+  L.push('                      return _iceDesc.set.call(this, fn);')
+  L.push('                    }')
+  L.push('                    if (_orig) { _orig.set(this, fn); }')
+  L.push('                    var self = this;')
+  L.push('                    _iceDesc.set.call(this, function (e) { var c = _keep(e); if (c) { fn.call(self, c); } });')
+  L.push('                  }), "set onicecandidate", 1)')
+  L.push('                });')
+  L.push('              } catch (e) {}')
   L.push('            }')
-  L.push('          } catch (e) {}')
-  // 同 Intl：不修 constructor，`RTCPeerConnection.prototype.constructor` 就还是原生的，
-  // 一次读取就能拿回未加固的构造器绕开 _guard
-  L.push('          try { Object.defineProperty(RTC.prototype, "constructor", { value: _PC, configurable: true, writable: true }); } catch (e) {}')
-  L.push('          try { Object.defineProperty(_PC, "prototype", { writable: false, enumerable: false, configurable: false }); } catch (e) {}')
-  // 原生 RTCPeerConnection.name === "RTCPeerConnection"、length === 0，
-  // 包装函数不改就是 "_PC" / 1 —— 一次 name 读取就能确认被 hook
-  L.push('          try {')
-  L.push('            Object.defineProperty(_PC, "name", { value: "RTCPeerConnection", configurable: true });')
-  L.push('            Object.defineProperty(_PC, "length", { value: 0, configurable: true });')
-  L.push('          } catch (e) {}')
-  L.push('          window.RTCPeerConnection = _PC;')
+  L.push('          }')
   L.push('        }')
   L.push('      }')
   L.push('    } catch (e) {}')
@@ -1008,6 +1017,101 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push("        var removed = false;")
   L.push("        try { removed = delete Navigator.prototype.gpu; } catch (e) {}")
   L.push("        if (!removed) { defVal(Navigator.prototype, 'gpu', undefined); }")
+  L.push('      }')
+  L.push('    } catch (e) {}')
+
+  /* window.chrome
+     Electron 下 window.chrome 是空对象（0 个自有属性），真实 Chrome 有
+     app / csi / loadTimes 三个。一行
+       Object.getOwnPropertyNames(window.chrome).length === 3
+     就能判定，成本比任何指纹都低。
+
+     值必须从 performance.timing 派生，**不能写常量**：
+     写死会让每次导航返回同一组数字，那比缺属性更好抓 ——
+     缺属性只说明「不像 Chrome」，恒定值说明「装得像但不会动」。
+     注意 chrome.runtime 真实 Chrome 也没有（那是扩展才有的），别顺手补。 */
+  L.push('')
+  L.push('    try {')
+  L.push('      var _c = window.chrome;')
+  L.push("      if (_c && typeof _c === 'object' && !('loadTimes' in _c)) {")
+  L.push('        var _t = (window.performance && performance.timing) || {};')
+  L.push('        var _ns = _t.navigationStart || 0;')
+  L.push('        var _sec = function (x) { return (x && _ns && x >= _ns) ? (x - _ns) / 1000 : 0; };')
+  L.push('        var _navType = (window.performance && performance.navigation && performance.navigation.type) || 0;')
+  L.push('        var _csi = _maskOne(_noProto(function () {')
+  L.push('          return {')
+  L.push('            onloadT: _t.domContentLoadedEventEnd || _t.loadEventEnd || 0,')
+  L.push('            startE: _ns,')
+  L.push('            pageT: (window.performance && performance.now) ? performance.now() : 0,')
+  L.push('            tran: _navType')
+  L.push('          };')
+  L.push('        }), "csi", 0);')
+  L.push('        var _loadTimes = _maskOne(_noProto(function () {')
+  L.push('          return {')
+  L.push('            requestTime: _sec(_t.navigationStart),')
+  L.push('            startLoadTime: _sec(_t.navigationStart),')
+  L.push('            commitLoadTime: _sec(_t.responseStart),')
+  L.push('            finishDocumentLoadTime: _sec(_t.domContentLoadedEventEnd),')
+  L.push('            finishLoadTime: _sec(_t.loadEventEnd),')
+  L.push('            firstPaintTime: _sec(_t.responseStart),')
+  L.push('            firstPaintAfterLoadTime: 0,')
+  L.push("            navigationType: _navType === 0 ? 'Other' : (_navType === 1 ? 'Reload' : 'BackForward'),")
+  L.push('            wasFetchedViaSpdy: true,')
+  L.push('            wasNpnNegotiated: true,')
+  L.push("            npnNegotiatedProtocol: 'h2',")
+  L.push('            wasAlternateProtocolAvailable: false,')
+  L.push("            connectionInfo: 'h2'")
+  L.push('          };')
+  L.push('        }), "loadTimes", 0);')
+  L.push('        var _app = {')
+  L.push('          isInstalled: false,')
+  L.push("          InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },")
+  L.push("          RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },")
+  L.push('          getDetails: _maskOne(_noProto(function () { return null; }), "getDetails", 0),')
+  L.push('          getIsInstalled: _maskOne(_noProto(function () { return false; }), "getIsInstalled", 0),')
+  L.push('          runningState: _maskOne(_noProto(function () { return "cannot_run"; }), "runningState", 0),')
+  L.push('          installState: _maskOne(_noProto(function (cb) { if (typeof cb === "function") { cb("not_installed"); } }), "installState", 1)')
+  L.push('        };')
+  // 按 Chrome 的自有属性顺序定义，顺序本身也是可读的
+  L.push('        var _defChrome = function (k, v) {')
+  L.push('          try { Object.defineProperty(_c, k, { value: v, enumerable: true, configurable: true, writable: true }); } catch (e) {}')
+  L.push('        };')
+  L.push("        _defChrome('app', _app);")
+  L.push("        _defChrome('csi', _csi);")
+  L.push("        _defChrome('loadTimes', _loadTimes);")
+  L.push('      }')
+  L.push('    } catch (e) {}')
+
+  /* EME（加密媒体扩展）
+     Electron 里 navigator.requestMediaKeySystemAccess 直接 reject NotSupportedError。
+     但真实 headless Chrome 156 的实测是：stage-1 **resolve**，拿到 access 之后
+     createMediaKeys() 才抛 NotSupportedError。
+
+     所以「播不了 Widevine」不是 tell —— 真 headless 也播不了，检测方不能因为
+     播不了 DRM 就判负，否则所有 headless 全误杀。真正的 tell 是 **stage-1 就拒绝**，
+     而大多数检测方只做 stage-1（一行 await，不踩异常路径）。
+
+     修法不需要内核：把拒绝换成「给一个 access，createMediaKeys 抛 NotSupportedError」，
+     与真 headless 不可区分。 */
+  L.push('')
+  L.push('    try {')
+  L.push('      if (navigator && typeof navigator.requestMediaKeySystemAccess === "function") {')
+  L.push('        var _rq = navigator.requestMediaKeySystemAccess;')
+  L.push('        var _mkAccess = function (ks, cfg) {')
+  L.push('          return {')
+  L.push('            keySystem: ks,')
+  L.push('            getConfiguration: _maskOne(_noProto(function () { return cfg || {}; }), "getConfiguration", 0),')
+  L.push('            createMediaKeys: _maskOne(_noProto(function () {')
+  L.push('              return Promise.reject(new DOMException("Unsupported keySystem", "NotSupportedError"));')
+  L.push('            }), "createMediaKeys", 0)')
+  L.push('          };')
+  L.push('        };')
+  L.push('        navigator.requestMediaKeySystemAccess = _maskOne(_noProto(function (ks, cfgs) {')
+  L.push('          return _rq.apply(this, arguments).then(')
+  L.push('            function (a) { return a; },')
+  L.push('            function () { return _mkAccess(ks, cfgs && cfgs[0]); }')
+  L.push('          );')
+  L.push('        }), "requestMediaKeySystemAccess", 1);')
   L.push('      }')
   L.push('    } catch (e) {}')
 

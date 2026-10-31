@@ -980,9 +980,9 @@ function judge(fp, d) {
     { own: chromeOwn, missing: chromeOwnMissing },
     chromeOwnMissing.length === 0 && chromeOwn.length === CHROME_OWN.length,
     chromeOwn.length === 0
-      ? '当前 0 个（Electron 原生即 0），真实 Chrome 156 是 3 个。差额可枚举、可 stub，且不需要内核工作。'
+      ? '当前 0 个（Electron 原生即 0），真实 Chrome 156 是 3 个。'
       : '缺 ' + chromeOwnMissing.join(', ') + '（真实 Chrome 有这 3 个）',
-    { gate: false }
+    { gate: true }
   )
 
   /* 20 —— EME stage-1 行为
@@ -1018,7 +1018,7 @@ function judge(fp, d) {
         emeStage1 +
         '，而真 Chrome 156 在 stage-1 是 resolve 的、stage-2 才抛 NotSupportedError。' +
         '一行 await navigator.requestMediaKeySystemAccess("com.widevine.alpha") 就能分开两者。',
-    { gate: false }
+    { gate: true }
   )
 
   /* 13 —— 替换生效性（给 AC-01/AC-02 兜底）

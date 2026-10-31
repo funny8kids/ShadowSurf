@@ -125,11 +125,19 @@ const PROBES = [
     })()`
   },
   {
-    // 曾经用 setPrototypeOf(_PC, RTC) 继承静态成员，代价是
-    // Object.getPrototypeOf(RTCPeerConnection) 变成 RTC（原生是 Function.prototype）
+    // WebIDL：接口对象的 [[Prototype]] 是**父接口对象**，不是 Function.prototype。
+    // RTCPeerConnection 继承 EventTarget，所以原生这一行是 EventTarget。
+    //
+    // 这条断言原先写的是 `=== Function.prototype`，而它一直是绿的 ——
+    // 因为那时我们把构造器换成了普通函数 _PC，普通函数的原型恰好是 Function.prototype。
+    // 也就是说：断言验的是**包装后的形状**，不是原生不变量，而两者正好撞上了。
+    // 真实 Chrome 里这行读出来是 EventTarget，包装版读出 Function.prototype，
+    // 一行 Object.getPrototypeOf(...).name 就能判定被插桩 —— 而探针替它背了书。
+    //
+    // 现在不再包装构造器（hook 全在原型上），这条才第一次测到真实形状。
     id: 'rtc-fn-proto',
     expect: true,
-    expr: 'Object.getPrototypeOf(RTCPeerConnection) === Function.prototype'
+    expr: 'Object.getPrototypeOf(RTCPeerConnection) === EventTarget'
   },
   {
     // 这是 QA 那条「一行枚举全部 hook」的探针：
@@ -254,6 +262,80 @@ const PROBES = [
       }
       return bad;
     })()`
+  },
+  {
+    // hook 必须挂在原型上，不能挂在实例上。
+    // 真实 Chrome：getOwnPropertyNames(new RTCPeerConnection()) === []
+    // 早先的写法是 pc.addEventListener = ... / defineProperty(pc, 'onicecandidate')
+    // 于是实例上多出两个 own property —— 检测方不用知道任何接口名，
+    // new 一个 PC 再读一次属性列表就能判定。
+    id: 'rtc-instance-clean',
+    expect: [],
+    expr: `(function () {
+      if (typeof RTCPeerConnection !== 'function') { return []; }
+      var pc = new RTCPeerConnection({ iceServers: [] });
+      var bad = [];
+      var own = Object.getOwnPropertyNames(pc);
+      if (own.length > 0) { bad.push('own=' + own.join(',')); }
+      if (pc.hasOwnProperty('addEventListener')) { bad.push('hasOwn:addEventListener'); }
+      if (pc.hasOwnProperty('onicecandidate')) { bad.push('hasOwn:onicecandidate'); }
+      try { pc.close(); } catch (e) {}
+      return bad;
+    })()`
+  },
+  {
+    // Electron 下 window.chrome 是空对象，真实 Chrome 有 app / csi / loadTimes 三个自有属性。
+    // 一行 getOwnPropertyNames 就能判定，成本比任何指纹都低。
+    // 另外要验「值会动」：loadTimes 全站恒定比缺属性更好抓 ——
+    // 缺属性只是「不像 Chrome」，恒定值是「装得像但不会动」。
+    id: 'chrome-own-props',
+    expect: [],
+    expr: `(function () {
+      var bad = [];
+      var c = window.chrome;
+      if (!c || typeof c !== 'object') { return ['window.chrome 不存在']; }
+      var own = Object.getOwnPropertyNames(c).sort();
+      var want = ['app', 'csi', 'loadTimes'];
+      if (own.join(',') !== want.join(',')) { bad.push('own=' + own.join(',')); }
+      if (typeof c.csi !== 'function') { bad.push('csi 不是函数'); }
+      if (typeof c.loadTimes !== 'function') { bad.push('loadTimes 不是函数'); }
+      if (c.app && typeof c.app.getDetails === 'function' && c.app.getDetails() !== null) {
+        bad.push('app.getDetails() 应为 null');
+      }
+      try {
+        var lt = c.loadTimes ? c.loadTimes() : null;
+        if (!lt || typeof lt.finishLoadTime !== 'number') { bad.push('loadTimes() 形状不对'); }
+        var cs = c.csi ? c.csi() : null;
+        if (!cs || typeof cs.startE !== 'number' || cs.startE <= 0) { bad.push('csi().startE 应为正数'); }
+      } catch (e) { bad.push('调用抛错：' + e.message); }
+      return bad;
+    })()`
+  },
+  {
+    // EME：真 headless Chrome 156 的实测是 stage-1 resolve、createMediaKeys() 才抛
+    // NotSupportedError。「播不了 Widevine」不是 tell（真 headless 也播不了），
+    // stage-1 就拒绝才是 —— 而大多数检测方只做 stage-1（一行 await，不踩异常路径）。
+    // 这条必须真 await，所以 evaluate 开了 awaitPromise。
+    id: 'eme-stage1-resolves',
+    expect: 'ok',
+    expr: `(async function () {
+      if (typeof navigator.requestMediaKeySystemAccess !== 'function') { return 'missing'; }
+      try {
+        var access = await navigator.requestMediaKeySystemAccess('com.widevine.alpha', [{
+          initDataTypes: ['cenc'],
+          videoCapabilities: [{ contentType: 'video/mp4; codecs="avc1.42E01E"' }]
+        }]);
+        // stage-1 过了，还要验 stage-2 抛的是 NotSupportedError 而不是别的错
+        try {
+          await access.createMediaKeys();
+          return 'stage2-resolved';
+        } catch (e2) {
+          return (e2 && e2.name === 'NotSupportedError') ? 'ok' : ('stage2:' + (e2 && e2.name));
+        }
+      } catch (e) {
+        return 'stage1-rejected:' + (e && e.name);
+      }
+    })()`
   }
 ]
 
@@ -348,7 +430,9 @@ async function evaluate(wc, expression) {
   const res = await wc.debugger.sendCommand('Runtime.evaluate', {
     expression,
     returnByValue: true,
-    awaitPromise: false
+    // 打开 awaitPromise：EME 这类断言天然是异步的（requestMediaKeySystemAccess
+    // 返回 Promise），同步求值只能读到 'pending'。对非 Promise 结果无影响。
+    awaitPromise: true
   })
   if (res.exceptionDetails) {
     const text = res.exceptionDetails.exception?.description ?? res.exceptionDetails.text
