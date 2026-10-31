@@ -50,10 +50,12 @@ export async function applyProfileToSession(ses: Session, profile: Profile): Pro
  */
 function applyWebRtcPolicy(ses: Session, profile: Profile): void {
   const webrtc = profile.fingerprint.webrtc
+  // 注意：`proxy` 模式下**不管当前有没有配代理**都要关掉非代理 UDP。
+  // 早先写成 `webrtc === 'proxy' && profile.proxy`，等于「先配环境、后挂代理」时
+  // 环境根本没有防护 —— 而这段代码看起来恰恰是「更谨慎的那个分支」。
+  // 用户选了 proxy 语义，就是要求 WebRTC 不许绕过代理，与当前是否已挂代理无关。
   const policy =
-    webrtc === 'disabled' || (webrtc === 'proxy' && profile.proxy)
-      ? 'disable_non_proxied_udp'
-      : 'default'
+    webrtc === 'disabled' || webrtc === 'proxy' ? 'disable_non_proxied_udp' : 'default'
 
   // Electron 各版本对 Session 上这个方法的存在性不一致，用能力检测而不是断言
   const target = ses as Session & {

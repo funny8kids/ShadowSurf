@@ -224,8 +224,12 @@ export function AuditPanel({ profiles }: PanelProps) {
           </div>
           <div className="au-pick">
             {verdict ? (
-              <span className={cx('au-verdict', verdict.ok ? 'ok' : 'bad')} title={verdict.message}>
-                {verdict.ok ? `链完整 · ${verdict.total} 条` : `断在第 ${verdict.brokenAt ?? '?'} 条`}
+              <span
+                className={cx('au-verdict', verdict.ok ? 'warn' : 'bad')}
+                title={verdict.message}
+                role="status"
+              >
+                {verdict.ok ? '无法验证完整性' : `断在第 ${verdict.brokenAt ?? '?'} 条`}
               </span>
             ) : null}
             <Button

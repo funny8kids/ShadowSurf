@@ -670,8 +670,18 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('          var _deny = function () {')
   L.push("            throw new Error('RTCPeerConnection is disabled by policy');")
   L.push('          };')
+  // 只挡 createOffer / createDataChannel 只等于「禁止主动发起」。
+  // 被动应答这条路完全不经过这两个方法：
+  //   new RTCPeerConnection() → setRemoteDescription(offer) → createAnswer()
+  //   → setLocalDescription(answer) ← 这一步才真正触发 ICE 收集
+  // 远端一个 offer 发过来就能建连、就能收候选，而用户选的是「禁用 WebRTC」。
+  // 三个入口都得堵：createAnswer（生成应答）、setLocalDescription（触发收集）、
+  // addIceCandidate（接受对端候选）。
   L.push('          RTC.prototype.createDataChannel = _deny;')
   L.push('          RTC.prototype.createOffer = _deny;')
+  L.push('          RTC.prototype.createAnswer = _deny;')
+  L.push('          RTC.prototype.setLocalDescription = _deny;')
+  L.push('          RTC.prototype.addIceCandidate = _deny;')
   L.push("        } else if (C.webrtc === 'proxy') {")
   L.push('          var _priv = function (ip) {')
   L.push("            if (!ip || /\.local$/i.test(ip)) { return true; }")
@@ -966,7 +976,7 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   // 注意：addEventListener 不在这里。它是 EventTarget.prototype 的成员，
   // 不是 RTCPeerConnection.prototype 的 own property —— 写进来 _maskAt 读不到描述符、
   // 直接 return，属于「登记了但永远不生效」的死条目。实例级的那层在 _guard 里单独处理。
-  L.push('        _maskAll(window.RTCPeerConnection.prototype, ["createDataChannel", "createOffer"]);')
+  L.push('        _maskAll(window.RTCPeerConnection.prototype, ["createDataChannel", "createOffer", "createAnswer", "setLocalDescription", "addIceCandidate"]);')
   L.push('      }')
   L.push('      if (window.Intl) {')
   L.push('        _maskOne(Intl.DateTimeFormat, "DateTimeFormat");')
