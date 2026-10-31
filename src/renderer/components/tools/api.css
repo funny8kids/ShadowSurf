@@ -328,6 +328,33 @@
   color: var(--accent);
 }
 
+/* 能力边界说明。和 .api-note 的区别是它必须被读到：
+   用 amber 而不是 accent，align-items 改成 flex-start（多行时图标不居中飘着）。 */
+.api-scope {
+  margin: 0 0 10px;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 9px 11px;
+  border: 1px solid var(--amber-line);
+  border-radius: var(--r-sm, 7px);
+  background: var(--amber-2);
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--ink-2);
+}
+
+.api-scope svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--amber);
+}
+
+.api-scope strong {
+  color: var(--ink-1);
+  font-weight: 600;
+}
+
 @media (max-width: 900px) {
   .api-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));

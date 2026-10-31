@@ -1259,6 +1259,16 @@
   color: var(--ink-2);
 }
 
+/* 占满后两列，跟在控件下面一行。字号比 label 更小、颜色更淡：
+   它是解释，不是第二个标签，视觉上不能和 label 争。 */
+.field-hint {
+  grid-column: 2 / 4;
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--ink-4);
+  margin-top: -3px;
+}
+
 .field .val {
   height: 28px;
   display: flex;

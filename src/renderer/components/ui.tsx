@@ -299,17 +299,21 @@ export function Toggle({
 export function Field({
   label,
   children,
-  action
+  action,
+  hint
 }: {
   label: string
   children: ReactNode
   action?: ReactNode
+  /** 一行补充说明。用于「选项名字不足以说清后果」的场合，比 title 提示更可靠 */
+  hint?: string
 }) {
   return (
     <div className="field">
       <label>{label}</label>
       {children}
       {action ?? <span />}
+      {hint ? <span className="field-hint">{hint}</span> : null}
     </div>
   )
 }

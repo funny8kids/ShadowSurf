@@ -388,11 +388,21 @@ export function scoreFingerprint(fp: FingerprintConfig, hasProxy: boolean): Cons
   }
 
   const final = clamp(Math.round(score), 0, 100)
-  return { score: final, verdict: verdictFor(final, issues), issues }
+  return { score: final, verdict: verdictFor(final, issues, hasProxy), issues }
 }
 
-function verdictFor(score: number, issues: string[]): string {
-  if (score >= 95) return 'UA、时区、语言与代理出口地区匹配，未检测到矛盾项。'
+function verdictFor(score: number, issues: string[], hasProxy: boolean): string {
+  // 高分档以前写的是「UA、时区、语言与代理出口地区匹配，未检测到矛盾项」。
+  // 这句话是错的：这个函数手里只有一个 hasProxy 布尔值，**从来没校验过代理出口地区**。
+  // 它把「本机侧参数自洽」说成了「与代理地区一致」——最自信的结论出现在最常走的路径上。
+  //
+  // 现在按实际掌握的证据说话：能确认的写能确认的，没校验的明说没校验。
+  // 检测方拿不到的东西，界面也不该替它下结论。
+  if (score >= 95) {
+    return hasProxy
+      ? 'UA、时区、语言在本地参数上自洽，未检测到矛盾项。代理出口地区尚未校验 —— 需要对该代理做一次出口检测才能确认是否一致。'
+      : 'UA、时区、语言在本地参数上自洽，未检测到矛盾项。未配置代理，出口 IP 与本机一致。'
+  }
   if (score >= 80) return `${issues[0] ?? '存在少量不一致'}，建议核对后再启动。`
   if (score >= 60) return `${issues.slice(0, 2).join('；')}。这组指纹可能被识别为伪装。`
   return `检测到 ${issues.length} 处矛盾：${issues.slice(0, 2).join('；')}。不建议直接使用。`

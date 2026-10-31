@@ -217,6 +217,19 @@ export function ApiPanel({ profiles }: PanelProps) {
           <h3>访问令牌</h3>
           <span>除 /health 外，所有请求都要带 Authorization: Bearer &lt;token&gt;</span>
         </div>
+        {/* 能力边界必须放在令牌**之前**。
+            这个面板原本已经说了三件让人安心的事（令牌存在哪、不印完整值、只监听回环），
+            每句都成立，但语义方向一致 —— 用户读完会得出「风险已处理」。
+            而唯一该说的那句一直缺席：持有这个令牌 = 能在这台机器上执行任意环境的
+            不可逆动作。部分披露比完全不提更误导，因为用户会以为问完了。 */}
+        <p className="api-scope">
+          <Icon name="alert" size={13} strokeWidth={2} />
+          <span>
+            持有此令牌的本地进程可以在<strong>任意环境</strong>上执行操作，
+            包括支付、删除、发布等<strong>不可逆动作</strong>。
+            令牌文件以当前用户身份可读，同一账户下的其他程序也能读到它。
+          </span>
+        </p>
         <div className="api-token">
           <code className="api-token-value">{revealed ? token || '尚未生成' : maskedToken}</code>
           <div className="api-tools">
@@ -250,7 +263,7 @@ export function ApiPanel({ profiles }: PanelProps) {
         </div>
         <p className="api-hint">
           令牌是 32 字节随机值，存在数据目录的 local-api-token.json 里，重启应用不会变。
-          重新生成会让已发出的调用立即失效。
+          <strong> 重新生成是唯一的补救动作</strong>：作废旧令牌后，已发出的调用立即失效。
         </p>
       </section>
 
@@ -288,9 +301,14 @@ export function ApiPanel({ profiles }: PanelProps) {
         </div>
       </section>
 
+      {/* 这里原本用的是 shield 图标。shield 在这个产品里固定表示「安全能力」
+          （侧栏审计、审计页分数都用它），拿它给一条安抚信息背书，
+          等于把「我们已经处理好了」又加固了一层。换成中性的 globe：
+          这条只是说明服务监听在哪，不是一项安全保证。 */}
       <p className="api-note">
-        <Icon name="shield" size={13} strokeWidth={2} />
+        <Icon name="globe" size={13} strokeWidth={2} />
         只监听 127.0.0.1，局域网访问不到；关闭服务或退出应用后端口立即释放。
+        这限制的是<strong>谁能连上来</strong>，不限制连上之后能做什么 —— 能力边界见上方令牌说明。
       </p>
     </div>
   )

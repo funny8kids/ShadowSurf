@@ -620,7 +620,16 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                   </select>
                 </Field>
 
-                <Field label="WebRTC">
+                <Field
+                  label="WebRTC"
+                  hint={
+                    fp.webrtc === 'disabled'
+                      ? '接口保留、候选全部丢弃 —— 与真实浏览器一致：WebRTC 是整特性开关，主世界和 Worker 里同真同假。'
+                      : fp.webrtc === 'proxy'
+                        ? '本地地址与 srflx（STUN 看到的真实公网 IP）全部丢弃，只放行非私有的 host 候选。'
+                        : '不拦截任何候选，页面能拿到真实内网地址与公网 IP。'
+                  }
+                >
                   <select
                     className="val"
                     value={fp.webrtc}
@@ -629,7 +638,7 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                     }
                   >
                     <option value="proxy">代理转发 · 屏蔽本地 IP</option>
-                    <option value="disabled">完全禁用</option>
+                    <option value="disabled">不产生候选 · 接口保留</option>
                     <option value="real">暴露真实 IP</option>
                   </select>
                 </Field>
