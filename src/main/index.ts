@@ -9,7 +9,7 @@ import { app, BrowserWindow, nativeTheme } from 'electron'
 import { join } from 'node:path'
 import { CH } from '@shared/ipc'
 import { getStores } from '@main/store'
-import { WindowManager } from '@main/core/windows'
+import { WindowManager, guardShellNavigation } from '@main/core/windows'
 import { ProfileRuntime } from '@main/core/profiles'
 import { registerHandlers } from '@main/ipc/handlers'
 
@@ -59,6 +59,8 @@ function createConsoleWindow(): BrowserWindow {
   })
 
   win.once('ready-to-show', () => win.show())
+  // 控制台窗口同样挂着完整 preload，同样不能被顶层导航劫持
+  guardShellNavigation(win)
   win.on('closed', () => {
     consoleWindow = null
   })

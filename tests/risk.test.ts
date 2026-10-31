@@ -64,3 +64,45 @@ test('navigate 到支付页要拦', () => {
   const verdict = assessRisk({ type: 'navigate', url: 'https://example.com/checkout' }, '去看看')
   assert.equal(verdict.level, 'L2')
 })
+
+/* ------------------------------------------------------------------ *
+ * send / submit 拆分
+ *
+ * 安全官评审结论：「发送」消息已送达对方、不可撤回；「提交」是本端状态
+ * 变更、多数可回退。原先两条合并在一条规则里，只读意图会把两者一起放行，
+ * 等于「帮我采集这个页面」顺手就能把采集结果群发出去。
+ * ------------------------------------------------------------------ */
+
+test('只读意图不能豁免「发送」：说「采集」也拦得住群发', () => {
+  const verdict = assessRisk({ type: 'click', id: 'e7' }, '采集这个页面的商品价格', '发送')
+  assert.equal(verdict.level, 'L2', 'send 已进 NEVER_DOWNGRADE')
+  assert.equal(verdict.matched, '发送')
+})
+
+test('只读意图不能豁免「群发消息」', () => {
+  const verdict = assessRisk({ type: 'click', id: 'e8' }, '整理一下联系人', '群发消息')
+  assert.equal(verdict.level, 'L2')
+})
+
+test('提交订单仍按 order 判，不会被 submit 规则抢先放行', () => {
+  // 规则表顺序即优先级：order 在 submit 之前，所以「提交订单」必须命中 order
+  const verdict = assessRisk({ type: 'click', id: 'e5' }, '采集价格', '提交订单')
+  assert.equal(verdict.level, 'L2')
+  assert.equal(verdict.matched, '提交订单')
+})
+
+test('提交表单在只读意图下仍是 L1（拆分的另一半不能误伤搜索）', () => {
+  const verdict = assessRisk({ type: 'click', id: 'e2' }, '采集这个页面的商品价格', '提交')
+  assert.equal(verdict.level, 'L1')
+  assert.equal(verdict.matched, '提交')
+})
+
+test('提交表单在非只读意图下是 L2（自己就是个需要确认的动作）', () => {
+  const verdict = assessRisk({ type: 'click', id: 'e2' }, '帮我把这个表单填了', '提交表单')
+  assert.equal(verdict.level, 'L2')
+})
+
+test('输入框里写「发送给张三」也要拦', () => {
+  const verdict = assessRisk({ type: 'type', id: 'e2', text: '发送给张三' }, '填个备注')
+  assert.equal(verdict.level, 'L2')
+})

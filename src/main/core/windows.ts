@@ -9,7 +9,7 @@
  * 主进程据此给每个 view 设 bounds——这是唯一不会出现「网页盖住地址栏」的做法。
  */
 
-import { BrowserWindow, WebContentsView } from 'electron'
+import { BrowserWindow, WebContentsView, shell } from 'electron'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -38,6 +38,41 @@ export interface TabHandle {
   wc: Electron.WebContents
   view: Electron.WebContentsView
   tab: BrowserTab
+}
+
+/**
+ * 壳层窗口的导航守卫。**两个壳层窗口（浏览器窗 + 控制台窗）都必须挂**。
+ *
+ * 为什么必须有：壳层 preload 暴露了完整的 `window.ss`，里面有 migration.import、
+ * scripts.save、localApi.start 这些能改本机状态的能力；而壳层 `sandbox: false`。
+ * `setWindowOpenHandler` 只拦 window.open / target=_blank，拦不住
+ * `location.href = 'https://evil'` 和 `<a target="_self">` —— 一次顶层跳转，
+ * 远程页面就拿到了这套 preload API。这不是理论风险，是 Electron 的经典提权路径。
+ *
+ * 允许的只有渲染层自己：开发态是 ELECTRON_RENDERER_URL，生产态是 file://。
+ */
+export function guardShellNavigation(win: BrowserWindow): void {
+  const devUrl = process.env['ELECTRON_RENDERER_URL']
+  const allowed = (url: string): boolean =>
+    devUrl ? url.startsWith(devUrl) : url.startsWith('file://')
+
+  const wc = win.webContents
+
+  wc.on('will-navigate', (event, url) => {
+    if (allowed(url)) return
+    event.preventDefault()
+    // 拦下来不等于要静默失败：外链交给系统浏览器，符合浏览器产品的直觉
+    if (/^https?:/i.test(url)) void shell.openExternal(url)
+  })
+
+  // 渲染层里 target=_blank 的链接同样不能开裸 Electron 窗口
+  wc.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/i.test(url)) void shell.openExternal(url)
+    return { action: 'deny' }
+  })
+
+  // 任何试图在壳层里挂 <webview> 的行为都直接拒绝：网页视图走 WebContentsView
+  wc.on('will-attach-webview', (event) => event.preventDefault())
 }
 
 export interface ContentInsets {
@@ -110,6 +145,9 @@ export class WindowManager {
         sandbox: false
       }
     })
+
+    // 壳层 preload 能力很宽（迁移/脚本/本地 API），必须堵住顶层导航这条提权路
+    guardShellNavigation(win)
 
     const rec: WindowRecord = {
       id: windowId,

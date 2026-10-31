@@ -369,6 +369,14 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('      };')
   L.push('      _Patched.prototype = _DTF.prototype;')
   L.push('      _Patched.supportedLocalesOf = _DTF.supportedLocalesOf;')
+  // 包装函数的 name 默认取变量名 —— 直接把 `_Patched` 这个名字送给了检测脚本。
+  // 实测 `Intl.DateTimeFormat.name === "_Patched"`、`RTCPeerConnection.name === "_PC"`，
+  // 等于把「这里被 hook 过」和「hook 变量的命名习惯」一起交出去。
+  // 原生构造器的 name 就是构造器名、length 是 0，两样都要对齐。
+  L.push('      try {')
+  L.push('        Object.defineProperty(_Patched, "name", { value: "DateTimeFormat", configurable: true });')
+  L.push('        Object.defineProperty(_Patched, "length", { value: 0, configurable: true });')
+  L.push('      } catch (e) {}')
   L.push('      Intl.DateTimeFormat = _Patched;')
   L.push('')
   L.push('      // 其余 Intl 构造器同理，缺省 locale 一并接管')
@@ -383,6 +391,11 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('          };')
   L.push('          W.prototype = Orig.prototype;')
   L.push('          if (Orig.supportedLocalesOf) { W.supportedLocalesOf = Orig.supportedLocalesOf; }')
+  // 同 _Patched：包装函数的 name 是变量名 W，必须改回构造器名
+  L.push('          try {')
+  L.push('            Object.defineProperty(W, "name", { value: nm, configurable: true });')
+  L.push('            Object.defineProperty(W, "length", { value: 0, configurable: true });')
+  L.push('          } catch (e) {}')
   L.push('          Intl[nm] = W;')
   L.push('        })(_IN[ni]);')
   L.push('      }')
@@ -668,6 +681,12 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('          var _PC = function (cfg) { var pc = new RTC(cfg); _guard(pc); return pc; };')
   L.push('          _PC.prototype = RTC.prototype;')
   L.push('          try { Object.setPrototypeOf(_PC, RTC); } catch (e) {}')
+  // 原生 RTCPeerConnection.name === "RTCPeerConnection"、length === 0，
+  // 包装函数不改就是 "_PC" / 1 —— 一次 name 读取就能确认被 hook
+  L.push('          try {')
+  L.push('            Object.defineProperty(_PC, "name", { value: "RTCPeerConnection", configurable: true });')
+  L.push('            Object.defineProperty(_PC, "length", { value: 0, configurable: true });')
+  L.push('          } catch (e) {}')
   L.push('          window.RTCPeerConnection = _PC;')
   L.push('        }')
   L.push('      }')

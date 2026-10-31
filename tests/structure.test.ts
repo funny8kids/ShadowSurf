@@ -16,6 +16,8 @@ import assert from 'node:assert/strict'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 
+import { assessRisk } from '../src/main/agent/risk.ts'
+
 const ROOT = join(import.meta.dirname, '..')
 
 /** 递归收集 src/ 下所有 ts/tsx 源文件 */
@@ -85,52 +87,62 @@ test(
   }
 )
 
-/* ────────────────────────── 3. 导航守卫（债务） ────────────────────────── */
+/* ────────────────────────── 2b. toString 伪装（债务，最高杠杆） ────────────────────────── */
 
 test(
-  '两个窗口都必须有 will-navigate 守卫',
-  {
-    skip:
-      '当前 src/ 全项目 will-navigate 零命中，setWindowOpenHandler 只拦 window.open / target=_blank，' +
-      '拦不住顶层导航。壳层窗口 sandbox:false 且 preload 注入完整 window.ss，' +
-      '一次顶层跳转即可把 migration.import / scripts.save / localApi.start 交给远程源。'
-  },
+  '注入脚本必须伪装 Function.prototype.toString',
   () => {
-    for (const file of ['src/main/index.ts', 'src/main/core/windows.ts']) {
-      assert.ok(
-        /will-navigate/.test(read(file)),
-        `${file} 缺少 will-navigate 守卫（两个窗口都要，别只加一个）`
-      )
-    }
+    const fp = read('src/main/core/fingerprint.ts')
+    assert.ok(
+      /Function\.prototype\.toString/.test(fp),
+      'fingerprint.ts 未伪装 Function.prototype.toString，所有 patch 过的 getter/函数都可被 toString 枚举'
+    )
   }
 )
 
-/* ────────────────────────── 4. send / submit 拆分（债务） ────────────────────────── */
-
 test(
-  '「发送」类动作不可被只读意图降级',
+  'WebRTC 包装器不得把原生构造器留在 prototype.constructor 上',
   {
     skip:
-      '当前 risk.ts 的 send 规则把「发送」与「提交表单|submit」合并成同一类，且不在 NEVER_DOWNGRADE 里，' +
-      '于是「采集这个页面并发送私信」会把发送降级为 L1 自动执行。' +
-      '修复方式：submit 摘出来单列一类（保持可降级），send 收窄为真正的对外发送并加入 NEVER_DOWNGRADE。' +
-      '落地后本用例转绿；tests/risk.test.ts 里「提交表单 → L1」那条不受影响。'
+      '当前 fingerprint.ts 有 `_PC.prototype = RTC.prototype`，于是 RTCPeerConnection.prototype.constructor ' +
+      '指回原生 RTC —— 页面执行 new (RTCPeerConnection.prototype.constructor)() 就能拿到未经 _guard 包装的实例，' +
+      '直接看到真实 host/srflx 候选。修复后取消 skip。' +
+      '注：这条与 toString 无关，toString 伪装不能补救构造器身份泄漏。'
   },
   () => {
-    // 需要 risk.ts 导出分类信息才能直接断言；此处用行为断言更稳
-    const verdict = assessRiskForTest('发送私信', '采集这个页面的商品价格')
-    assert.equal(verdict, 'L2', '对外发送不可撤回，不得因「采集」意图降级为自动执行')
+    const fp = read('src/main/core/fingerprint.ts')
+    assert.ok(
+      !/_PC\.prototype\s*=\s*RTC\.prototype/.test(fp),
+      '_PC.prototype 指向原生 prototype，导致 .constructor 泄漏原生构造器，_guard 可被绕过'
+    )
   }
 )
 
-/** 惰性引入，避免未修复时模块加载期就抛错影响其它用例 */
-function assessRiskForTest(extra: string, intent: string): string {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const mod = require('../src/main/agent/risk.ts') as {
-    assessRisk: (a: unknown, i: string, e?: string) => { level: string }
+/* ────────────────────────── 3. 导航守卫（已修复，护栏） ────────────────────────── */
+
+test('两个窗口都必须有 will-navigate 守卫', () => {
+  for (const file of ['src/main/index.ts', 'src/main/core/windows.ts']) {
+    assert.ok(
+      /guardShellNavigation/.test(read(file)),
+      `${file} 未挂壳层导航守卫（两个窗口都要，别只加一个）`
+    )
   }
-  return mod.assessRisk({ type: 'click', id: 'e5' }, intent, extra).level
-}
+  // 守卫本体必须真的监听 will-navigate，不能只是挂了个名字
+  assert.ok(/will-navigate/.test(read('src/main/core/windows.ts')), '守卫未监听 will-navigate')
+})
+
+/* ────────────────────────── 4. send / submit 拆分（已修复，护栏） ────────────────────────── */
+
+test('「发送」类动作不可被只读意图降级', () => {
+  const verdict = assessRisk({ type: 'click', id: 'e5' }, '采集这个页面的商品价格', '发送私信')
+  assert.equal(verdict.level, 'L2', '对外发送不可撤回，不得因「采集」意图降级为自动执行')
+  assert.equal(verdict.matched, '发送')
+})
+
+test('「提交表单」仍可被只读意图降级（拆分的另一半）', () => {
+  const verdict = assessRisk({ type: 'click', id: 'e2' }, '采集这个页面的商品价格', '提交表单')
+  assert.equal(verdict.level, 'L1', '搜索框提交是本端可回退动作，不该每次弹确认')
+})
 
 /* ────────────────────────── 5. 字段搬运完整性（当前通过） ────────────────────────── */
 
