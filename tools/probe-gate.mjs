@@ -143,6 +143,13 @@ const cases = [
   }
 ]
 
+// 零条用例不能说成「行为正常」：那和「8 条全过」在终端里长得一样，
+// 但一条都没跑的时候什么都没验证。同 verify-anticheat 里的 0/0 守卫。
+if (cases.length === 0) {
+  console.error('没有任何闸门用例 —— 这不是通过，是没验')
+  process.exit(1)
+}
+
 let failed = 0
 try {
   const actions = await server.ssrLoadModule('/src/main/agent/actions.ts')

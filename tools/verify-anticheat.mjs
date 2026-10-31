@@ -1327,7 +1327,16 @@ try {
   payload.results.sort((a, b) => a.id.localeCompare(b.id))
 
   const failed = results.filter((r) => r.gate && !r.skipped && r.pass !== true)
-  exitCode = failed.length > 0 ? 1 : 0
+  const gatedCount = results.filter((r) => r.gate && !r.skipped).length
+  // 一条门禁都没跑到时不能算通过。
+  // 实测遇到过一次：进程正常退出、表格正常打印、汇总行是「门禁 0/0 通过」——
+  // 在 CI 里这一行和「17/17 通过」长得一样，都只有「通过」两个字。
+  // 零条检查等于什么都没验，必须比失败更响：它是「不知道」而不是「没问题」。
+  exitCode = gatedCount === 0 ? 3 : failed.length > 0 ? 1 : 0
+  if (gatedCount === 0) {
+    console.error('\n没有执行到任何门禁检查（gated=0）。这不是通过 —— 是没验。')
+    console.error('常见原因：Electron 启动后页面未就绪、探针页 evaluate 抛错、out/ 与 src/ 不匹配。')
+  }
 } catch (err) {
   console.error('\n验证脚本自身出错：', err && err.message ? err.message : err)
   exitCode = 2
@@ -1380,15 +1389,17 @@ if (payload) {
   console.log('─'.repeat(112))
   const gated = payload.results.filter((r) => r.gate && !r.skipped)
   const failed = gated.filter((r) => r.pass !== true)
-  console.log(
-    '门禁 ' +
-      (gated.length - failed.length) +
-      '/' +
-      gated.length +
-      ' 通过' +
-      (failed.length ? '，失败：' + failed.map((r) => r.id).join(', ') : '') +
-      '    读数已写入 artifacts/anticheat-' + sha + '.json'
-  )
+  // 零条门禁不能说成「通过」—— 见上面 exitCode 处的说明
+  const headline =
+    gated.length === 0
+      ? '门禁 0/0 —— 没有任何检查被执行，判为失败（不是通过，是没验）'
+      : '门禁 ' +
+        (gated.length - failed.length) +
+        '/' +
+        gated.length +
+        ' 通过' +
+        (failed.length ? '，失败：' + failed.map((r) => r.id).join(', ') : '')
+  console.log(headline + '    读数已写入 artifacts/anticheat-' + sha + '.json')
   if (payload.error) console.log('脚本自身异常：' + payload.error.split('\n')[0])
 }
 
