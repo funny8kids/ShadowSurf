@@ -295,6 +295,10 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('  try {')
   L.push('    var C = ' + json + ';')
   L.push('    var S = C.seed | 0;')
+  // profile 的语言：所有 locale 出口（Intl 的缺省 locale、Number / String 的
+  // toLocale*、Date 的 toLocaleString）都从这一个变量取。同一个事实在多处各写
+  // 一遍，迟早漂移，而漂移的表现就是「同一页面上两个语言」。
+  L.push("    var _LOC = (C.languages && C.languages.length) ? C.languages[0] : (C.locale || 'en-US');")
   L.push('')
   L.push('    function h32(a, b, c, d) {')
   L.push('      var h = (S ^ (a | 0) ^ (b | 0) ^ (c | 0) ^ (d | 0)) | 0;')
@@ -374,6 +378,11 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('      [window.WebGL2RenderingContext && WebGL2RenderingContext.prototype, ["getParameter"]],')
   L.push('      [window.Geolocation && Geolocation.prototype, ["getCurrentPosition", "watchPosition"]],')
   L.push('      [window.AnalyserNode && AnalyserNode.prototype, ["getFloatFrequencyData"]],')
+  // locale 出口也要登记：不登记就没有 patch 前的原生 arity 快照，收口时读到的
+  // 是包装函数的形参个数（这里统一是 0）—— localeCompare 原生是 1 参，会被改错。
+  L.push('      [Number.prototype, ["toLocaleString"]],')
+  L.push('      [typeof BigInt !== "undefined" && BigInt.prototype, ["toLocaleString"]],')
+  L.push('      [String.prototype, ["localeCompare", "toLocaleUpperCase", "toLocaleLowerCase"]],')
   // RTCPeerConnection 在脚本后段会被换成 _PC，但 _PC.prototype === RTC.prototype，
   // 所以这里用 window.RTCPeerConnection.prototype 在两个时刻指向同一个对象
   L.push('      [window.RTCPeerConnection && window.RTCPeerConnection.prototype,')
@@ -427,7 +436,7 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('    try {')
   L.push('      if (C.tz) {')
   L.push('      var _DTF = Intl.DateTimeFormat;')
-  L.push("      var _lang = (C.languages && C.languages.length) ? C.languages[0] : 'en-US';")
+  L.push("      var _lang = _LOC;")
   L.push('      var _Patched = function (locales, options) {')
   L.push('        var o = {};')
   L.push('        if (options) { for (var k in options) { o[k] = options[k]; } }')
@@ -460,7 +469,22 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('      Intl.DateTimeFormat = _Patched;')
   L.push('')
   L.push('      // 其余 Intl 构造器同理，缺省 locale 一并接管')
-  L.push("      var _IN = ['NumberFormat', 'Collator', 'RelativeTimeFormat', 'PluralRules', 'ListFormat', 'DisplayNames', 'Segmenter'];")
+  // 不写死名单。Chromium 156 还带 Intl.DurationFormat 和 V8 私有的
+  // Intl.v8BreakIterator —— 漏掉任何一个，同一个 Intl 对象上就会出现两个语言
+  // （DateTimeFormat 说 en-US、DurationFormat 说宿主机的 zh-CN），不需要任何参照值
+  // 就能判定是伪造，比缺字段严重得多。补名字只能补到今天知道的，下个版本又会漏。
+  //
+  // 运行时枚举：supportedLocalesOf 是 ECMA-402「服务构造器」的共同特征。
+  // Intl.Locale 没有它（它是值类型，不是格式化器），会被自动排除。
+  // getCanonicalLocales / supportedValuesOf 是普通函数，同样被排除。
+  L.push('      var _IN = [];')
+  L.push('      try {')
+  L.push('        var _ik = Object.getOwnPropertyNames(Intl);')
+  L.push('        for (var _ii = 0; _ii < _ik.length; _ii++) {')
+  L.push('          var _iv = Intl[_ik[_ii]];')
+  L.push('          if (typeof _iv === "function" && typeof _iv.supportedLocalesOf === "function") { _IN.push(_ik[_ii]); }')
+  L.push('        }')
+  L.push('      } catch (e) {}')
   L.push('      for (var ni = 0; ni < _IN.length; ni++) {')
   L.push('        (function (nm) {')
   L.push('          var Orig = Intl[nm];')
@@ -568,6 +592,32 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('      Date.prototype.toLocaleDateString = _withTz(Date.prototype.toLocaleDateString);')
   L.push('      Date.prototype.toLocaleTimeString = _withTz(Date.prototype.toLocaleTimeString);')
   L.push('      }')
+  L.push('    } catch (e) {}')
+
+  /* 其余 locale 出口。上面只接了 Intl 和 Date，但这几个原生方法无参调用时读的是
+     宿主默认 locale —— Number 的千分位、localeCompare 的排序、toLocaleUpperCase
+     的土耳其语 i/İ，都是一行就能读出宿主语言，和 navigator.language 对不上。 */
+  L.push('')
+  L.push('    try {')
+  // 各方法签名不同，用「locale 落在实参的第几个位置」区分，不共用一张形参表：
+  //   toLocaleString(locales, options)                → 0
+  //   localeCompare(that, locales, options)           → 1
+  //   toLocaleUpperCase / toLocaleLowerCase(locales)  → 0
+  L.push('      var _withLoc = function (fn, idx) {')
+  L.push('        return function () {')
+  L.push('          var a = [];')
+  L.push('          for (var i = 0; i < arguments.length; i++) { a.push(arguments[i]); }')
+  L.push('          if (a[idx] === undefined || a[idx] === null) { a[idx] = _LOC; }')
+  L.push('          return fn.apply(this, a);')
+  L.push('        };')
+  L.push('      };')
+  L.push('      Number.prototype.toLocaleString = _withLoc(Number.prototype.toLocaleString, 0);')
+  L.push('      if (typeof BigInt !== "undefined" && BigInt.prototype && BigInt.prototype.toLocaleString) {')
+  L.push('        BigInt.prototype.toLocaleString = _withLoc(BigInt.prototype.toLocaleString, 0);')
+  L.push('      }')
+  L.push('      String.prototype.localeCompare = _withLoc(String.prototype.localeCompare, 1);')
+  L.push('      String.prototype.toLocaleUpperCase = _withLoc(String.prototype.toLocaleUpperCase, 0);')
+  L.push('      String.prototype.toLocaleLowerCase = _withLoc(String.prototype.toLocaleLowerCase, 0);')
   L.push('    } catch (e) {}')
 
   /* 语音合成：默认语音表来自宿主机。一个 en-US 环境里冒出
@@ -1008,15 +1058,14 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   // 构造器必须保留 prototype，方法必须去掉 —— keepProto 只在构造器这里为 true
   L.push('        _maskOne(window.RTCPeerConnection, "RTCPeerConnection");')
   L.push('      }')
-  L.push('      if (window.Intl) {')
-  L.push('        _maskOne(Intl.DateTimeFormat, "DateTimeFormat");')
-  L.push('        _maskOne(Intl.NumberFormat, "NumberFormat");')
-  L.push('        _maskOne(Intl.Collator, "Collator");')
-  L.push('        _maskOne(Intl.RelativeTimeFormat, "RelativeTimeFormat");')
-  L.push('        _maskOne(Intl.PluralRules, "PluralRules");')
-  L.push('        _maskOne(Intl.ListFormat, "ListFormat");')
-  L.push('        _maskOne(Intl.DisplayNames, "DisplayNames");')
-  L.push('        _maskOne(Intl.Segmenter, "Segmenter");')
+  // 不再另抄一份名单：_IN 是「哪些 Intl 构造器被接管过」的唯一事实来源。
+  // 两份名单必然漂移，而漂移的结果就是「某一处静默没登记」。
+  // _IN 用 var 声明在上面的 if (C.tz) 块里，和这里是同一个函数作用域，能直接读到；
+  // 没跑过那段（无时区）时它是 undefined —— 那种情况下也没有构造器被接管，跳过即可。
+  L.push('      if (window.Intl && _IN) {')
+  L.push('        for (var _i2 = 0; _i2 < _IN.length; _i2++) {')
+  L.push('          if (Intl[_IN[_i2]]) { _maskOne(Intl[_IN[_i2]], _IN[_i2]); }')
+  L.push('        }')
   L.push('      }')
   L.push('')
   L.push('      var _fts = Function.prototype.toString;')

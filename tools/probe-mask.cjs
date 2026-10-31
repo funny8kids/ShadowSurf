@@ -151,6 +151,77 @@ const PROBES = [
       }
       return hits;
     })()`
+  },
+  {
+    // 同一个 Intl 对象上，DateTimeFormat 说 profile 的语言、DurationFormat 说宿主的
+    // 语言 —— 不需要任何参照值就能判定是伪造。硬编码的 7 个构造器名单漏了它。
+    id: 'intl-duration-locale',
+    expect: true,
+    expr: `(function () {
+      if (typeof Intl.DurationFormat !== 'function') { return true; }
+      var want = String(navigator.language || '').toLowerCase();
+      var got = String(new Intl.DurationFormat().resolvedOptions().locale || '').toLowerCase();
+      return got === want || got.indexOf(want + '-') === 0;
+    })()`
+  },
+  {
+    // 枚举 Intl 上所有带 supportedLocalesOf 的构造器（ECMA-402 服务构造器的共同特征），
+    // 逐个读缺省 locale，必须和 navigator.language 同一个语言。
+    // 不在名单里补名字：补名字只能补到今天的版本，下一个版本又会漏。
+    //
+    // 比到语言子标签为止，不比到地区：PluralRules 对 'en-US' 的 resolvedOptions()
+    // 只规范到 'en'（ICU 的 plural rules 只到语言级），拿整串比会误报。
+    // 地区级的严格比对由 intl-duration-locale 那条负责。
+    id: 'intl-locale-consistent',
+    expect: [],
+    expr: `(function () {
+      var want = String(navigator.language || '').toLowerCase().split('-')[0];
+      var bad = [];
+      var keys = Object.getOwnPropertyNames(Intl);
+      for (var i = 0; i < keys.length; i++) {
+        var Ctor = null;
+        try { Ctor = Intl[keys[i]]; } catch (e) { continue; }
+        if (typeof Ctor !== 'function') { continue; }
+        if (typeof Ctor.supportedLocalesOf !== 'function') { continue; }
+        var loc = null;
+        try {
+          var inst = new Ctor();
+          if (inst && typeof inst.resolvedOptions === 'function') { loc = inst.resolvedOptions().locale; }
+        } catch (e) { continue; }
+        if (loc === null || loc === undefined) { continue; }
+        var got = String(loc).toLowerCase().split('-')[0];
+        if (got !== want) { bad.push(keys[i] + ':' + loc); }
+      }
+      return bad;
+    })()`
+  },
+  {
+    // Number.prototype.toLocaleString 无参时用宿主默认 locale。
+    // 单看 1234.5 的普通格式没区分度（zh-CN 和 en-US 都是 "1,234.5"），
+    // 所以再加一条 unit 格式：zh-CN 是 "1,234.5公里"、en-US 是 "1,234.5 km"。
+    id: 'number-locale-consistent',
+    expect: [],
+    expr: `(function () {
+      var bad = [];
+      var plain = (1234.5).toLocaleString();
+      var ref = new Intl.NumberFormat().format(1234.5);
+      if (plain !== ref) { bad.push('plain:' + plain + ' != ' + ref); }
+      var unit = (1234.5).toLocaleString(undefined, { style: 'unit', unit: 'kilometer' });
+      var unitRef = new Intl.NumberFormat(undefined, { style: 'unit', unit: 'kilometer' }).format(1234.5);
+      if (unit !== unitRef) { bad.push('unit:' + unit + ' != ' + unitRef); }
+      return bad;
+    })()`
+  },
+  {
+    // localeCompare 无参时用宿主默认排序。'中文'.localeCompare('abc') 在 zh-CN 是 -1、
+    // 在 en-US 是 1 —— 直接暴露宿主语言。
+    id: 'string-locale-consistent',
+    expect: true,
+    expr: `(function () {
+      var a = '中文'.localeCompare('abc');
+      var b = new Intl.Collator().compare('中文', 'abc');
+      return a === b;
+    })()`
   }
 ]
 
