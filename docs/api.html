@@ -1,0 +1,816 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShadowSurf API 接口文档</title>
+<link rel="stylesheet" href="assets/doc.css">
+<script src="assets/doc.js"></script>
+</head>
+<body>
+<div class="shell">
+
+<aside class="toc">
+  <div class="toc-brand">
+    <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2.5-7 3.5 14 2.5-7H21"/></svg></div>
+    <b>ShadowSurf</b>
+  </div>
+  <div class="toc-doc">API 接口文档<br>v1.0 · OpenAPI 3.1</div>
+  <nav>
+    <div class="grp">基础</div>
+    <a href="#overview">1 概述</a>
+    <a href="#auth">2 鉴权与安全</a>
+    <a href="#conventions">3 通用约定</a>
+    <a href="#model">4 资源模型</a>
+    <div class="grp">接口</div>
+    <a href="#profiles">5 环境 Profiles</a>
+    <a href="#spaces">6 空间 Spaces</a>
+    <a href="#tasks">7 任务 Tasks</a>
+    <a href="#proxies">8 代理 Proxies</a>
+    <a href="#models">9 模型 Models</a>
+    <a href="#audit">10 审计 Audit</a>
+    <a href="#ws">11 WebSocket 事件</a>
+    <a href="#mcp">12 MCP 接口</a>
+    <div class="grp">附录</div>
+    <a href="#errors">13 错误码</a>
+    <a href="#sdk">14 SDK 示例</a>
+  </nav>
+</aside>
+
+<main class="content">
+
+<header class="doc-head">
+  <div class="doc-kicker">API Reference · v1.0</div>
+  <h1>ShadowSurf <em>API 接口文档</em></h1>
+  <p class="sub">本地控制面接口。桌面 UI、CLI、SDK、IDE 插件共用同一套契约。机器可读规格见 <a href="api/openapi.yaml">openapi.yaml</a>，可直接导入 Postman / Insomnia / Apifox。</p>
+  <div class="doc-meta">
+    <div><b>Base URL</b>　<code>http://127.0.0.1:7801</code></div>
+    <div><b>版本</b>　<code>v1</code></div>
+    <div class="rel"><b>关联</b>
+      <a href="architecture.html">架构设计</a>
+      <a href="frontend.html">前端设计</a>
+      <a href="api/openapi.yaml">openapi.yaml</a>
+    </div>
+  </div>
+</header>
+
+<!-- ============ 1 ============ -->
+<h2 id="overview"><span class="n">01</span>概述</h2>
+<p class="lede">接口分两套：<b>REST</b> 负责状态查询与命令提交，<b>WebSocket</b> 负责实时事件。任务执行是异步的——<code>POST /v1/tasks</code> 立刻返回 <code>202</code> 与 <code>task_id</code>，进度通过事件流推送。</p>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:22%">特性</th><th style="width:78%">说明</th></tr></thead>
+<tbody>
+<tr><td>协议</td><td>HTTP/1.1，JSON 请求体，UTF-8</td></tr>
+<tr><td>基址</td><td><code>http://127.0.0.1:7801</code>（仅回环，不监听 0.0.0.0）</td></tr>
+<tr><td>版本策略</td><td>路径版本 <code>/v1</code>；破坏性变更才升主版本</td></tr>
+<tr><td>时间</td><td>全部为 Unix 毫秒整数，字段名以 <code>_at</code> 结尾</td></tr>
+<tr><td>ID 前缀</td><td><code>prf_</code> 环境 · <code>spc_</code> 空间 · <code>tsk_</code> 任务 · <code>stp_</code> 步骤 · <code>prx_</code> 代理 · <code>art_</code> 产物</td></tr>
+<tr><td>幂等</td><td>所有 <code>POST</code> 支持 <code>Idempotency-Key</code> 头，24h 内同 key 返回首次结果</td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============ 2 ============ -->
+<h2 id="auth"><span class="n">02</span>鉴权与安全</h2>
+
+<p>每次启动生成随机 token，写入 <code>~/.shadowsurf/token</code>（权限 0600）。所有请求携带：</p>
+<pre><code>Authorization: Bearer <span class="s-s">&lt;token&gt;</span></code></pre>
+
+<div class="note warn">
+  <div class="lbl">回环防护</div>
+  <p>服务校验 <code>Origin</code> 头，仅接受 <code>chrome-extension://</code>、<code>file://</code>、<code>http://127.0.0.1:*</code> 与无 Origin 的本地进程调用。任何网页发起的跨域请求都会被 <code>403</code> 拒绝——这是防止恶意页面通过 localhost 驱动浏览器的关键一道。</p>
+  <p>同时设置 <code>Access-Control-Allow-Origin</code> 为白名单精确匹配，不使用 <code>*</code>。</p>
+</div>
+
+<!-- ============ 3 ============ -->
+<h2 id="conventions"><span class="n">03</span>通用约定</h2>
+
+<h3>3.1 成功响应</h3>
+<pre><code>{
+  <span class="s-k">"data"</span>: { <span class="s-c">/* 资源或资源数组 */</span> },
+  <span class="s-k">"meta"</span>: { <span class="s-k">"page"</span>: <span class="s-n">1</span>, <span class="s-k">"page_size"</span>: <span class="s-n">20</span>, <span class="s-k">"total"</span>: <span class="s-n">24</span> }
+}</code></pre>
+
+<h3>3.2 错误响应</h3>
+<pre><code>{
+  <span class="s-k">"error"</span>: {
+    <span class="s-k">"code"</span>: <span class="s-s">"POLICY_DENIED"</span>,
+    <span class="s-k">"message"</span>: <span class="s-s">"动作 submit_order 属于 L2，需人工确认"</span>,
+    <span class="s-k">"details"</span>: { <span class="s-k">"task_id"</span>: <span class="s-s">"tsk_8f2a1c"</span>, <span class="s-k">"risk_level"</span>: <span class="s-s">"L2"</span> },
+    <span class="s-k">"trace_id"</span>: <span class="s-s">"tr_9d31e0"</span>
+  }
+}</code></pre>
+
+<h3>3.3 分页与筛选</h3>
+<div class="tbl">
+<table class="tight">
+<thead><tr><th style="width:18%">参数</th><th style="width:14%">类型</th><th style="width:12%">默认</th><th style="width:56%">说明</th></tr></thead>
+<tbody>
+<tr><td><code>page</code></td><td>integer</td><td>1</td><td>页码，从 1 开始</td></tr>
+<tr><td><code>page_size</code></td><td>integer</td><td>20</td><td>最大 100</td></tr>
+<tr><td><code>sort</code></td><td>string</td><td>—</td><td><code>-created_at</code> 前缀 <code>-</code> 表示倒序</td></tr>
+<tr><td><code>q</code></td><td>string</td><td>—</td><td>模糊搜索（名称、标签、代理 IP）</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>3.4 限流</h3>
+<p>读接口 60 req/s，写接口 10 req/s，任务提交 2 req/s。超限返回 <code>429</code> 并带 <code>Retry-After</code> 秒数。</p>
+
+<!-- ============ 4 ============ -->
+<h2 id="model"><span class="n">04</span>资源模型</h2>
+
+<pre><code>Profile (环境)
+  └─ Space (运行实例)        1 : N，同时最多 1 个活跃
+       └─ Task (任务)         1 : N
+            └─ Step (步骤)     1 : N
+                 └─ Artifact (快照/截图/产出)</code></pre>
+
+<h3>4.1 状态枚举</h3>
+<div class="tbl">
+<table>
+<thead><tr><th style="width:14%">资源</th><th style="width:52%">状态</th><th style="width:34%">转移</th></tr></thead>
+<tbody>
+<tr><td><b>Profile</b></td><td><span class="state idle">idle</span> <span class="state run">running</span> <span class="state warn">proxy_error</span> <span class="state err">inconsistent</span></td><td>启动 → running；代理检测失败 → proxy_error；一致性 &lt; 90 → inconsistent</td></tr>
+<tr><td><b>Space</b></td><td><span class="state idle">opening</span> <span class="state ok">ready</span> <span class="state idle">closed</span></td><td>创建 → opening → ready；关闭 → closed</td></tr>
+<tr><td><b>Task</b></td><td><span class="state idle">queued</span> <span class="state run">running</span> <span class="state warn">paused</span> <span class="state ok">done</span> <span class="state err">failed</span> <span class="state idle">cancelled</span></td><td>见架构文档 §7.1 状态机</td></tr>
+<tr><td><b>Step</b></td><td><span class="state idle">pending</span> <span class="state run">running</span> <span class="state ok">ok</span> <span class="state err">failed</span> <span class="state idle">skipped</span></td><td>线性推进，失败可重试</td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============ 5 ============ -->
+<h2 id="profiles"><span class="n">05</span>环境 Profiles</h2>
+
+<div class="tbl">
+<table class="tight">
+<thead><tr><th style="width:10%">方法</th><th style="width:34%">路径</th><th style="width:56%">说明</th></tr></thead>
+<tbody>
+<tr><td><span class="state run">GET</span></td><td class="mono">/v1/profiles</td><td>列表，支持分组、状态、关键词筛选</td></tr>
+<tr><td><span class="state ok">POST</span></td><td class="mono">/v1/profiles</td><td>创建环境（可只传名称，其余自动生成）</td></tr>
+<tr><td><span class="state run">GET</span></td><td class="mono">/v1/profiles/{id}</td><td>详情，含完整指纹配置</td></tr>
+<tr><td><span class="state warn">PATCH</span></td><td class="mono">/v1/profiles/{id}</td><td>局部更新</td></tr>
+<tr><td><span class="state err">DELETE</span></td><td class="mono">/v1/profiles/{id}</td><td>删除，<code>?force=true</code> 可删除运行中的</td></tr>
+<tr><td><span class="state ok">POST</span></td><td class="mono">/v1/profiles/{id}/duplicate</td><td>复制环境（新 ID、新指纹种子）</td></tr>
+<tr><td><span class="state ok">POST</span></td><td class="mono">/v1/profiles/{id}/fingerprint/regenerate</td><td>重新生成指纹，可指定保留项</td></tr>
+<tr><td><span class="state run">GET</span></td><td class="mono">/v1/profiles/{id}/consistency</td><td>一致性检查，返回分数与问题列表</td></tr>
+<tr><td><span class="state ok">POST</span></td><td class="mono">/v1/profiles/batch</td><td>批量操作：启动 / 停止 / 移组 / 换代理 / 删除</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="ep">
+  <div class="ep-head">
+    <span class="method post">POST</span>
+    <span class="ep-path">/v1/profiles</span>
+    <span class="ep-tag">创建环境</span>
+  </div>
+  <div class="ep-body">
+    <p>除 <code>name</code> 外全部可选。未传的字段由指纹生成器按 <code>os</code> 推导出一组<b>自洽</b>的值（UA、时区、语言、分辨率、WebGL 渲染器互相匹配）。</p>
+    <table class="params">
+      <tr><th>字段</th><th>类型</th><th>说明</th></tr>
+      <tr><td>name<span class="req">*</span></td><td>string</td><td>环境名称，1–64 字符</td></tr>
+      <tr><td>group_name</td><td>string</td><td>分组，不存在则自动创建</td></tr>
+      <tr><td>os</td><td>enum</td><td><code>windows_10</code> · <code>windows_11</code> · <code>macos_14</code> · <code>macos_15</code></td></tr>
+      <tr><td>proxy_id</td><td>string</td><td>绑定代理；不传则直连</td></tr>
+      <tr><td>timezone</td><td>string</td><td>IANA 时区，如 <code>America/Los_Angeles</code></td></tr>
+      <tr><td>locale</td><td>string</td><td>如 <code>en-US</code></td></tr>
+      <tr><td>screen</td><td>object</td><td><code>{width, height, dpr}</code></td></tr>
+      <tr><td>canvas_noise</td><td>boolean</td><td>默认 <code>true</code>，噪声按固定种子生成</td></tr>
+      <tr><td>share_session</td><td>boolean</td><td>默认 <code>true</code>，影子是否共享登录态</td></tr>
+      <tr><td>tags</td><td>string[]</td><td>最多 8 个</td></tr>
+    </table>
+
+    <div class="code-title">请求</div>
+<pre><code>curl -X POST http://127.0.0.1:7801/v1/profiles \
+  -H <span class="s-s">"Authorization: Bearer $TOKEN"</span> \
+  -H <span class="s-s">"Content-Type: application/json"</span> \
+  -d <span class="s-s">'{
+    "name": "Amazon-US-01",
+    "group_name": "电商",
+    "os": "windows_11",
+    "proxy_id": "prx_4d21",
+    "timezone": "America/Los_Angeles",
+    "locale": "en-US",
+    "tags": ["amazon", "us"]
+  }'</span></code></pre>
+
+    <div class="code-title">响应 201</div>
+<pre><code>{
+  <span class="s-k">"data"</span>: {
+    <span class="s-k">"id"</span>: <span class="s-s">"prf_7c9a2e4b1d"</span>,
+    <span class="s-k">"name"</span>: <span class="s-s">"Amazon-US-01"</span>,
+    <span class="s-k">"group_name"</span>: <span class="s-s">"电商"</span>,
+    <span class="s-k">"status"</span>: <span class="s-s">"idle"</span>,
+    <span class="s-k">"fingerprint"</span>: {
+      <span class="s-k">"os"</span>: <span class="s-s">"windows_11"</span>,
+      <span class="s-k">"ua"</span>: <span class="s-s">"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/141.0.0.0 Safari/537.36"</span>,
+      <span class="s-k">"timezone"</span>: <span class="s-s">"America/Los_Angeles"</span>,
+      <span class="s-k">"locale"</span>: <span class="s-s">"en-US,en"</span>,
+      <span class="s-k">"screen"</span>: { <span class="s-k">"width"</span>: <span class="s-n">1920</span>, <span class="s-k">"height"</span>: <span class="s-n">1080</span>, <span class="s-k">"dpr"</span>: <span class="s-n">1</span> },
+      <span class="s-k">"webgl_vendor"</span>: <span class="s-s">"ANGLE (NVIDIA GeForce GTX 1660)"</span>,
+      <span class="s-k">"canvas_noise"</span>: <span class="s-kw">true</span>,
+      <span class="s-k">"seed"</span>: <span class="s-s">"8f31c2a7"</span>
+    },
+    <span class="s-k">"consistency_score"</span>: <span class="s-n">98</span>,
+    <span class="s-k">"created_at"</span>: <span class="s-n">1761900000000</span>
+  }
+}</code></pre>
+  </div>
+</div>
+
+<div class="ep">
+  <div class="ep-head">
+    <span class="method post">POST</span>
+    <span class="ep-path">/v1/profiles/batch</span>
+    <span class="ep-tag">批量操作</span>
+  </div>
+  <div class="ep-body">
+    <p>对应 UI 底部的批量操作栏。单次最多 200 个 ID，操作串行执行，返回逐项结果（部分失败不整体回滚）。</p>
+    <table class="params">
+      <tr><th>字段</th><th>类型</th><th>说明</th></tr>
+      <tr><td>ids<span class="req">*</span></td><td>string[]</td><td>环境 ID 列表</td></tr>
+      <tr><td>action<span class="req">*</span></td><td>enum</td><td><code>start</code> · <code>stop</code> · <code>move_group</code> · <code>switch_proxy</code> · <code>delete</code></td></tr>
+      <tr><td>params</td><td>object</td><td>按 action 不同：<code>{group_name}</code> / <code>{proxy_id}</code></td></tr>
+    </table>
+<pre><code><span class="s-c">// 请求</span>
+{ <span class="s-k">"ids"</span>: [<span class="s-s">"prf_7c9a"</span>, <span class="s-s">"prf_3e10"</span>], <span class="s-k">"action"</span>: <span class="s-s">"start"</span> }
+
+<span class="s-c">// 响应 200</span>
+{
+  <span class="s-k">"data"</span>: {
+    <span class="s-k">"succeeded"</span>: [<span class="s-s">"prf_7c9a"</span>],
+    <span class="s-k">"failed"</span>: [
+      { <span class="s-k">"id"</span>: <span class="s-s">"prf_3e10"</span>, <span class="s-k">"code"</span>: <span class="s-s">"PROXY_UNREACHABLE"</span>, <span class="s-k">"message"</span>: <span class="s-s">"代理连接超时 8s"</span> }
+    ]
+  }
+}</code></pre>
+  </div>
+</div>
+
+<div class="ep">
+  <div class="ep-head">
+    <span class="method get">GET</span>
+    <span class="ep-path">/v1/profiles/{id}/consistency</span>
+    <span class="ep-tag">一致性检查</span>
+  </div>
+  <div class="ep-body">
+    <p>校验指纹各维度是否互相矛盾。分数低于 90 时 <code>POST /v1/spaces</code> 会被拒绝（可用 <code>force=true</code> 跳过）。</p>
+<pre><code>{
+  <span class="s-k">"data"</span>: {
+    <span class="s-k">"score"</span>: <span class="s-n">86</span>,
+    <span class="s-k">"issues"</span>: [
+      {
+        <span class="s-k">"code"</span>: <span class="s-s">"TZ_PROXY_MISMATCH"</span>,
+        <span class="s-k">"severity"</span>: <span class="s-s">"warning"</span>,
+        <span class="s-k">"message"</span>: <span class="s-s">"时区 UTC+8 与代理出口地区（美国西部）不符"</span>,
+        <span class="s-k">"suggestion"</span>: <span class="s-s">"将时区改为 America/Los_Angeles"</span>
+      },
+      {
+        <span class="s-k">"code"</span>: <span class="s-s">"WEBGL_PLATFORM_MISMATCH"</span>,
+        <span class="s-k">"severity"</span>: <span class="s-s">"error"</span>,
+        <span class="s-k">"message"</span>: <span class="s-s">"macOS 平台出现 Direct3D 渲染器"</span>
+      }
+    ]
+  }
+}</code></pre>
+  </div>
+</div>
+
+<!-- ============ 6 ============ -->
+<h2 id="spaces"><span class="n">06</span>空间 Spaces</h2>
+<p class="lede">Space 是 Profile 的运行实例。<code>mode=human</code> 与 <code>mode=shadow</code> 物理隔离，影子空间不抢焦点。</p>
+
+<div class="tbl">
+<table class="tight">
+<thead><tr><th style="width:10%">方法</th><th style="width:34%">路径</th><th style="width:56%">说明</th></tr></thead>
+<tbody>
+<tr><td><span class="state ok">POST</span></td><td class="mono">/v1/spaces</td><td>打开空间，返回 <code>space_id</code> 与首标签 <code>target_id</code></td></tr>
+<tr><td><span class="state run">GET</span></td><td class="mono">/v1/spaces</td><td>列出当前运行中的空间</td></tr>
+<tr><td><span class="state run">GET</span></td><td class="mono">/v1/spaces/{id}</td><td>详情，含标签列表与当前 URL</td></tr>
+<tr><td><span class="state err">DELETE</span></td><td class="mono">/v1/spaces/{id}</td><td>关闭空间，释放 BrowserContext</td></tr>
+<tr><td><span class="state ok">POST</span></td><td class="mono">/v1/spaces/{id}/focus</td><td>把窗口提到前台（仅 human 空间允许）</td></tr>
+<tr><td><span class="state ok">POST</span></td><td class="mono">/v1/spaces/{id}/tabs</td><td>新建标签</td></tr>
+<tr><td><span class="state err">DELETE</span></td><td class="mono">/v1/spaces/{id}/tabs/{targetId}</td><td>关闭标签</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="ep">
+  <div class="ep-head">
+    <span class="method post">POST</span>
+    <span class="ep-path">/v1/spaces</span>
+    <span class="ep-tag">打开空间</span>
+  </div>
+  <div class="ep-body">
+    <table class="params">
+      <tr><th>字段</th><th>类型</th><th>说明</th></tr>
+      <tr><td>profile_id<span class="req">*</span></td><td>string</td><td>环境 ID</td></tr>
+      <tr><td>mode<span class="req">*</span></td><td>enum</td><td><code>human</code> · <code>shadow</code></td></tr>
+      <tr><td>isolation</td><td>enum</td><td><code>L1</code> · <code>L2</code>（默认）· <code>L3</code></td></tr>
+      <tr><td>initial_url</td><td>string</td><td>首标签地址，默认 <code>about:blank</code></td></tr>
+      <tr><td>force</td><td>boolean</td><td>跳过一致性检查，默认 <code>false</code></td></tr>
+    </table>
+<pre><code><span class="s-c">// 响应 201</span>
+{
+  <span class="s-k">"data"</span>: {
+    <span class="s-k">"id"</span>: <span class="s-s">"spc_2b81f0"</span>,
+    <span class="s-k">"profile_id"</span>: <span class="s-s">"prf_7c9a2e4b1d"</span>,
+    <span class="s-k">"mode"</span>: <span class="s-s">"shadow"</span>,
+    <span class="s-k">"isolation"</span>: <span class="s-s">"L2"</span>,
+    <span class="s-k">"state"</span>: <span class="s-s">"ready"</span>,
+    <span class="s-k">"tabs"</span>: [
+      { <span class="s-k">"target_id"</span>: <span class="s-s">"8A3F2C..."</span>, <span class="s-k">"url"</span>: <span class="s-s">"about:blank"</span>, <span class="s-k">"title"</span>: <span class="s-s">""</span> }
+    ],
+    <span class="s-k">"opened_at"</span>: <span class="s-n">1761900100000</span>
+  }
+}</code></pre>
+    <div class="note info" style="margin-bottom:0">
+      <div class="lbl">错误</div>
+      <p><code>409 SPACE_CONFLICT</code> — 该 Profile 已有同 mode 的活跃空间；<br>
+      <code>422 PROFILE_INCONSISTENT</code> — 一致性分数 &lt; 90 且未传 <code>force</code>；<br>
+      <code>503 BROWSER_UNAVAILABLE</code> — CDP 连接不可用。</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 7 ============ -->
+<h2 id="tasks"><span class="n">07</span>任务 Tasks</h2>
+<p class="lede">核心接口。提交后立即返回，执行过程通过 WebSocket 推送；也可轮询 <code>GET /v1/tasks/{id}</code>。</p>
+
+<div class="tbl">
+<table class="tight">
+<thead><tr><th style="width:10%">方法</th><th style="width:38%">路径</th><th style="width:52%">说明</th></tr></thead>
+<tbody>
+<tr><td><span class="state ok">POST</span></td><td class="mono">/v1/tasks</td><td>创建并启动任务，返回 202</td></tr>
+<tr><td><span class="state run">GET</span></td><td class="mono">/v1/tasks</td><td>列表，按状态 / 环境 / 时间筛选</td></tr>
+<tr><td><span class="state run">GET</span></td><td class="mono">/v1/tasks/{id}</td><td>详情，含预算消耗与当前步骤</td></tr>
+<tr><td><span class="state warn">POST</span></td><td class="mono">/v1/tasks/{id}/pause</td><td>暂停（保留上下文）</td></tr>
+<tr><td><span class="state ok">POST</span></td><td class="mono">/v1/tasks/{id}/resume</td><td>恢复</td></tr>
+<tr><td><span class="state err">POST</span></td><td class="mono">/v1/tasks/{id}/cancel</td><td>取消（保留已产出）</td></tr>
+<tr><td><span class="state warn">POST</span></td><td class="mono">/v1/tasks/{id}/takeover</td><td>转人工接管，返回控制句柄</td></tr>
+<tr><td><span class="state ok">POST</span></td><td class="mono">/v1/tasks/{id}/release</td><td>释放接管，从当前步骤续跑</td></tr>
+<tr><td><span class="state ok">POST</span></td><td class="mono">/v1/tasks/{id}/confirm</td><td>确认 L2 高风险动作</td></tr>
+<tr><td><span class="state run">GET</span></td><td class="mono">/v1/tasks/{id}/steps</td><td>步骤列表，含证据引用</td></tr>
+<tr><td><span class="state run">GET</span></td><td class="mono">/v1/tasks/{id}/artifacts</td><td>产物列表（快照 / 截图 / 产出文件）</td></tr>
+<tr><td><span class="state run">GET</span></td><td class="mono">/v1/tasks/{id}/replay</td><td>回放索引（帧序列 + 动作时间轴）</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="ep">
+  <div class="ep-head">
+    <span class="method post">POST</span>
+    <span class="ep-path">/v1/tasks</span>
+    <span class="ep-tag">创建任务</span>
+  </div>
+  <div class="ep-body">
+    <table class="params">
+      <tr><th>字段</th><th>类型</th><th>说明</th></tr>
+      <tr><td>profile_id<span class="req">*</span></td><td>string</td><td>在哪个环境下执行</td></tr>
+      <tr><td>intent<span class="req">*</span></td><td>string</td><td>自然语言意图，1–2000 字符</td></tr>
+      <tr><td>space_id</td><td>string</td><td>复用已有空间；不传则自动创建 shadow 空间</td></tr>
+      <tr><td>budget</td><td>object</td><td><code>{max_steps, max_tokens, max_duration_ms, max_cost_cny}</code></td></tr>
+      <tr><td>policy</td><td>object</td><td><code>{allow_l1: true, l2_whitelist: ["amazon.com"], vision_fallback: true}</code></td></tr>
+      <tr><td>output</td><td>object</td><td><code>{format: "table"|"json"|"markdown", schema?: {...}}</code></td></tr>
+      <tr><td>skill_id</td><td>string</td><td>指定技能模板，跳过规划阶段</td></tr>
+    </table>
+
+    <div class="code-title">请求</div>
+<pre><code>{
+  <span class="s-k">"profile_id"</span>: <span class="s-s">"prf_7c9a2e4b1d"</span>,
+  <span class="s-k">"intent"</span>: <span class="s-s">"采集亚马逊无线耳机搜索结果前 20 名的标题、价格、评分和评论数"</span>,
+  <span class="s-k">"budget"</span>: { <span class="s-k">"max_steps"</span>: <span class="s-n">40</span>, <span class="s-k">"max_cost_cny"</span>: <span class="s-n">2.0</span> },
+  <span class="s-k">"policy"</span>: { <span class="s-k">"allow_l1"</span>: <span class="s-kw">true</span>, <span class="s-k">"vision_fallback"</span>: <span class="s-kw">true</span> },
+  <span class="s-k">"output"</span>: { <span class="s-k">"format"</span>: <span class="s-s">"table"</span> }
+}</code></pre>
+
+    <div class="code-title">响应 202</div>
+<pre><code>{
+  <span class="s-k">"data"</span>: {
+    <span class="s-k">"id"</span>: <span class="s-s">"tsk_5e12a9c3"</span>,
+    <span class="s-k">"status"</span>: <span class="s-s">"queued"</span>,
+    <span class="s-k">"profile_id"</span>: <span class="s-s">"prf_7c9a2e4b1d"</span>,
+    <span class="s-k">"space_id"</span>: <span class="s-s">"spc_2b81f0"</span>,
+    <span class="s-k">"created_at"</span>: <span class="s-n">1761900200000</span>
+  }
+}</code></pre>
+
+    <div class="note info" style="margin-bottom:0">
+      <div class="lbl">同步模式</div>
+      <p>加 <code>?wait=true&amp;timeout=120</code> 可阻塞等待完成（最长 120s），返回终态任务对象。适合 CLI 与脚本场景，不适合 UI。</p>
+    </div>
+  </div>
+</div>
+
+<div class="ep">
+  <div class="ep-head">
+    <span class="method get">GET</span>
+    <span class="ep-path">/v1/tasks/{id}</span>
+    <span class="ep-tag">任务详情</span>
+  </div>
+  <div class="ep-body">
+<pre><code>{
+  <span class="s-k">"data"</span>: {
+    <span class="s-k">"id"</span>: <span class="s-s">"tsk_5e12a9c3"</span>,
+    <span class="s-k">"status"</span>: <span class="s-s">"running"</span>,
+    <span class="s-k">"intent"</span>: <span class="s-s">"采集亚马逊无线耳机搜索结果前 20 名…"</span>,
+    <span class="s-k">"progress"</span>: { <span class="s-k">"current_step"</span>: <span class="s-n">5</span>, <span class="s-k">"total_steps"</span>: <span class="s-n">6</span> },
+    <span class="s-k">"budget"</span>: {
+      <span class="s-k">"max_steps"</span>: <span class="s-n">40</span>, <span class="s-k">"used_steps"</span>: <span class="s-n">5</span>,
+      <span class="s-k">"max_cost_cny"</span>: <span class="s-n">2.0</span>, <span class="s-k">"cost_cny"</span>: <span class="s-n">0.19</span>,
+      <span class="s-k">"max_tokens"</span>: <span class="s-n">200000</span>, <span class="s-k">"tokens_used"</span>: <span class="s-n">28400</span>
+    },
+    <span class="s-k">"current"</span>: {
+      <span class="s-k">"step_id"</span>: <span class="s-s">"stp_91a0"</span>,
+      <span class="s-k">"intent"</span>: <span class="s-s">"正在提取第 12 条 $29.99"</span>,
+      <span class="s-k">"started_at"</span>: <span class="s-n">1761900204000</span>
+    },
+    <span class="s-k">"started_at"</span>: <span class="s-n">1761900201000</span>,
+    <span class="s-k">"error"</span>: <span class="s-kw">null</span>
+  }
+}</code></pre>
+  </div>
+</div>
+
+<div class="ep">
+  <div class="ep-head">
+    <span class="method post">POST</span>
+    <span class="ep-path">/v1/tasks/{id}/takeover</span>
+    <span class="ep-tag">人工接管</span>
+  </div>
+  <div class="ep-body">
+    <p>任务置 <code>paused</code>，空间窗口提到前台，返回接管句柄。接管期间用户的所有输入都会记入审计（<code>operator=human</code>）。</p>
+<pre><code>{
+  <span class="s-k">"data"</span>: {
+    <span class="s-k">"task_id"</span>: <span class="s-s">"tsk_5e12a9c3"</span>,
+    <span class="s-k">"status"</span>: <span class="s-s">"paused"</span>,
+    <span class="s-k">"space_id"</span>: <span class="s-s">"spc_2b81f0"</span>,
+    <span class="s-k">"takeover_token"</span>: <span class="s-s">"tk_3f9a1c"</span>,
+    <span class="s-k">"expires_at"</span>: <span class="s-n">1761902000000</span>,
+    <span class="s-k">"reason"</span>: <span class="s-s">"captcha_detected"</span>
+  }
+}</code></pre>
+    <p style="margin-top:10px"><code>takeover_token</code> 有效期 30 分钟，超时自动 <code>release</code>。调用 <code>POST /v1/tasks/{id}/release</code> 显式释放。</p>
+  </div>
+</div>
+
+<div class="ep">
+  <div class="ep-head">
+    <span class="method get">GET</span>
+    <span class="ep-path">/v1/tasks/{id}/steps</span>
+    <span class="ep-tag">步骤列表</span>
+  </div>
+  <div class="ep-body">
+<pre><code>{
+  <span class="s-k">"data"</span>: [
+    {
+      <span class="s-k">"id"</span>: <span class="s-s">"stp_8c02"</span>, <span class="s-k">"seq"</span>: <span class="s-n">1</span>,
+      <span class="s-k">"intent"</span>: <span class="s-s">"导航到搜索结果页"</span>,
+      <span class="s-k">"action"</span>: { <span class="s-k">"type"</span>: <span class="s-s">"navigate"</span>, <span class="s-k">"url"</span>: <span class="s-s">"https://amazon.com/s?k=wireless+earbuds"</span> },
+      <span class="s-k">"status"</span>: <span class="s-s">"ok"</span>, <span class="s-k">"duration_ms"</span>: <span class="s-n">1240</span>,
+      <span class="s-k">"evidence"</span>: { <span class="s-k">"screenshot"</span>: <span class="s-s">"art_a1b2"</span>, <span class="s-k">"after_snapshot"</span>: <span class="s-s">"art_c3d4"</span> }
+    },
+    {
+      <span class="s-k">"id"</span>: <span class="s-s">"stp_8c03"</span>, <span class="s-k">"seq"</span>: <span class="s-n">2</span>,
+      <span class="s-k">"intent"</span>: <span class="s-s">"识别结果列表"</span>,
+      <span class="s-k">"action"</span>: { <span class="s-k">"type"</span>: <span class="s-s">"extract"</span>, <span class="s-k">"ref"</span>: <span class="s-s">"e_7f3a2c"</span> },
+      <span class="s-k">"status"</span>: <span class="s-s">"ok"</span>, <span class="s-k">"duration_ms"</span>: <span class="s-n">2810</span>
+    },
+    {
+      <span class="s-k">"id"</span>: <span class="s-s">"stp_8c06"</span>, <span class="s-k">"seq"</span>: <span class="s-n">4</span>,
+      <span class="s-k">"intent"</span>: <span class="s-s">"翻页至第 2 页"</span>,
+      <span class="s-k">"status"</span>: <span class="s-s">"ok"</span>, <span class="s-k">"duration_ms"</span>: <span class="s-n">7920</span>,
+      <span class="s-k">"human_intervention"</span>: { <span class="s-k">"reason"</span>: <span class="s-s">"captcha"</span>, <span class="s-k">"duration_ms"</span>: <span class="s-n">4000</span> }
+    }
+  ],
+  <span class="s-k">"meta"</span>: { <span class="s-k">"page"</span>: <span class="s-n">1</span>, <span class="s-k">"page_size"</span>: <span class="s-n">20</span>, <span class="s-k">"total"</span>: <span class="s-n">6</span> }
+}</code></pre>
+  </div>
+</div>
+
+<div class="ep">
+  <div class="ep-head">
+    <span class="method get">GET</span>
+    <span class="ep-path">/v1/tasks/{id}/replay</span>
+    <span class="ep-tag">回放索引</span>
+  </div>
+  <div class="ep-body">
+    <p>返回可直接驱动播放器的时间轴。帧按 <code>ts</code> 升序，<code>kind</code> 为 <code>action</code> / <code>frame</code> / <code>human</code>。</p>
+<pre><code>{
+  <span class="s-k">"data"</span>: {
+    <span class="s-k">"duration_ms"</span>: <span class="s-n">180000</span>,
+    <span class="s-k">"fps"</span>: <span class="s-n">2</span>,
+    <span class="s-k">"frames"</span>: [
+      { <span class="s-k">"ts"</span>: <span class="s-n">0</span>, <span class="s-k">"kind"</span>: <span class="s-s">"frame"</span>, <span class="s-k">"artifact"</span>: <span class="s-s">"art_f001"</span> },
+      { <span class="s-k">"ts"</span>: <span class="s-n">1240</span>, <span class="s-k">"kind"</span>: <span class="s-s">"action"</span>, <span class="s-k">"step_id"</span>: <span class="s-s">"stp_8c02"</span>, <span class="s-k">"label"</span>: <span class="s-s">"navigate"</span> },
+      { <span class="s-k">"ts"</span>: <span class="s-n">7920</span>, <span class="s-k">"kind"</span>: <span class="s-s">"human"</span>, <span class="s-k">"label"</span>: <span class="s-s">"人工接管 · 4s"</span> }
+    ]
+  }
+}</code></pre>
+  </div>
+</div>
+
+<!-- ============ 8 ============ -->
+<h2 id="proxies"><span class="n">08</span>代理 Proxies</h2>
+
+<div class="tbl">
+<table class="tight">
+<thead><tr><th style="width:10%">方法</th><th style="width:32%">路径</th><th style="width:58%">说明</th></tr></thead>
+<tbody>
+<tr><td><span class="state run">GET</span></td><td class="mono">/v1/proxies</td><td>列表，含健康状态与最近检测延迟</td></tr>
+<tr><td><span class="state ok">POST</span></td><td class="mono">/v1/proxies</td><td>添加单个或批量导入（<code>?bulk=true</code>，支持换行分隔文本）</td></tr>
+<tr><td><span class="state warn">PATCH</span></td><td class="mono">/v1/proxies/{id}</td><td>更新账号密码、备注</td></tr>
+<tr><td><span class="state err">DELETE</span></td><td class="mono">/v1/proxies/{id}</td><td>删除（被引用的返回 409）</td></tr>
+<tr><td><span class="state ok">POST</span></td><td class="mono">/v1/proxies/{id}/check</td><td>连通性检测，返回出口 IP、地区、延迟</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="ep">
+  <div class="ep-head">
+    <span class="method post">POST</span>
+    <span class="ep-path">/v1/proxies/{id}/check</span>
+    <span class="ep-tag">连通性检测</span>
+  </div>
+  <div class="ep-body">
+<pre><code>{
+  <span class="s-k">"data"</span>: {
+    <span class="s-k">"ok"</span>: <span class="s-kw">true</span>,
+    <span class="s-k">"latency_ms"</span>: <span class="s-n">42</span>,
+    <span class="s-k">"exit_ip"</span>: <span class="s-s">"45.132.8.21"</span>,
+    <span class="s-k">"country"</span>: <span class="s-s">"US"</span>,
+    <span class="s-k">"region"</span>: <span class="s-s">"California"</span>,
+    <span class="s-k">"timezone"</span>: <span class="s-s">"America/Los_Angeles"</span>,
+    <span class="s-k">"dns_leak"</span>: <span class="s-kw">false</span>,
+    <span class="s-k">"checked_at"</span>: <span class="s-n">1761900300000</span>
+  }
+}</code></pre>
+    <p style="margin-top:10px">检测结果会自动回写 <code>proxy.status</code>，并参与环境一致性评分（时区与出口地区匹配度）。</p>
+  </div>
+</div>
+
+<!-- ============ 9 ============ -->
+<h2 id="models"><span class="n">09</span>模型 Models</h2>
+
+<div class="tbl">
+<table class="tight">
+<thead><tr><th style="width:10%">方法</th><th style="width:32%">路径</th><th style="width:58%">说明</th></tr></thead>
+<tbody>
+<tr><td><span class="state run">GET</span></td><td class="mono">/v1/models</td><td>可用模型列表，含用途标签与单价</td></tr>
+<tr><td><span class="state warn">PATCH</span></td><td class="mono">/v1/models/routing</td><td>调整路由策略（规划 / 决策 / 定位 / 判定各用哪个）</td></tr>
+<tr><td><span class="state ok">POST</span></td><td class="mono">/v1/models/{id}/test</td><td>连通性与延迟测试</td></tr>
+<tr><td><span class="state run">GET</span></td><td class="mono">/v1/models/usage</td><td>用量统计，按天 / 任务 / 模型聚合</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="ep">
+  <div class="ep-head">
+    <span class="method get">GET</span>
+    <span class="ep-path">/v1/models</span>
+    <span class="ep-tag">模型列表</span>
+  </div>
+  <div class="ep-body">
+<pre><code>{
+  <span class="s-k">"data"</span>: [
+    { <span class="s-k">"id"</span>: <span class="s-s">"claude-sonnet"</span>, <span class="s-k">"provider"</span>: <span class="s-s">"anthropic"</span>, <span class="s-k">"roles"</span>: [<span class="s-s">"plan"</span>, <span class="s-s">"decide"</span>],
+      <span class="s-k">"context"</span>: <span class="s-n">200000</span>, <span class="s-k">"price_per_1k_in"</span>: <span class="s-n">0.021</span>, <span class="s-k">"price_per_1k_out"</span>: <span class="s-n">0.105</span> },
+    { <span class="s-k">"id"</span>: <span class="s-s">"qwen-small"</span>, <span class="s-k">"provider"</span>: <span class="s-s">"local"</span>, <span class="s-k">"roles"</span>: [<span class="s-s">"locate"</span>, <span class="s-s">"verify"</span>],
+      <span class="s-k">"context"</span>: <span class="s-n">32000</span>, <span class="s-k">"price_per_1k_in"</span>: <span class="s-n">0</span>, <span class="s-k">"price_per_1k_out"</span>: <span class="s-n">0</span> }
+  ]
+}</code></pre>
+  </div>
+</div>
+
+<!-- ============ 10 ============ -->
+<h2 id="audit"><span class="n">10</span>审计 Audit</h2>
+
+<div class="tbl">
+<table class="tight">
+<thead><tr><th style="width:10%">方法</th><th style="width:32%">路径</th><th style="width:58%">说明</th></tr></thead>
+<tbody>
+<tr><td><span class="state run">GET</span></td><td class="mono">/v1/audit</td><td>查询审计日志，支持时间、域名、风险级别、操作者筛选</td></tr>
+<tr><td><span class="state ok">POST</span></td><td class="mono">/v1/audit/export</td><td>导出 CSV / JSON，异步生成，返回下载任务</td></tr>
+</tbody>
+</table>
+</div>
+
+<pre><code><span class="s-c">// GET /v1/audit?from=1761900000000&amp;risk_level=L2&amp;page_size=2</span>
+{
+  <span class="s-k">"data"</span>: [
+    {
+      <span class="s-k">"id"</span>: <span class="s-n">10241</span>, <span class="s-k">"ts"</span>: <span class="s-n">1761900400000</span>,
+      <span class="s-k">"task_id"</span>: <span class="s-s">"tsk_5e12a9c3"</span>, <span class="s-k">"step_id"</span>: <span class="s-s">"stp_8c07"</span>,
+      <span class="s-k">"action_type"</span>: <span class="s-s">"click"</span>, <span class="s-k">"target_ref"</span>: <span class="s-s">"e_91b0d4"</span>,
+      <span class="s-k">"url"</span>: <span class="s-s">"https://amazon.com/dp/B0CHX3Q8YJ"</span>, <span class="s-k">"domain"</span>: <span class="s-s">"amazon.com"</span>,
+      <span class="s-k">"risk_level"</span>: <span class="s-s">"L2"</span>, <span class="s-k">"policy_decision"</span>: <span class="s-s">"confirmed_by_user"</span>,
+      <span class="s-k">"operator"</span>: <span class="s-s">"human"</span>, <span class="s-k">"screenshot_hash"</span>: <span class="s-s">"a3f9…"</span>
+    }
+  ],
+  <span class="s-k">"meta"</span>: { <span class="s-k">"page"</span>: <span class="s-n">1</span>, <span class="s-k">"page_size"</span>: <span class="s-n">2</span>, <span class="s-k">"total"</span>: <span class="s-n">318</span> }
+}</code></pre>
+
+<!-- ============ 11 ============ -->
+<h2 id="ws"><span class="n">11</span>WebSocket 事件</h2>
+
+<div class="ep">
+  <div class="ep-head">
+    <span class="method ws">WS</span>
+    <span class="ep-path">/v1/events</span>
+    <span class="ep-tag">事件流</span>
+  </div>
+  <div class="ep-body">
+    <p>连接：<code>ws://127.0.0.1:7801/v1/events?token=&lt;token&gt;&amp;since=&lt;seq&gt;</code>。断线重连时带 <code>since</code> 可补发遗漏事件（服务端保留最近 10 分钟）。</p>
+
+    <table class="params">
+      <tr><th>字段</th><th>类型</th><th>说明</th></tr>
+      <tr><td>type<span class="req">*</span></td><td>string</td><td>事件类型</td></tr>
+      <tr><td>seq<span class="req">*</span></td><td>integer</td><td>单调递增，用于补拉</td></tr>
+      <tr><td>ts<span class="req">*</span></td><td>integer</td><td>Unix 毫秒</td></tr>
+      <tr><td>data</td><td>object</td><td>事件负载</td></tr>
+    </table>
+
+    <div class="code-title">事件类型</div>
+    <div class="tbl" style="margin-top:6px">
+    <table class="tight">
+      <thead><tr><th style="width:28%">type</th><th style="width:72%">触发时机</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">task.created</td><td>任务入队</td></tr>
+        <tr><td class="mono">task.step</td><td>步骤状态变更（每步至少 2 条：running / ok|failed）</td></tr>
+        <tr><td class="mono">task.paused</td><td>暂停或等待人工确认</td></tr>
+        <tr><td class="mono">task.completed</td><td>成功结束，含产出摘要</td></tr>
+        <tr><td class="mono">task.failed</td><td>失败结束，含错误码</td></tr>
+        <tr><td class="mono">task.takeover_requested</td><td>需要人工接管（验证码 / L2 动作）</td></tr>
+        <tr><td class="mono">space.opened / space.closed</td><td>空间生命周期</td></tr>
+        <tr><td class="mono">profile.status_changed</td><td>环境状态变化（含代理异常）</td></tr>
+        <tr><td class="mono">proxy.degraded</td><td>代理延迟或失败率超阈值</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <div class="code-title">示例：task.step</div>
+<pre><code>{
+  <span class="s-k">"type"</span>: <span class="s-s">"task.step"</span>,
+  <span class="s-k">"seq"</span>: <span class="s-n">1024</span>,
+  <span class="s-k">"ts"</span>: <span class="s-n">1761900210000</span>,
+  <span class="s-k">"data"</span>: {
+    <span class="s-k">"task_id"</span>: <span class="s-s">"tsk_5e12a9c3"</span>,
+    <span class="s-k">"step"</span>: {
+      <span class="s-k">"id"</span>: <span class="s-s">"stp_8c07"</span>, <span class="s-k">"seq"</span>: <span class="s-n">5</span>,
+      <span class="s-k">"status"</span>: <span class="s-s">"running"</span>,
+      <span class="s-k">"intent"</span>: <span class="s-s">"正在提取第 12 条 $29.99"</span>
+    },
+    <span class="s-k">"progress"</span>: { <span class="s-k">"current"</span>: <span class="s-n">12</span>, <span class="s-k">"total"</span>: <span class="s-n">20</span> },
+    <span class="s-k">"cost_cny"</span>: <span class="s-n">0.19</span>
+  }
+}</code></pre>
+
+    <div class="note warn" style="margin-bottom:0">
+      <div class="lbl">背压</div>
+      <p>单连接推送上限 200 条/秒。客户端处理不过来时服务端会合并 <code>task.step</code>（只保留最新状态）并丢弃中间帧——完整历史仍可从 REST 补齐，因此客户端不应依赖事件流做全量记录。</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 12 ============ -->
+<h2 id="mcp"><span class="n">12</span>MCP 接口</h2>
+<p class="lede">把浏览器能力暴露给外部 Agent（Claude Code、Cursor、自研 Agent）。走 JSON-RPC 2.0，单端点。</p>
+
+<div class="ep">
+  <div class="ep-head">
+    <span class="method post">POST</span>
+    <span class="ep-path">/v1/mcp</span>
+    <span class="ep-tag">JSON-RPC</span>
+  </div>
+  <div class="ep-body">
+<pre><code><span class="s-c">// tools/list</span>
+{ <span class="s-k">"jsonrpc"</span>: <span class="s-s">"2.0"</span>, <span class="s-k">"id"</span>: <span class="s-n">1</span>, <span class="s-k">"method"</span>: <span class="s-s">"tools/list"</span> }
+
+<span class="s-c">// tools/call</span>
+{
+  <span class="s-k">"jsonrpc"</span>: <span class="s-s">"2.0"</span>, <span class="s-k">"id"</span>: <span class="s-n">2</span>, <span class="s-k">"method"</span>: <span class="s-s">"tools/call"</span>,
+  <span class="s-k">"params"</span>: {
+    <span class="s-k">"name"</span>: <span class="s-s">"browser_click"</span>,
+    <span class="s-k">"arguments"</span>: { <span class="s-k">"space_id"</span>: <span class="s-s">"spc_2b81f0"</span>, <span class="s-k">"ref"</span>: <span class="s-s">"e_91b0d4"</span> }
+  }
+}</code></pre>
+
+    <div class="code-title">暴露的工具</div>
+    <div class="tbl" style="margin-top:6px">
+    <table class="tight">
+      <thead><tr><th style="width:24%">工具名</th><th style="width:44%">参数</th><th style="width:32%">说明</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">browser_navigate</td><td><code>space_id</code>, <code>url</code></td><td>导航并等待加载</td></tr>
+        <tr><td class="mono">browser_snapshot</td><td><code>space_id</code>, <code>max_tokens?</code></td><td>返回结构化元素列表</td></tr>
+        <tr><td class="mono">browser_click</td><td><code>space_id</code>, <code>ref</code></td><td>按元素编号点击</td></tr>
+        <tr><td class="mono">browser_type</td><td><code>space_id</code>, <code>ref</code>, <code>text</code>, <code>submit?</code></td><td>输入文本</td></tr>
+        <tr><td class="mono">browser_extract</td><td><code>space_id</code>, <code>selector</code>, <code>fields[]</code></td><td>批量提取结构化数据</td></tr>
+        <tr><td class="mono">browser_screenshot</td><td><code>space_id</code>, <code>full_page?</code></td><td>返回 base64 或 artifact id</td></tr>
+        <tr><td class="mono">task_run</td><td><code>profile_id</code>, <code>intent</code>, <code>budget?</code></td><td>提交完整任务（异步）</td></tr>
+        <tr><td class="mono">task_status</td><td><code>task_id</code></td><td>查询进度与产出</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 13 ============ -->
+<h2 id="errors"><span class="n">13</span>错误码</h2>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:10%">HTTP</th><th style="width:26%">code</th><th style="width:30%">含义</th><th style="width:34%">客户端处理建议</th></tr></thead>
+<tbody>
+<tr><td>400</td><td class="mono">INVALID_ARGUMENT</td><td>参数校验失败</td><td>展示字段级错误，不重试</td></tr>
+<tr><td>401</td><td class="mono">UNAUTHORIZED</td><td>token 缺失或失效</td><td>重新读取 token 文件</td></tr>
+<tr><td>403</td><td class="mono">ORIGIN_FORBIDDEN</td><td>Origin 不在白名单</td><td>检查调用来源</td></tr>
+<tr><td>403</td><td class="mono">POLICY_DENIED</td><td>动作被策略拦截（L2 未确认）</td><td>弹出确认框，调 <code>/confirm</code></td></tr>
+<tr><td>404</td><td class="mono">NOT_FOUND</td><td>资源不存在</td><td>刷新列表</td></tr>
+<tr><td>409</td><td class="mono">SPACE_CONFLICT</td><td>同环境同 mode 已有活跃空间</td><td>复用已有 space_id</td></tr>
+<tr><td>409</td><td class="mono">PROXY_IN_USE</td><td>代理被环境引用，无法删除</td><td>先解绑</td></tr>
+<tr><td>422</td><td class="mono">PROFILE_INCONSISTENT</td><td>一致性分数 &lt; 90</td><td>引导修复或传 <code>force</code></td></tr>
+<tr><td>422</td><td class="mono">BUDGET_EXCEEDED</td><td>预算参数非法（如 max_steps &gt; 200）</td><td>收敛参数</td></tr>
+<tr><td>429</td><td class="mono">RATE_LIMITED</td><td>超限</td><td>按 <code>Retry-After</code> 退避</td></tr>
+<tr><td>500</td><td class="mono">INTERNAL</td><td>未预期异常</td><td>带 trace_id 上报</td></tr>
+<tr><td>503</td><td class="mono">BROWSER_UNAVAILABLE</td><td>CDP 连接不可用</td><td>指数退避重试，提示重启</td></tr>
+<tr><td>504</td><td class="mono">CDP_COMMAND_TIMEOUT</td><td>浏览器命令超时</td><td>重试 1 次后降级</td></tr>
+<tr><td>504</td><td class="mono">MODEL_TIMEOUT</td><td>模型调用超时</td><td>自动切备用供应商</td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============ 14 ============ -->
+<h2 id="sdk"><span class="n">14</span>SDK 示例</h2>
+
+<h3>14.1 TypeScript</h3>
+<pre><code><span class="s-kw">import</span> { ShadowSurf } <span class="s-kw">from</span> <span class="s-s">'@shadowsurf/sdk'</span>
+
+<span class="s-kw">const</span> ss = <span class="s-kw">new</span> ShadowSurf()   <span class="s-c">// 自动读取 ~/.shadowsurf/token</span>
+
+<span class="s-c">// 1. 建环境</span>
+<span class="s-kw">const</span> profile = <span class="s-kw">await</span> ss.profiles.create({
+  name: <span class="s-s">'Amazon-US-01'</span>,
+  group_name: <span class="s-s">'电商'</span>,
+  os: <span class="s-s">'windows_11'</span>,
+  timezone: <span class="s-s">'America/Los_Angeles'</span>,
+})
+
+<span class="s-c">// 2. 跑任务（自动订阅事件）</span>
+<span class="s-kw">const</span> task = <span class="s-kw">await</span> ss.tasks.run({
+  profile_id: profile.id,
+  intent: <span class="s-s">'采集无线耳机搜索结果前 20 名的标题与价格'</span>,
+  budget: { max_steps: <span class="s-n">40</span>, max_cost_cny: <span class="s-n">2</span> },
+  onStep: (step) =&gt; console.log(step.seq, step.intent, step.status),
+  onTakeover: <span class="s-kw">async</span> (req) =&gt; {
+    <span class="s-c">// 弹出 UI 让人处理验证码</span>
+    <span class="s-kw">await</span> showCaptchaDialog(req.space_id)
+  },
+})
+
+console.log(task.status, task.output)</code></pre>
+
+<h3>14.2 Python</h3>
+<pre><code><span class="s-kw">import</span> requests, os
+
+TOKEN = <span class="s-kw">open</span>(os.path.expanduser(<span class="s-s">'~/.shadowsurf/token'</span>)).read().strip()
+BASE = <span class="s-s">'http://127.0.0.1:7801/v1'</span>
+H = {<span class="s-s">'Authorization'</span>: <span class="s-s">f'Bearer {TOKEN}'</span>}
+
+task = requests.post(<span class="s-s">f'{BASE}/tasks'</span>, headers=H, json={
+    <span class="s-s">'profile_id'</span>: <span class="s-s">'prf_7c9a2e4b1d'</span>,
+    <span class="s-s">'intent'</span>: <span class="s-s">'采集无线耳机搜索结果前 20 名的标题与价格'</span>,
+}).json()[<span class="s-s">'data'</span>]
+
+<span class="s-c"># 同步等待（最长 120s）</span>
+result = requests.get(
+    <span class="s-s">f"{BASE}/tasks/{task['id']}"</span>, headers=H, params={<span class="s-s">'wait'</span>: <span class="s-s">'true'</span>}
+).json()[<span class="s-s">'data'</span>]
+<span class="s-kw">print</span>(result[<span class="s-s">'status'</span>], result.get(<span class="s-s">'output'</span>))</code></pre>
+
+<h3>14.3 CLI</h3>
+<pre><code><span class="s-c"># 环境</span>
+ss profile list --group 电商
+ss profile create --name <span class="s-s">"Amazon-US-01"</span> --os windows_11 --proxy prx_4d21
+
+<span class="s-c"># 任务</span>
+ss task run --profile prf_7c9a --intent <span class="s-s">"采集前 20 名价格"</span> --wait
+ss task watch tsk_5e12a9c3          <span class="s-c"># 实时打印步骤</span>
+ss task replay tsk_5e12a9c3 --open  <span class="s-c"># 打开回放</span>
+
+<span class="s-c"># 审计</span>
+ss audit export --from 2026-10-01 --format csv -o audit.csv</code></pre>
+
+<div class="doc-foot">
+  <span>ShadowSurf API 文档 v1.0 · 2026-10-31 · 机器可读规格：<a href="api/openapi.yaml">openapi.yaml</a></span>
+  <span>← <a href="architecture.html">架构设计</a> · <a href="frontend.html">前端设计</a> →</span>
+</div>
+
+</main>
+</div>
+
+
+</body>
+</html>

@@ -1,0 +1,552 @@
+/**
+ * 代理池面板样式。
+ *
+ * 只使用 tokens.css 里的设计令牌，不写死色值：
+ * 面板要和其它页面在浅色主题下保持同一套灰阶与强调色。
+ * 类名统一 px- 前缀，避免与并行开发的其它面板抢类名。
+ */
+
+/* ────────────────────────────── 面板骨架 ────────────────────────────── */
+
+.tool-panel {
+  padding: 22px 26px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 100%;
+}
+
+.tool-head h2 {
+  margin: 0 0 4px;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.tool-head p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink-3);
+  max-width: 620px;
+}
+
+.tool-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+/* 工具条贴右：标题在左、动作在右，和任务页的 page-head 节奏一致。
+   只挂在 px-headbar 上，不动全局 .tool-head，免得影响其它并行开发的面板 */
+.px-headbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.px-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ────────────────────────────── 概览条 ────────────────────────────── */
+
+.px-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+  flex-wrap: wrap;
+}
+
+.px-count b {
+  color: var(--ink);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.px-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.px-dot::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.px-spacer {
+  flex: 1;
+}
+
+.px-hint {
+  font-size: 10.5px;
+  color: var(--ink-4);
+}
+
+/* ────────────────────────────── 状态色 ────────────────────────────── */
+
+.px-ok {
+  color: var(--green);
+}
+
+.px-bad {
+  color: var(--red);
+}
+
+.px-warn {
+  color: var(--amber);
+}
+
+.px-dim {
+  color: var(--ink-3);
+}
+
+.px-ink {
+  color: var(--ink);
+}
+
+/* ────────────────────────────── 表格 ────────────────────────────── */
+
+.px-table {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  overflow-x: auto;
+}
+
+.px-row {
+  display: grid;
+  grid-template-columns:
+    minmax(120px, 1.4fr) 68px 140px minmax(120px, 1.2fr)
+    138px 70px 80px 108px;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--line-2);
+  font-size: 11.5px;
+  color: var(--ink-2);
+  min-width: 960px;
+  transition: background 0.12s;
+}
+
+.px-row:last-child {
+  border-bottom: none;
+}
+
+.px-row:not(.px-head):hover {
+  background: var(--surface-hover);
+}
+
+.px-head {
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  color: var(--ink-4);
+}
+
+.px-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.px-name .n {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.px-tags {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.px-tag {
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--ink-3);
+  background: var(--surface-3);
+  border-radius: var(--r-xs);
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+
+.px-proto {
+  justify-self: start;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  background: var(--surface-3);
+  border-radius: var(--r-xs);
+  padding: 2px 6px;
+}
+
+.px-proto.https {
+  color: var(--blue);
+}
+
+.px-proto.socks5 {
+  color: var(--amber);
+}
+
+.px-mono {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.px-exit {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.px-sub {
+  font-size: 10px;
+  color: var(--ink-4);
+  white-space: nowrap;
+  flex: none;
+}
+
+.px-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.px-lat {
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.px-time {
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.px-ops {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  justify-content: flex-end;
+}
+
+.px-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-xs);
+  display: grid;
+  place-items: center;
+  color: var(--ink-3);
+  transition: background 0.12s, color 0.12s;
+  flex: none;
+}
+
+.px-icon:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.px-icon:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.px-icon.px-danger:hover:not(:disabled) {
+  color: var(--red);
+}
+
+/* ────────────────────────────── 空状态 ────────────────────────────── */
+
+.px-empty {
+  padding: 30px 24px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r);
+  color: var(--ink-3);
+  font-size: 12px;
+  text-align: center;
+}
+
+.px-empty-guide {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 44px 24px;
+  background: var(--surface);
+  border-color: var(--line-strong);
+  border-radius: var(--r-lg);
+}
+
+.px-empty-guide .mark {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r);
+  background: var(--accent);
+  color: var(--surface);
+  display: grid;
+  place-items: center;
+}
+
+.px-empty-guide h3 {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.px-empty-guide p {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.8;
+  color: var(--ink-3);
+  max-width: 460px;
+}
+
+.px-empty-guide code {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+  background: var(--surface-3);
+  border-radius: var(--r-xs);
+  padding: 1px 5px;
+}
+
+.px-empty-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* ────────────────────────────── 弹层内的表单 ────────────────────────────── */
+
+.px-form {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.px-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.px-field > span {
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+.px-field input,
+.px-field select,
+.px-textarea {
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  font-size: 11.5px;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  transition: border-color 0.14s, box-shadow 0.14s, background 0.14s;
+}
+
+.px-field input::placeholder,
+.px-textarea::placeholder {
+  color: var(--ink-4);
+}
+
+.px-field input:focus,
+.px-field select:focus,
+.px-textarea:focus {
+  outline: none;
+  background: var(--surface);
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 2px var(--accent-line);
+}
+
+.px-field select {
+  cursor: pointer;
+  appearance: none;
+}
+
+.px-field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+}
+
+.px-textarea {
+  height: auto;
+  min-height: 132px;
+  padding: 8px 9px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.7;
+  resize: vertical;
+}
+
+/* 导入失败的行：直接铺在弹层里，用户改完再点一次就行 */
+.px-errors {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  padding: 8px 10px;
+}
+
+.px-errors .h {
+  font-size: 10.5px;
+  font-weight: 650;
+  color: var(--red);
+  margin-bottom: 4px;
+}
+
+.px-errors ul {
+  margin: 0;
+  padding-left: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 132px;
+  overflow-y: auto;
+}
+
+.px-errors li {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  word-break: break-all;
+}
+
+/* ────────────────────────────── 挂载弹层 ────────────────────────────── */
+
+.px-mount-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--ink-2);
+}
+
+.px-mount-note b {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.px-mount-empty {
+  padding: 18px 12px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-sm);
+  font-size: 11px;
+  color: var(--ink-3);
+  text-align: center;
+}
+
+.px-envlist {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 3px;
+}
+
+.px-envrow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: var(--r-xs);
+  transition: background 0.12s;
+}
+
+.px-envrow:hover {
+  background: var(--surface-3);
+}
+
+.px-envrow .pick {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 9px;
+  text-align: left;
+}
+
+.px-envrow .pick:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.px-envrow .n {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.px-envrow .tz {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.px-envrow .cur {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-4);
+  white-space: nowrap;
+}
+
+/* 已经挂在这条代理上的环境给一个回退入口，省得为了解绑去删代理 */
+.px-envrow .unlink {
+  flex: none;
+  margin-right: 6px;
+  padding: 2px 7px;
+  font-size: 10px;
+  color: var(--ink-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  transition: color 0.12s, border-color 0.12s;
+}
+
+.px-envrow .unlink:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent-line);
+}

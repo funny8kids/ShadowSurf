@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShadowSurf</title>
+<link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+
+<header class="hd">
+  <div class="brand">
+    <div class="mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 12h4l2.5-7 3.5 14 2.5-7H21"/>
+      </svg>
+    </div>
+    <div class="brand-txt">
+      <b>ShadowSurf</b>
+      <span id="brand-sub">影子待命</span>
+    </div>
+  </div>
+  <div class="hd-actions">
+    <button class="icon-btn" id="btn-settings" title="模型设置" aria-label="模型设置">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2v.2a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 4.6 15a2 2 0 1 1 0-4 1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 11.5 4V3.8a2 2 0 1 1 4 0V4a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 22 11a2 2 0 1 1 0 4z"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<div class="ctx" id="ctx">
+  <svg class="ctx-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+    <rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>
+  </svg>
+  <span class="ctx-title" id="ctx-title">正在读取当前页面…</span>
+  <button class="ctx-refresh" id="btn-refresh" title="重新读取页面">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+      <path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"/>
+    </svg>
+  </button>
+</div>
+
+<main class="stream" id="stream">
+  <!-- 内容由 sidepanel.js 渲染 -->
+</main>
+
+<div class="composer" id="composer">
+  <div class="input-wrap">
+    <textarea id="intent" rows="1" placeholder="让影子做什么？例如：总结这个页面并列出三个要点"></textarea>
+    <button class="send" id="btn-send" title="发送 (Enter)" aria-label="发送">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 19V5M5 12l7-7 7 7"/>
+      </svg>
+    </button>
+  </div>
+  <div class="composer-bar">
+    <button class="chip" id="btn-model" title="切换模型">
+      <span class="dot" id="model-dot"></span>
+      <span id="model-name">未配置</span>
+    </button>
+    <button class="chip quiet" id="btn-stop" hidden>停止</button>
+    <span class="spacer"></span>
+    <span class="kbd-hint">Enter 发送 · Shift+Enter 换行</span>
+  </div>
+</div>
+
+<!-- ================= 设置面板 ================= -->
+<section class="settings" id="settings" hidden>
+  <div class="st-head">
+    <div>
+      <h2>模型设置</h2>
+      <p>接任意 OpenAI 兼容接口</p>
+    </div>
+    <button class="icon-btn" id="btn-close-settings" aria-label="关闭设置">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <path d="M6 6l12 12M18 6L6 18"/>
+      </svg>
+    </button>
+  </div>
+
+  <div class="st-body">
+    <label class="lbl">服务商</label>
+    <div class="providers" id="providers"></div>
+
+    <label class="lbl" for="baseUrl">Base URL</label>
+    <input class="inp mono" id="baseUrl" type="text" spellcheck="false" placeholder="https://api.deepseek.com/v1">
+    <div class="hint" id="endpoint-hint"></div>
+
+    <label class="lbl" for="apiKey">API Key</label>
+    <div class="key-row">
+      <input class="inp mono" id="apiKey" type="password" spellcheck="false" placeholder="sk-…">
+      <button class="icon-btn sm" id="btn-eye" title="显示 / 隐藏">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>
+        </svg>
+      </button>
+    </div>
+
+    <label class="lbl" for="model">模型</label>
+    <input class="inp mono" id="model" type="text" spellcheck="false" placeholder="deepseek-chat">
+
+    <div class="row2">
+      <div>
+        <label class="lbl" for="temperature">温度</label>
+        <input class="inp" id="temperature" type="number" step="0.1" min="0" max="2" value="0.2">
+      </div>
+      <div>
+        <label class="lbl" for="maxSteps">最大步数</label>
+        <input class="inp" id="maxSteps" type="number" min="1" max="30" value="12">
+      </div>
+    </div>
+
+    <div class="st-actions">
+      <button class="btn ghost" id="btn-test">测试连接</button>
+      <button class="btn primary" id="btn-save">保存</button>
+    </div>
+
+    <div class="test-result" id="test-result" hidden></div>
+
+    <p class="note">
+      Key 只保存在本机浏览器存储（chrome.storage.local），不会上传到任何服务器。
+      请求由你的浏览器直接发往上面填写的 Base URL。
+    </p>
+  </div>
+</section>
+
+<!-- ================= 风险确认 ================= -->
+<div class="modal-mask" id="confirm-mask" hidden>
+  <div class="modal">
+    <div class="modal-ico">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L2.4 17a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>
+      </svg>
+    </div>
+    <h3>这一步需要你确认</h3>
+    <p id="confirm-reason">即将执行不可逆操作</p>
+    <div class="modal-actions">
+      <button class="btn ghost" id="btn-confirm-no">跳过这步</button>
+      <button class="btn danger" id="btn-confirm-yes">确认执行</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="sidepanel.js"></script>
+</body>
+</html>

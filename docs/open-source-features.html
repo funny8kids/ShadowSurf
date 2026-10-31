@@ -1,0 +1,972 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShadowSurf 开源功能清单 · 商业 VIP 能力全开放</title>
+<link rel="stylesheet" href="assets/doc.css">
+<style>
+/* 本文专用 */
+.fig{margin:24px 0 28px}
+.fig svg{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:12px;background:#fff;box-shadow:var(--shadow-sm)}
+.fig-cap{font-size:11.5px;color:var(--ink-3);margin-top:9px;text-align:center;letter-spacing:.01em}
+.pri{display:inline-block;font-size:10px;font-weight:650;padding:1px 6px;border-radius:4px;letter-spacing:.04em}
+.pri.p0{background:var(--danger-bg);color:var(--danger)}
+.pri.p1{background:var(--warn-bg);color:var(--warn)}
+.pri.p2{background:var(--info-bg);color:var(--info)}
+.yes{color:var(--ok);font-weight:650}
+.no{color:var(--danger);font-weight:650}
+.part{color:var(--warn);font-weight:650}
+.kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin:18px 0 22px}
+.kv .c{background:var(--bg-elev);border:1px solid var(--line);border-radius:11px;padding:13px 15px;box-shadow:var(--shadow-sm)}
+.kv .c b{display:block;font-size:20px;font-weight:680;color:var(--accent);letter-spacing:-.02em;line-height:1.2}
+.kv .c span{display:block;font-size:11px;color:var(--ink-3);margin-top:3px}
+.tbl td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+</style>
+<script src="assets/doc.js"></script>
+</head>
+<body>
+<div class="shell">
+
+<aside class="toc">
+  <div class="toc-brand">
+    <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2.5-7 3.5 14 2.5-7H21"/></svg></div>
+    <b>ShadowSurf</b>
+  </div>
+  <div class="toc-doc">开源功能清单<br>v1.0 · 2026-10</div>
+  <nav>
+    <div class="grp">立场</div>
+    <a href="#why">1 为什么不做付费墙</a>
+    <a href="#locks">2 商业产品的五种锁法</a>
+    <a href="#matrix">3 VIP 功能全景</a>
+    <div class="grp">能力</div>
+    <a href="#fp">4 指纹层</a>
+    <a href="#env">5 环境管理</a>
+    <a href="#net">6 代理与网络</a>
+    <a href="#auto">7 自动化与 API</a>
+    <a href="#team">8 团队协作</a>
+    <a href="#sec">9 安全与数据</a>
+    <div class="grp">落地</div>
+    <a href="#oss">10 开源实现路径</a>
+    <a href="#cmp">11 功能对照表</a>
+    <a href="#road">12 路线图</a>
+    <a href="#law">13 边界与合规</a>
+    <a href="#accept">14 验收标准</a>
+  </nav>
+</aside>
+
+<main class="content">
+
+<header class="doc-head">
+  <div class="doc-kicker">Feature Parity · Open Source · v1.0</div>
+  <h1>ShadowSurf <em>开源功能清单</em></h1>
+  <p class="sub">商业指纹浏览器把一半能力锁在 VIP 档。这个项目不锁——本文拆解市面上的五种锁法，把被锁的 47 项能力逐条给出开源实现方案、优先级与验收标准。</p>
+  <div class="doc-meta">
+    <div><b>读者</b>　内核 / 客户端 / 服务端工程师</div>
+    <div><b>状态</b>　可评审</div>
+    <div class="rel"><b>关联</b>
+      <a href="ai-integration.html">AI 集成设计</a>
+      <a href="architecture.html">架构文档</a>
+      <a href="prototype.html">产品原型</a>
+      <a href="ai-native-browser-plan.html">技术方案</a>
+    </div>
+  </div>
+</header>
+
+<!-- ============ 1 ============ -->
+<h2 id="why"><span class="n">01</span>为什么不做付费墙</h2>
+<p class="lede">不是道德姿态，是成本结构决定的。商业产品锁住的功能，绝大多数<b>边际成本为零</b>；它们被锁住，只因为锁住能卖钱。</p>
+
+<h3>1.1 两种成本，两种定价</h3>
+<div class="tbl">
+<table>
+<thead><tr><th style="width:22%">成本类型</th><th style="width:30%">典型项目</th><th style="width:24%">边际成本</th><th style="width:24%">合理商业模式</th></tr></thead>
+<tbody>
+<tr><td><b>软件能力</b></td><td>窗口同步、RPA、批量导入、API、团队权限、审计日志、指纹参数</td><td class="num">≈ 0（一次开发，无限复制）</td><td>开源 / 一次性买断 / 赞助</td></tr>
+<tr><td><b>运营服务</b></td><td>内置代理流量、云同步存储、云手机、客服、代运营</td><td class="num">&gt; 0（按量计费）</td><td>按量付费，合理</td></tr>
+</tbody>
+</table>
+</div>
+<p>商业产品的做法是把两类捆在一起卖：用<b>零成本的软件能力</b>做筹码，逼用户为<b>有成本的服务</b>付费。于是你为了「团队协作」这一个功能，不得不买一整套 100 环境的企业套餐。</p>
+
+<div class="note ok">
+  <div class="lbl">本项目的取舍</div>
+  <p><b>软件能力全开</b>：不设环境数上限、不设席位数、不锁 API、不锁同步器、不锁 RPA、不锁批量操作、不锁审计日志。<br>
+  <b>服务不自建</b>：不做代理销售、不做云存储托管、不做云手机。需要这些的用户自行购买或自建——我们只提供接口，不赚差价。</p>
+</div>
+
+<h3>1.2 不锁的四个工程理由</h3>
+<div class="tbl">
+<table>
+<thead><tr><th style="width:22%">理由</th><th style="width:78%">说明</th></tr></thead>
+<tbody>
+<tr><td><b>分叉成本</b></td><td>一旦有功能闸门，就必须维护两套代码路径（免费 / 付费）。开源项目没有足够人力维护分支逻辑，最终两边都会烂。</td></tr>
+<tr><td><b>审计透明</b></td><td>指纹浏览器的核心价值是「可验证」。带授权校验的闭源模块无法被社区审计，用户只能选择相信——这与开源的前提矛盾。</td></tr>
+<tr><td><b>贡献动力</b></td><td>贡献者不会为一个「自己用不到」的功能写代码。功能全开意味着每个用户都是潜在贡献者。</td></tr>
+<tr><td><b>信任成本</b></td><td>用户要在这类工具里登录几十上百个账号。任何「偷偷回传授权状态」的设计都会摧毁信任，而授权校验必然要联网。</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>1.3 我们明确不做的事</h3>
+<ul>
+<li><b>不做代理/IP 销售</b>：不内置任何代理套餐，不抽成。代理配置完全交给用户。</li>
+<li><b>不做云手机 / 真机农场</b>：与浏览器隔离是两件事，硬凑在一起只会两边都不好用。</li>
+<li><b>不做破解与绕过</b>：不提供「过验证码」「绕过风控」的成品能力。指纹一致性是技术问题，对抗平台规则是另一回事。</li>
+<li><b>不收集遥测</b>：默认零上报。要统计就自己跑本地日志。</li>
+</ul>
+
+<!-- ============ 2 ============ -->
+<h2 id="locks"><span class="n">02</span>商业产品的五种锁法</h2>
+<p class="lede">调研了 8 家主流产品（2026-10 公开定价页与第三方评测），被锁的功能可以归成五类。看清这五类，就知道该放开什么。</p>
+
+<div class="fig">
+<svg viewBox="0 0 880 430" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,-apple-system,'PingFang SC','Microsoft YaHei',sans-serif">
+  <defs>
+    <marker id="lk" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto">
+      <path d="M0,0 L7.5,3 L0,6 z" fill="#b3261e"/>
+    </marker>
+    <marker id="ok2" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto">
+      <path d="M0,0 L7.5,3 L0,6 z" fill="#15803d"/>
+    </marker>
+  </defs>
+
+  <!-- 商业侧 -->
+  <text x="24" y="34" font-size="11" fill="#b3261e" letter-spacing=".08em">商业产品 · 同一份代码，五道闸门</text>
+  <rect x="24" y="44" width="832" height="128" rx="11" fill="#fdf7f6" stroke="#f0d5d1"/>
+
+  <g font-size="10.5">
+    <rect x="42" y="60" width="148" height="96" rx="8" fill="#fff" stroke="#e7d3d0"/>
+    <text x="116" y="82" font-size="11.5" font-weight="650" fill="#111417" text-anchor="middle">数量锁</text>
+    <text x="116" y="100" fill="#454d54" text-anchor="middle">环境数 2 / 3 / 5</text>
+    <text x="116" y="116" fill="#454d54" text-anchor="middle">免费档上限</text>
+    <text x="116" y="138" fill="#b3261e" text-anchor="middle" font-weight="600">超出即付费</text>
+
+    <rect x="204" y="60" width="148" height="96" rx="8" fill="#fff" stroke="#e7d3d0"/>
+    <text x="278" y="82" font-size="11.5" font-weight="650" fill="#111417" text-anchor="middle">席位锁</text>
+    <text x="278" y="100" fill="#454d54" text-anchor="middle">每加一人 $5/月</text>
+    <text x="278" y="116" fill="#454d54" text-anchor="middle">企业档才给无限席位</text>
+    <text x="278" y="138" fill="#b3261e" text-anchor="middle" font-weight="600">团队协作需付费</text>
+
+    <rect x="366" y="60" width="148" height="96" rx="8" fill="#fff" stroke="#e7d3d0"/>
+    <text x="440" y="82" font-size="11.5" font-weight="650" fill="#111417" text-anchor="middle">接口锁</text>
+    <text x="440" y="100" fill="#454d54" text-anchor="middle">Local API / CDP</text>
+    <text x="440" y="116" fill="#454d54" text-anchor="middle">按档位限流 50→200 rpm</text>
+    <text x="440" y="138" fill="#b3261e" text-anchor="middle" font-weight="600">免费档无接口</text>
+
+    <rect x="528" y="60" width="148" height="96" rx="8" fill="#fff" stroke="#e7d3d0"/>
+    <text x="602" y="82" font-size="11.5" font-weight="650" fill="#111417" text-anchor="middle">功能锁</text>
+    <text x="602" y="100" fill="#454d54" text-anchor="middle">同步器 / RPA / 迁移</text>
+    <text x="602" y="116" fill="#454d54" text-anchor="middle">审计 / 批量导入</text>
+    <text x="602" y="138" fill="#b3261e" text-anchor="middle" font-weight="600">免费档直接隐藏</text>
+
+    <rect x="690" y="60" width="148" height="96" rx="8" fill="#fff" stroke="#e7d3d0"/>
+    <text x="764" y="82" font-size="11.5" font-weight="650" fill="#111417" text-anchor="middle">流量锁</text>
+    <text x="764" y="100" fill="#454d54" text-anchor="middle">内置代理 GB 数</text>
+    <text x="764" y="116" fill="#454d54" text-anchor="middle">与套餐绑定</text>
+    <text x="764" y="138" fill="#b3261e" text-anchor="middle" font-weight="600">唯一有真实成本</text>
+  </g>
+
+  <!-- 中间对比 -->
+  <line x1="24" y1="196" x2="856" y2="196" stroke="#e3e0d9" stroke-dasharray="4 4"/>
+  <text x="440" y="212" font-size="10.5" fill="#767e86" text-anchor="middle">前四类边际成本 ≈ 0　　第五类边际成本 &gt; 0</text>
+
+  <!-- 开源侧 -->
+  <text x="24" y="244" font-size="11" fill="#0f766e" letter-spacing=".08em">ShadowSurf · 前四类全部拆除，第五类交还用户</text>
+  <rect x="24" y="254" width="832" height="128" rx="11" fill="#f2faf8" stroke="#bcdcd7"/>
+
+  <g font-size="10.5">
+    <rect x="42" y="270" width="148" height="96" rx="8" fill="#fff" stroke="#c9e5e0"/>
+    <text x="116" y="292" font-size="11.5" font-weight="650" fill="#0f766e" text-anchor="middle">不限环境数</text>
+    <text x="116" y="310" fill="#454d54" text-anchor="middle">本地 SQLite 存多少都行</text>
+    <text x="116" y="326" fill="#454d54" text-anchor="middle">只受磁盘与内存约束</text>
+    <text x="116" y="348" fill="#15803d" text-anchor="middle" font-weight="600">默认全开</text>
+
+    <rect x="204" y="270" width="148" height="96" rx="8" fill="#fff" stroke="#c9e5e0"/>
+    <text x="278" y="292" font-size="11.5" font-weight="650" fill="#0f766e" text-anchor="middle">不限席位</text>
+    <text x="278" y="310" fill="#454d54" text-anchor="middle">本地多用户 + 角色</text>
+    <text x="278" y="326" fill="#454d54" text-anchor="middle">自建服务端可跨机</text>
+    <text x="278" y="348" fill="#15803d" text-anchor="middle" font-weight="600">默认全开</text>
+
+    <rect x="366" y="270" width="148" height="96" rx="8" fill="#fff" stroke="#c9e5e0"/>
+    <text x="440" y="292" font-size="11.5" font-weight="650" fill="#0f766e" text-anchor="middle">接口全开</text>
+    <text x="440" y="310" fill="#454d54" text-anchor="middle">REST + WS + CDP 端点</text>
+    <text x="440" y="326" fill="#454d54" text-anchor="middle">本地无限流</text>
+    <text x="440" y="348" fill="#15803d" text-anchor="middle" font-weight="600">默认全开</text>
+
+    <rect x="528" y="270" width="148" height="96" rx="8" fill="#fff" stroke="#c9e5e0"/>
+    <text x="602" y="292" font-size="11.5" font-weight="650" fill="#0f766e" text-anchor="middle">功能全开</text>
+    <text x="602" y="310" fill="#454d54" text-anchor="middle">同步器 / RPA / 迁移</text>
+    <text x="602" y="326" fill="#454d54" text-anchor="middle">审计 / 批量导入</text>
+    <text x="602" y="348" fill="#15803d" text-anchor="middle" font-weight="600">默认全开</text>
+
+    <rect x="690" y="270" width="148" height="96" rx="8" fill="#fff" stroke="#e0dbd2" stroke-dasharray="4 3"/>
+    <text x="764" y="292" font-size="11.5" font-weight="650" fill="#454d54" text-anchor="middle">不自建服务</text>
+    <text x="764" y="310" fill="#454d54" text-anchor="middle">代理自带 / 自购</text>
+    <text x="764" y="326" fill="#454d54" text-anchor="middle">云同步可自托管</text>
+    <text x="764" y="348" fill="#767e86" text-anchor="middle" font-weight="600">不赚差价</text>
+  </g>
+
+  <text x="24" y="410" font-size="10.5" fill="#767e86">数据来源：2026-10 各产品官网定价页与第三方评测。环境数、席位价、API 限流为公开信息，具体以官方为准。</text>
+</svg>
+<div class="fig-cap">图 1　五种锁法：前四类拆掉零成本闸门，第五类（有真实成本）不捆绑销售</div>
+</div>
+
+<h3>2.1 调研摘录</h3>
+<div class="tbl">
+<table>
+<thead><tr><th style="width:14%">产品</th><th style="width:22%">免费档</th><th style="width:30%">付费起点</th><th style="width:34%">免费档被锁的关键能力</th></tr></thead>
+<tbody>
+<tr><td><b>AdsPower</b></td><td>2 个永久环境</td><td>$9/月（10 环境），席位 $5/月/人</td><td>数据同步不支持；部分批量功能受限；Local API 需付费档</td></tr>
+<tr><td><b>Multilogin</b></td><td>5 个环境，7 天不启动即删</td><td>Business 100 ≈ $40/月</td><td>团队席位与自动化 API 属 Pro 及以上；内置代理流量按档给</td></tr>
+<tr><td><b>Octo Browser</b></td><td>试用制</td><td>Base / Team / Advanced</td><td>API 按档限流（Base 50 rpm → Advanced 200 rpm）</td></tr>
+<tr><td><b>Dolphin Anty</b></td><td>10 个环境</td><td>$10/20 环境，$89/100 环境</td><td>团队精细权限、自动化接口按档开放</td></tr>
+<tr><td><b>GoLogin</b></td><td>3 个环境（7 天试用）</td><td>$9/月（10 环境）</td><td>团队协作、API 需付费档</td></tr>
+<tr><td><b>Hubstudio</b></td><td>50 个环境（较宽松）</td><td>按需升级</td><td>团队协作、API 接口在免费版被阉割</td></tr>
+<tr><td><b>比特浏览器</b></td><td>按活动给额度</td><td>环境数阶梯</td><td>万级环境、RPA 加速、数据同步属高配套餐</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note warn">
+  <div class="lbl">一个观察</div>
+  <p>免费档给的环境数差异极大（2 到 50），但<b>被锁的功能几乎完全一致</b>：团队、API、批量、同步器、审计。这说明「环境数」只是引流手段，真正的付费点是<b>协作与自动化</b>——恰恰是软件能力，边际成本为零。</p>
+</div>
+
+<!-- ============ 3 ============ -->
+<h2 id="matrix"><span class="n">03</span>VIP 功能全景</h2>
+<p class="lede">把被锁的能力摊开，一共 47 项，分 7 类。每一项都给出开源侧的实现方案与优先级。</p>
+
+<div class="kv">
+  <div class="c"><b>47</b><span>被锁功能总数</span></div>
+  <div class="c"><b>7</b><span>能力分类</span></div>
+  <div class="c"><b>31</b><span>P0 首版交付</span></div>
+  <div class="c"><b>0</b><span>付费解锁项</span></div>
+</div>
+
+<h3>3.1 总览矩阵</h3>
+<div class="tbl">
+<table>
+<thead><tr><th style="width:16%">分类</th><th style="width:9%">项数</th><th style="width:44%">被商业产品锁住的能力</th><th style="width:14%">开源侧策略</th><th style="width:17%">优先级</th></tr></thead>
+<tbody>
+<tr><td><a href="#fp">指纹层</a></td><td class="num">12</td><td>自定义 Canvas/WebGL/Audio 噪声、字体白名单、WebGPU、Client Hints、TLS 指纹、指纹一致性检测、指纹模板市场</td><td>全参数暴露 + 随机化引擎</td><td><span class="pri p0">P0</span> 9 项<br><span class="pri p1">P1</span> 3 项</td></tr>
+<tr><td><a href="#env">环境管理</a></td><td class="num">9</td><td>批量创建/克隆/删除、环境迁移（指纹不变）、模板与预设、标签分组、环境预热、定时启动、环境分享</td><td>全开放，无数量限制</td><td><span class="pri p0">P0</span> 7 项<br><span class="pri p1">P1</span> 2 项</td></tr>
+<tr><td><a href="#net">代理与网络</a></td><td class="num">6</td><td>批量代理检测、代理池轮换、链式代理、流量统计、DNS 一致性、WebRTC 泄漏防护</td><td>全开放，不卖代理</td><td><span class="pri p0">P0</span> 4 项<br><span class="pri p1">P1</span> 2 项</td></tr>
+<tr><td><a href="#auto">自动化与 API</a></td><td class="num">8</td><td>Local API、CDP 端点、Puppeteer/Playwright 接入、无代码 RPA、窗口同步器、任务调度、Webhook</td><td>全开放，无限流</td><td><span class="pri p0">P0</span> 5 项<br><span class="pri p1">P1</span> 3 项</td></tr>
+<tr><td><a href="#team">团队协作</a></td><td class="num">5</td><td>子账号与角色、环境级授权、操作审计日志、环境锁定、实时在线状态</td><td>本地多用户，不限席位</td><td><span class="pri p0">P0</span> 3 项<br><span class="pri p1">P1</span> 2 项</td></tr>
+<tr><td><a href="#sec">安全与数据</a></td><td class="num">5</td><td>本地加密库、2FA、Cookie 批量导入导出、备份恢复、自托管云同步</td><td>全开放，加密默认开</td><td><span class="pri p0">P0</span> 3 项<br><span class="pri p1">P1</span> 2 项</td></tr>
+<tr><td><a href="#auto">AI 能力</a></td><td class="num">2</td><td>AI 读页面 / 操作页面、模型自配置</td><td>本期已实现，不收 AI 税</td><td><span class="pri p0">P0</span> 2 项</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note info">
+  <div class="lbl">关于「AI 税」</div>
+  <p>市面上已有产品把 AI 能力做成独立加购（按次计费或单独订阅）。本项目的 AI 面板直连用户自己的模型 Key，<b>没有任何中转、没有按次计费</b>——用户付的是模型厂商的钱，不是我们的钱。详见 <a href="ai-integration.html">AI 集成设计文档</a>。</p>
+</div>
+
+<div class="note info">
+  <div class="lbl">关于「AI 税」</div>
+  <p>市面上已有产品把 AI 能力做成独立加购（按次计费或单独订阅）。本项目的 AI 面板直连用户自己的模型 Key，<b>没有任何中转、没有按次计费</b>——用户付的是模型厂商的钱，不是我们的钱。详见 <a href="ai-integration.html">AI 集成设计文档</a>。</p>
+</div>
+
+<!-- ============ 4 ============ -->
+<h2 id="fp"><span class="n">04</span>指纹层</h2>
+<p class="lede">商业产品通常只给你「开关」——打开 Canvas 噪声、打开 WebGL 伪装。我们给的是<b>种子、算法和参数表</b>，因为只有这样才能验证一致性。</p>
+
+<h3>4.1 一条铁律：确定性，不是随机性</h3>
+<p>最常见的错误是「每次启动都随机化」。这在检测系统眼里等于自曝——同一个账号两次访问，Canvas 哈希变了、字体列表变了，风险分立刻飙升。</p>
+<pre><code>profile_seed = HKDF-SHA256(master_key, salt="ss-fp-v1", info=profile_id, 32 bytes)
+
+canvas_noise(px)  = PRF(profile_seed, "canvas", px.x, px.y) % 3 - 1
+webgl_vendor      = pick(profile_seed, "webgl", GPU_POOL)
+font_list         = sample(profile_seed, "fonts", FONT_POOL, 42)
+timezone          = pick(profile_seed, "tz", TZ_POOL_MATCHING_PROXY)</code></pre>
+<p>同一个 <code>profile_id</code> 永远得到同一套指纹；换 <code>profile_id</code> 得到完全不同的一套。<b>种子存在加密库里，用户可导出、可迁移</b>——这正是商业产品「环境迁移指纹不变」的实现原理。</p>
+
+<h3>4.2 参数全表</h3>
+<p>按可伪造的层级分三组。注意 C 组<b>JS 层做不到</b>，必须靠内核或代理层，这也是多数产品含糊其辞的地方。</p>
+
+<h4>A. JS 可枚举层（CDP 注入即可）</h4>
+<div class="tbl">
+<table>
+<thead><tr><th style="width:24%">参数</th><th style="width:20%">默认策略</th><th style="width:34%">生成 / 伪造方式</th><th style="width:22%">一致性约束</th></tr></thead>
+<tbody>
+<tr><td><code>navigator.userAgent</code></td><td>跟随内核版本</td><td>CDP <code>Emulation.setUserAgentOverride</code>，同时更新 Client Hints</td><td>必须与内核真实版本匹配</td></tr>
+<tr><td><code>navigator.platform</code></td><td>Win32 / MacIntel</td><td>按种子选平台族</td><td>与 UA 里的 OS 段一致</td></tr>
+<tr><td><code>hardwareConcurrency</code></td><td>4 / 8 / 16</td><td>从常见值池取</td><td>与 deviceMemory 组合要合理（16 核配 2GB 内存可疑）</td></tr>
+<tr><td><code>deviceMemory</code></td><td>8</td><td>常见值池 {4,8,16}</td><td>同上</td></tr>
+<tr><td><code>languages</code></td><td>跟随代理地区</td><td>按代理国家生成 BCP-47 列表</td><td>与 <code>Accept-Language</code> 头一致</td></tr>
+<tr><td><code>plugins / mimeTypes</code></td><td>固定 PDF 五项</td><td>构造类数组对象，含 <code>item()</code> / <code>namedItem()</code></td><td>Chrome 现代版本插件列表已固定</td></tr>
+<tr><td><code>webdriver</code></td><td><code>false</code></td><td>删除原型上的 getter</td><td>—</td></tr>
+<tr><td><code>maxTouchPoints</code></td><td>0（桌面）</td><td>按设备类型定</td><td>与 UA 的移动端标识一致</td></tr>
+<tr><td><code>doNotTrack</code></td><td>null</td><td>保持默认</td><td>—</td></tr>
+<tr><td><code>pdfViewerEnabled</code></td><td>true</td><td>保持默认</td><td>—</td></tr>
+<tr><td><code>userAgentData</code>（Client Hints）</td><td>与 UA 对齐</td><td><code>userAgentMetadata</code> 全字段填写（brands / platformVersion / architecture / bitness / model / wow64）</td><td>platformVersion 必须真实存在（如 "15.0.0"）</td></tr>
+<tr><td><code>Intl.DateTimeFormat</code> 时区</td><td>跟随代理</td><td><code>Emulation.setTimezoneOverride</code></td><td>与 <code>Date.getTimezoneOffset()</code> 同步</td></tr>
+</tbody>
+</table>
+</div>
+
+<h4>B. 渲染与计算层（需包装原生方法）</h4>
+<div class="tbl">
+<table>
+<thead><tr><th style="width:24%">参数</th><th style="width:20%">默认策略</th><th style="width:34%">生成 / 伪造方式</th><th style="width:22%">检测点</th></tr></thead>
+<tbody>
+<tr><td><b>Canvas 2D</b></td><td>确定性微噪声</td><td>包装 <code>toDataURL</code> / <code>toBlob</code> / <code>getImageData</code>，对目标像素 ±1</td><td>两次绘制哈希是否稳定；噪声幅度是否过大</td></tr>
+<tr><td><b>WebGL vendor/renderer</b></td><td>GPU 池匹配</td><td>包装 <code>getParameter</code> 的 <code>UNMASKED_VENDOR_WEBGL</code> / <code>UNMASKED_RENDERER_WEBGL</code></td><td>与 <code>getSupportedExtensions()</code> 返回的扩展集是否匹配该 GPU</td></tr>
+<tr><td><b>WebGL 参数集</b></td><td>按 GPU 模板</td><td>30+ 个 <code>MAX_*</code> 常量按 GPU 型号填真实值</td><td>参数之间必须自洽（如 MAX_TEXTURE_SIZE 与 GPU 档位）</td></tr>
+<tr><td><b>WebGL readPixels</b></td><td>噪声</td><td>对读回像素做确定性扰动</td><td>与 Canvas 噪声是否同一套种子</td></tr>
+<tr><td><b>AudioContext</b></td><td>噪声</td><td>包装 <code>getFloatFrequencyData</code> / <code>getByteFrequencyData</code>，末位加 ±1e-7</td><td>OfflineAudioContext 渲染结果是否稳定</td></tr>
+<tr><td><b>字体列表</b></td><td>42 款白名单</td><td>伪造 <code>document.fonts.check()</code> 与 <code>measureText</code> 宽度表</td><td>Windows 与 macOS 字体集不能混用</td></tr>
+<tr><td><b>ClientRects</b></td><td>亚像素微扰</td><td>包装 <code>getBoundingClientRect</code>，宽高加 ±0.01</td><td>同一元素多次调用必须一致</td></tr>
+<tr><td><b>SpeechSynthesis</b></td><td>按平台给语音列表</td><td>伪造 <code>getVoices()</code> 返回值</td><td>语音列表与 OS 匹配</td></tr>
+<tr><td><b>WebGPU</b></td><td>按 GPU 模板</td><td>伪造 <code>adapter.info</code>（vendor / architecture / device）</td><td>与 WebGL GPU 一致</td></tr>
+<tr><td><b>媒体设备</b></td><td>常见摄像头/麦克风组合</td><td>伪造 <code>enumerateDevices()</code></td><td>deviceId 需稳定</td></tr>
+<tr><td><b>屏幕参数</b></td><td>1920×1080 起</td><td><code>Emulation.setDeviceMetricsOverride</code> + 伪造 <code>screen.*</code></td><td>availWidth 与任务栏高度合理</td></tr>
+<tr><td><b>电池 / 网络信息</b></td><td>桌面恒为充电中</td><td>伪造 <code>getBattery()</code>、<code>connection.effectiveType</code></td><td>effectiveType 与代理带宽不矛盾</td></tr>
+</tbody>
+</table>
+</div>
+
+<h4>C. 网络层（必须在内核或代理层做）</h4>
+<div class="tbl">
+<table>
+<thead><tr><th style="width:24%">参数</th><th style="width:20%">默认策略</th><th style="width:34%">实现位置</th><th style="width:22%">说明</th></tr></thead>
+<tbody>
+<tr><td><b>WebRTC 本地 IP</b></td><td>强制 relay / 关闭 mDNS 泄漏</td><td>Chromium 策略 <code>WebRtcIPHandlingPolicy</code></td><td>不处理会直接暴露真实内网 IP，是最常见的翻车点</td></tr>
+<tr><td><b>DNS 解析出口</b></td><td>随代理</td><td>代理层（socks5h / DoH）</td><td>DNS 泄漏比 IP 泄漏更隐蔽</td></tr>
+<tr><td><b>TLS 指纹（JA3/JA4）</b></td><td>与内核版本一致</td><td><b>只能改内核或 TLS 库</b></td><td>JS 层完全无法伪造；用 curl-impersonate 思路需替换网络栈</td></tr>
+<tr><td><b>HTTP/2 指纹</b></td><td>与内核一致</td><td>内核层（SETTINGS 帧顺序、窗口大小）</td><td>同上</td></tr>
+<tr><td><b>TCP/IP 指纹</b></td><td>操作系统默认</td><td>无法伪造（除非改内核网络栈）</td><td>诚实标注：做不到就是做不到</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note danger">
+  <div class="lbl">必须承认的边界</div>
+  <p>TLS 指纹、HTTP/2 指纹、TCP/IP 指纹<b>在纯 JS 或扩展层无法伪造</b>。市面上任何声称「全维度指纹伪装」的产品，如果没改内核或网络栈，这三项都是假的。本文档选择写清楚：<b>前两组做满，第三组在内核 fork 阶段处理，做不到的明确写「做不到」。</b></p>
+</div>
+
+<h3>4.3 一致性检测（这是「高级」的真正含义）</h3>
+<p>伪造单个参数不难，难的是让 50 个参数互相不矛盾。商业产品的「指纹评分」本质就是这张检查表：</p>
+<div class="tbl tight">
+<table>
+<thead><tr><th style="width:30%">检查项</th><th style="width:34%">矛盾示例</th><th style="width:36%">自动修正策略</th></tr></thead>
+<tbody>
+<tr><td>UA ↔ Client Hints</td><td>UA 说 Windows 10，CH 说 platformVersion 14.0.0</td><td>由 UA 反推 CH 全字段，不允许单独编辑</td></tr>
+<tr><td>UA ↔ 字体集</td><td>UA 是 Windows，字体列表里全是 PingFang</td><td>字体池按平台分库</td></tr>
+<tr><td>时区 ↔ 代理 IP</td><td>IP 在洛杉矶，时区是 Asia/Shanghai</td><td>绑定代理时自动改写时区与语言</td></tr>
+<tr><td>语言 ↔ Accept-Language</td><td>navigator.languages 是 zh-CN，请求头是 en-US</td><td>两者由同一个值生成</td></tr>
+<tr><td>屏幕 ↔ 窗口</td><td>screen 是 1920×1080，outerWidth 是 2560</td><td>窗口尺寸上限钳制到屏幕</td></tr>
+<tr><td>GPU ↔ WebGL 参数</td><td>renderer 报 RTX 4090，MAX_TEXTURE_SIZE 却是 4096</td><td>参数集按 GPU 模板整包替换</td></tr>
+<tr><td>硬件 ↔ 性能</td><td>16 核 CPU 但 JS 基准跑分像 2 核</td><td>不伪造性能，只选不矛盾的值</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>4.4 反检测：别让 patch 被看出来</h3>
+<p>CreepJS 这类工具会检查「函数是不是原生的」：<code>Function.prototype.toString.call(gl.getParameter)</code> 必须返回 <code>function getParameter() { [native code] }</code>。包装函数如果直接赋值，一测就露。</p>
+<pre><code>const native = WebGLRenderingContext.prototype.getParameter;
+WebGLRenderingContext.prototype.getParameter = new Proxy(native, {
+  apply(target, thisArg, args) { /* 改写返回值 */ },
+  // Proxy 天然保持 toString 外观
+});</code></pre>
+<p>更稳的做法是<b>不 patch JS，改内核返回值</b>（Chromium fork 阶段）。扩展阶段用 Proxy + <code>toString</code> 伪装，能过大部分检测，但过不了深度检查——这一点要在文档里说清楚，不能让用户误以为扩展版等于内核版。</p>
+
+<h3>4.5 指纹模板与共享</h3>
+<p>商业产品把「预设模板」当卖点（电商 / 社媒 / 广告投放各一套）。我们的做法是<b>模板即 JSON 文件</b>：</p>
+<pre><code>{
+  "name": "Windows 11 · RTX 3060 · 电商",
+  "ua_family": "chrome-131-win",
+  "gpu": "NVIDIA GeForce RTX 3060",
+  "screen": [1920, 1080],
+  "fonts_pool": "win11-common",
+  "timezone_rule": "follow_proxy",
+  "noise": { "canvas": "low", "audio": "low", "rects": "off" }
+}</code></pre>
+<p>模板可以导出、导入、提交到仓库。社区贡献的模板越多，新用户上手越快——这是开源相对商业产品的结构性优势，商业产品的模板是运营资产，不会共享。</p>
+
+<h3>4.5 指纹模板与共享</h3>
+<p>商业产品把「预设模板」当卖点（电商 / 社媒 / 广告投放各一套）。我们的做法是<b>模板即 JSON 文件</b>：</p>
+<pre><code>{
+  "name": "Windows 11 · RTX 3060 · 电商",
+  "ua_family": "chrome-131-win",
+  "gpu": "NVIDIA GeForce RTX 3060",
+  "screen": [1920, 1080],
+  "fonts_pool": "win11-common",
+  "timezone_rule": "follow_proxy",
+  "noise": { "canvas": "low", "audio": "low", "rects": "off" }
+}</code></pre>
+<p>模板可以导出、导入、提交到仓库。社区贡献的模板越多，新用户上手越快——这是开源相对商业产品的结构性优势，商业产品的模板是运营资产，不会共享。</p>
+
+<!-- ============ 5 ============ -->
+<h2 id="env"><span class="n">05</span>环境管理</h2>
+<p class="lede">商业产品用「环境数」收费，所以它们的批量能力反而做得敷衍——批量创建要排队、克隆会丢指纹、迁移要开会员。没有数量上限之后，这些功能才有做好的必要。</p>
+
+<h3>5.1 九项能力</h3>
+<div class="tbl">
+<table>
+<thead><tr><th style="width:16%">能力</th><th style="width:36%">行为</th><th style="width:34%">实现要点</th><th style="width:14%">优先级</th></tr></thead>
+<tbody>
+<tr><td><b>批量创建</b></td><td>选模板 + 填数量（1–500），一次性生成 N 个环境，每个独立种子</td><td>单事务批量插入；种子用计数器派生，避免碰撞；进度以 WS 事件推送</td><td><span class="pri p0">P0</span></td></tr>
+<tr><td><b>环境克隆</b></td><td>两种模式：<b>同指纹</b>（复制种子，用于同一账号多端）／<b>新指纹</b>（换种子，用于铺量）</td><td>克隆时必须让用户明确选，默认「新指纹」——同指纹克隆是最容易造成关联的操作</td><td><span class="pri p0">P0</span></td></tr>
+<tr><td><b>环境迁移</b></td><td>导出 <code>.ssp</code> 包，导入到另一台机器，<b>指纹与登录态完全不变</b></td><td>包内含加密种子 + cookies + 配置；导入时校验 master key 或要求输入导出密码</td><td><span class="pri p0">P0</span></td></tr>
+<tr><td><b>模板与预设</b></td><td>保存一套指纹+代理+启动参数为模板，创建时直接套用</td><td>模板即 JSON（见 4.5），可版本化、可 diff</td><td><span class="pri p0">P0</span></td></tr>
+<tr><td><b>标签 / 分组</b></td><td>多标签、树形分组、按标签批量操作</td><td>标签表 + 关联表；筛选走索引，万级环境下列表仍要 <100ms</td><td><span class="pri p0">P0</span></td></tr>
+<tr><td><b>搜索与筛选</b></td><td>按名称、编号、标签、分组、代理国家、最后启动时间组合筛选</td><td>SQLite FTS5 做名称模糊搜索；其余走复合索引</td><td><span class="pri p0">P0</span></td></tr>
+<tr><td><b>环境预热</b></td><td>启动后自动依次访问预设 URL（如登录页、首页），等页面稳定再交给用户</td><td>复用 Agent 的 <code>waitForStable</code>；预热脚本可配置、可跳过</td><td><span class="pri p1">P1</span></td></tr>
+<tr><td><b>定时启动</b></td><td>按 cron 表达式在指定时间启动指定环境</td><td>本地调度器（非云），关机即停；启动结果写审计日志</td><td><span class="pri p1">P1</span></td></tr>
+<tr><td><b>环境分享</b></td><td>把环境授权给另一个本地用户或团队成员（不导出文件）</td><td>走团队权限模型（见第 8 节），环境级 ACL</td><td><span class="pri p0">P0</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>5.2 迁移包格式</h3>
+<p>「指纹不变地搬家」是商业产品的核心卖点之一，实现上并不复杂，难的是<b>密钥管理</b>：</p>
+<pre><code>profile-8848.ssp  (zip)
+├── manifest.json      { version, profile_id, exported_at, algo: "aes-256-gcm" }
+├── seed.enc           种子密文（用导出密码派生密钥，scrypt）
+├── cookies.enc        加密的 Cookie 存储
+├── config.json        代理、启动参数、标签（不含密钥）
+└── checksum.txt       SHA-256，导入前校验完整性</code></pre>
+<p>导入时的三种情况：</p>
+<div class="tbl tight">
+<table>
+<thead><tr><th style="width:26%">情况</th><th style="width:74%">处理</th></tr></thead>
+<tbody>
+<tr><td>本机无同 ID 环境</td><td>直接导入，沿用原 <code>profile_id</code>，指纹与原来完全一致</td></tr>
+<tr><td>本机已有同 ID</td><td>提示二选一：覆盖（保留原 ID）或另存为新环境（分配新 ID，<b>指纹随之改变</b>，需明确告知）</td></tr>
+<tr><td>密码错误 / 校验失败</td><td>拒绝导入，不做任何部分写入（先解压到临时目录校验，通过后再入库）</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>5.3 为什么「不存明文指纹」</h3>
+<p>环境表里只存 <code>seed</code> 与少量可读元数据（平台族、GPU 名），完整指纹在启动时由种子现算。三个好处：</p>
+<ul>
+<li><b>防泄漏</b>：数据库被拖走，攻击者拿到的是密文种子，没有 master key 算不出指纹。</li>
+<li><b>防漂移</b>：算法升级（比如新增一个参数）后，所有环境自动获得新参数，不需要迁移数据。</li>
+<li><b>体积小</b>：一万个环境的元数据不到 10MB，启动时算一次指纹只要几毫秒。</li>
+</ul>
+
+<!-- ============ 6 ============ -->
+<h2 id="net"><span class="n">06</span>代理与网络</h2>
+<p class="lede">指纹和 IP 是两条腿。腿不齐，指纹做得再好也没用。商业产品把代理流量打包进套餐卖，我们只做<b>代理管理</b>，不卖代理。</p>
+
+<h3>6.1 六项能力</h3>
+<div class="tbl">
+<table>
+<thead><tr><th style="width:16%">能力</th><th style="width:38%">行为</th><th style="width:32%">实现要点</th><th style="width:14%">优先级</th></tr></thead>
+<tbody>
+<tr><td><b>代理绑定</b></td><td>HTTP / HTTPS / SOCKS5，支持用户名密码认证，支持「直连」</td><td>Chromium 命令行不接受带认证的代理，需本地转发器（见 6.2）</td><td><span class="pri p0">P0</span></td></tr>
+<tr><td><b>批量检测</b></td><td>并发测试 N 条代理：连通性、延迟、出口 IP、地理位置、是否透明代理</td><td>请求 <code>ipinfo</code> 类接口比对 IP 与 ASN；并发上限 20，避免把自己打限流</td><td><span class="pri p0">P0</span></td></tr>
+<tr><td><b>代理池</b></td><td>一组代理按策略分配给环境：固定 / 轮换 / 失败切换</td><td>失败判定（连续 2 次连接超时）后自动换下一条，并写日志</td><td><span class="pri p1">P1</span></td></tr>
+<tr><td><b>链式代理</b></td><td>本地 → 代理 A → 代理 B → 目标</td><td>需自建中继进程；Chromium 只认单跳</td><td><span class="pri p1">P1</span></td></tr>
+<tr><td><b>流量统计</b></td><td>按环境累计上下行字节数、请求数</td><td>本地代理层统计最准；CDP <code>Network.*</code> 事件会有遗漏</td><td><span class="pri p0">P0</span></td></tr>
+<tr><td><b>一致性校验</b></td><td>绑定代理后自动检查：时区、语言、WebRTC 泄漏、DNS 出口</td><td>代理国家 → 时区/语言映射表；WebRTC 用 <code>WebRtcIPHandlingPolicy=disable_non_proxied_udp</code></td><td><span class="pri p0">P0</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>6.2 带认证的代理怎么接</h3>
+<p>这是新手最常卡住的地方：Chromium 的 <code>--proxy-server</code> 不支持 <code>user:pass@host</code>，而绝大多数付费代理都要认证。两种解法：</p>
+<pre><code>方案 A（推荐）：本地转发器
+  浏览器 --proxy-server=127.0.0.1:PORT
+  本地进程 → 连上游代理 → 注入 Proxy-Authorization → 转发
+  优点：支持链式、支持流量统计、支持失败切换
+
+方案 B：扩展拦截 onAuthRequired
+  chrome.webRequest.onAuthRequired 提供凭据
+  优点：零额外进程；缺点：仅扩展阶段可用，无法统计流量</code></pre>
+
+<h3>6.3 一致性自动修正</h3>
+<p>绑定代理的那一刻，是最容易产生矛盾的时刻。默认策略是<b>自动跟随</b>，而不是让用户手动对表：</p>
+<div class="tbl tight">
+<table>
+<thead><tr><th style="width:26%">代理出口</th><th style="width:30%">自动设置</th><th style="width:44%">理由</th></tr></thead>
+<tbody>
+<tr><td>美国 · 洛杉矶</td><td>时区 <code>America/Los_Angeles</code>，语言 <code>en-US</code>，Accept-Language 同步</td><td>三处必须一致，否则一次 JS 探测就露</td></tr>
+<tr><td>日本 · 东京</td><td>时区 <code>Asia/Tokyo</code>，语言 <code>ja-JP</code> + <code>en-US</code> 备选</td><td>日本用户常见双语列表</td></tr>
+<tr><td>住宅代理（不透明）</td><td>不改时区，仅记录</td><td>住宅 IP 的地理位置本身模糊，强行改反而奇怪</td></tr>
+<tr><td>检测到透明代理</td><td><b>拒绝绑定</b>并提示</td><td>透明代理会把真实 IP 写进 <code>X-Forwarded-For</code>，等于没代理</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note warn">
+  <div class="lbl">不做的事</div>
+  <p>不内置代理销售、不做「IP 质量评分」的付费墙、不代理任何机房 IP 转售。代理池是用户自己的资源清单，我们只负责分配与检测。</p>
+</div>
+
+<div class="note warn">
+  <div class="lbl">不做的事</div>
+  <p>不内置代理销售、不做「IP 质量评分」的付费墙、不代理任何机房 IP 转售。代理池是用户自己的资源清单，我们只负责分配与检测。</p>
+</div>
+
+<!-- ============ 7 ============ -->
+<h2 id="auto"><span class="n">07</span>自动化与 API</h2>
+<p class="lede">这是商业产品锁得最死的一块：API 要付费档、同步器要高级档、RPA 要企业版。而这块恰恰是<b>零边际成本</b>的纯软件能力。</p>
+
+<h3>7.1 八项能力</h3>
+<div class="tbl">
+<table>
+<thead><tr><th style="width:18%">能力</th><th style="width:38%">行为</th><th style="width:30%">实现要点</th><th style="width:14%">优先级</th></tr></thead>
+<tbody>
+<tr><td><b>Local API</b></td><td>REST：环境 CRUD、启动/停止、查询状态、读写 Cookie、代理检测</td><td>本地 HTTP 服务，默认仅监听 <code>127.0.0.1</code>；令牌鉴权；<b>无限流</b></td><td><span class="pri p0">P0</span></td></tr>
+<tr><td><b>事件流</b></td><td>WebSocket 推送：环境启动、任务进度、代理失败、锁变更</td><td>与 REST 同一进程，事件格式与 <a href="api.html">API 文档</a>一致</td><td><span class="pri p0">P0</span></td></tr>
+<tr><td><b>CDP 端点</b></td><td>每个运行中的环境暴露独立 <code>ws://127.0.0.1:PORT/devtools/browser/&lt;id&gt;</code></td><td>每环境独立端口或按 target 路由；只在环境运行时开放</td><td><span class="pri p0">P0</span></td></tr>
+<tr><td><b>Playwright / Puppeteer</b></td><td><code>connectOverCDP(endpoint)</code> 直接接管环境，指纹与代理全部生效</td><td>不需要改客户端代码，也不需要装插件</td><td><span class="pri p0">P0</span></td></tr>
+<tr><td><b>无代码 RPA</b></td><td>录制操作 → 生成步骤 → 编辑 → 批量回放（跨环境）</td><td>录制走 CDP 事件，步骤格式<b>与 AI 动作协议同构</b>（见 7.3）</td><td><span class="pri p0">P0</span></td></tr>
+<tr><td><b>窗口同步器</b></td><td>一个主窗口操作，N 个从窗口镜像执行：点击、输入、滚动、快捷键</td><td>主窗口 CDP 捕获 → 坐标归一化 → 广播到从窗口</td><td><span class="pri p1">P1</span></td></tr>
+<tr><td><b>任务调度</b></td><td>cron 表达式 + 队列 + 并发上限，跨环境批量跑同一脚本</td><td>本地调度器；并发数受内存约束，默认 5</td><td><span class="pri p1">P1</span></td></tr>
+<tr><td><b>Webhook</b></td><td>任务完成/失败回调用户指定的 URL</td><td>带 HMAC 签名，防伪造回调</td><td><span class="pri p1">P1</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>7.2 三种接入方式</h3>
+<pre><code>// ① REST —— 管理类操作
+POST http://127.0.0.1:50325/api/v1/profiles/8848/start
+Authorization: Bearer &lt;local-token&gt;
+
+// ② CDP —— 自动化操作（指纹、代理全部生效）
+const browser = await chromium.connectOverCDP('ws://127.0.0.1:9222/devtools/browser/abc');
+const page = browser.contexts()[0].pages()[0];
+
+// ③ WebSocket —— 订阅事件
+ws.send({ type: 'subscribe', topics: ['profile.started', 'task.finished'] });</code></pre>
+<p>三种方式的定位很清楚：<b>REST 管资源，CDP 管页面，WS 管通知</b>。不发明第四种协议。</p>
+
+<h3>7.3 RPA 与 AI 共用一套动作协议</h3>
+<p>这是本项目相对商业产品的一个结构性优势。商业产品里，RPA 是 RPA，AI 助手是 AI 助手，两套东西互不相通。我们把它们统一到同一个动作模型上：</p>
+<div class="tbl tight">
+<table>
+<thead><tr><th style="width:22%">来源</th><th style="width:30%">产出</th><th style="width:48%">执行</th></tr></thead>
+<tbody>
+<tr><td>人工录制</td><td><code>[{type:'click',id:'e3'},{type:'type',id:'e5',text:'…'}]</code></td><td>同一个执行器</td></tr>
+<tr><td>AI 决策</td><td><code>{type:'click',id:'e3'}</code>（每步一个）</td><td>同一个执行器</td></tr>
+<tr><td>手写脚本</td><td>同上，JSON 或 YAML</td><td>同一个执行器</td></tr>
+</tbody>
+</table>
+</div>
+<p>好处是三重的：</p>
+<ul>
+<li><b>AI 能修 RPA</b>：脚本跑失败时，让 AI 看当前页面重新定位元素，改完继续——不需要人工重录。</li>
+<li><b>RPA 能降 AI 成本</b>：稳定流程录成脚本后不再调用模型，成本从每步一次请求降到零。</li>
+<li><b>一套测试</b>：执行器的边界情况（元素消失、页面跳转、iframe）只需测一遍。</li>
+</ul>
+
+<h3>7.4 窗口同步器怎么做</h3>
+<p>同步器看着简单，实际有两个坑：<b>坐标</b>和<b>时序</b>。</p>
+<pre><code>主窗口 CDP Input.dispatchMouseEvent 事件
+  ↓
+归一化：nx = x / viewport.width, ny = y / viewport.height
+  ↓
+从窗口还原：x' = nx * w', y' = ny * h'
+  ↓
+逐个派发（错开 20–40ms，避免同时请求打满 CPU）</code></pre>
+<div class="tbl tight">
+<table>
+<thead><tr><th style="width:26%">坑</th><th style="width:74%">处理</th></tr></thead>
+<tbody>
+<tr><td>分辨率不同</td><td>归一化坐标；若从窗口视口比例与主窗口差异 &gt; 15%，标记该窗口为「不同步」并提示</td></tr>
+<tr><td>页面布局不同</td><td>同步的是<b>坐标</b>不是元素，布局差异会导致点错。所以同步器只适用于「同一套页面模板」的场景（如同一后台的多个账号）</td></tr>
+<tr><td>输入法 / 组合键</td><td>输入事件按字符广播而非按键广播，避免中文输入法在从窗口丢字</td></tr>
+<tr><td>滚动</td><td>按滚动比例同步，不按像素</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note info">
+  <div class="lbl">为什么同步器要放在 P1</div>
+  <p>它依赖 CDP 事件捕获与多窗口协调，工程量大但适用面窄（只对同模板页面有效）。首版先把 REST + CDP + RPA 做扎实，同步器排第二期。这也是「不因为商业产品收费就盲目跟」的判断——<b>功能全开不等于功能堆砌</b>。</p>
+</div>
+
+<!-- ============ 8 ============ -->
+<h2 id="team"><span class="n">08</span>团队协作</h2>
+<p class="lede">商业产品按席位收 $5/月/人。开源侧没有这个概念——但「多人用同一台机器」的需求是真实的，所以要做的是<b>本地多用户 + 可选自建服务端</b>。</p>
+
+<h3>8.1 五项能力</h3>
+<div class="tbl">
+<table>
+<thead><tr><th style="width:18%">能力</th><th style="width:36%">行为</th><th style="width:32%">实现要点</th><th style="width:14%">优先级</th></tr></thead>
+<tbody>
+<tr><td><b>账号与角色</b></td><td>管理员 / 经理 / 操作员 / 只读，四级</td><td>本地用户表，argon2id 存密码；角色权限写成静态矩阵，不做动态策略引擎</td><td><span class="pri p0">P0</span></td></tr>
+<tr><td><b>环境级授权</b></td><td>把某些环境/分组授权给某些成员，其余不可见</td><td>ACL 表 <code>(subject, resource, action)</code>；查询时在 SQL 层过滤，不在应用层过滤</td><td><span class="pri p0">P0</span></td></tr>
+<tr><td><b>审计日志</b></td><td>记录：谁、何时、从哪台机器、对哪个环境做了什么</td><td>append-only 表 + 哈希链（每条含上一条的 hash），防篡改</td><td><span class="pri p0">P0</span></td></tr>
+<tr><td><b>环境锁定</b></td><td>同一环境同时只允许一个操作者，防止 Cookie 互相覆盖</td><td>租约（lease）+ 心跳续期，超时 90 秒自动释放</td><td><span class="pri p1">P1</span></td></tr>
+<tr><td><b>实时状态</b></td><td>列表里显示「谁正在使用」「运行中/已停止」</td><td>WS 推送 + 本地心跳，不依赖中心服务器</td><td><span class="pri p1">P1</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>8.2 权限矩阵</h3>
+<div class="tbl tight">
+<table>
+<thead><tr><th style="width:22%">操作</th><th style="width:19%">管理员</th><th style="width:19%">经理</th><th style="width:20%">操作员</th><th style="width:20%">只读</th></tr></thead>
+<tbody>
+<tr><td>创建 / 删除环境</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td></tr>
+<tr><td>修改指纹与代理</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td></tr>
+<tr><td>启动 / 停止环境</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">✗</td></tr>
+<tr><td>导出环境 / Cookie</td><td class="yes">✓</td><td class="part">仅授权范围</td><td class="no">✗</td><td class="no">✗</td></tr>
+<tr><td>管理成员与权限</td><td class="yes">✓</td><td class="no">✗</td><td class="no">✗</td><td class="no">✗</td></tr>
+<tr><td>查看审计日志</td><td class="yes">✓</td><td class="part">仅授权范围</td><td class="no">✗</td><td class="yes">✓</td></tr>
+<tr><td>调用 Local API</td><td class="yes">✓</td><td class="yes">✓</td><td class="part">仅授权环境</td><td class="no">✗</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>8.3 审计日志的哈希链</h3>
+<p>普通日志可以删、可以改，出事时不能当证据。做法是让每条记录都包含上一条的哈希：</p>
+<pre><code>entry_n.hash = SHA256( entry_{n-1}.hash || timestamp || actor || action || target || detail )</code></pre>
+<p>想偷偷删掉中间一条，后面所有 hash 全部对不上。校验接口 <code>GET /audit/verify</code> 会从第一条重算，返回第一个断裂点。<b>这是商业产品也很少做的细节，但它是「审计」这个词的底线。</b></p>
+
+<h3>8.3 审计日志的哈希链</h3>
+<p>普通日志可以删、可以改，出事时不能当证据。做法是让每条记录都包含上一条的哈希：</p>
+<pre><code>entry_n.hash = SHA256( entry_{n-1}.hash || timestamp || actor || action || target || detail )</code></pre>
+<p>想偷偷删掉中间一条，后面所有 hash 全部对不上。校验接口 <code>GET /audit/verify</code> 会从第一条重算，返回第一个断裂点。<b>这是商业产品也很少做的细节，但它是「审计」这个词的底线。</b></p>
+
+<!-- ============ 9 ============ -->
+<h2 id="sec"><span class="n">09</span>安全与数据</h2>
+<p class="lede">指纹浏览器的数据库里躺着几十上百个账号的登录态。它本质上是一个<b>高价值凭据仓库</b>，安全等级应该按这个标准来要求。</p>
+
+<h3>9.1 五项能力</h3>
+<div class="tbl">
+<table>
+<thead><tr><th style="width:18%">能力</th><th style="width:36%">行为</th><th style="width:32%">实现要点</th><th style="width:14%">优先级</th></tr></thead>
+<tbody>
+<tr><td><b>本地加密库</b></td><td>种子、Cookie、代理凭据全部加密存储，主密码解锁</td><td>argon2id 派生主密钥 → SQLCipher 页级加密；密钥只在内存，退出即清</td><td><span class="pri p0">P0</span></td></tr>
+<tr><td><b>二次验证</b></td><td>解锁时可选 TOTP 二次验证</td><td>标准 <code>otpauth://</code> 协议，兼容任意验证器 App</td><td><span class="pri p1">P1</span></td></tr>
+<tr><td><b>Cookie 导入导出</b></td><td>支持 Netscape <code>cookies.txt</code>、Playwright JSON、以及从本机浏览器直接导入</td><td>批量导入按域名匹配环境；导出默认加密</td><td><span class="pri p0">P0</span></td></tr>
+<tr><td><b>备份恢复</b></td><td>全量 <code>.ssbak</code> 包（含所有环境与种子）、单环境导出</td><td>备份文件自带校验；恢复前先做一次快照，失败可回滚</td><td><span class="pri p0">P0</span></td></tr>
+<tr><td><b>自托管同步</b></td><td>把备份推到用户自己的 WebDAV / S3 兼容存储，跨机同步</td><td><b>不自建云</b>；只提供客户端，地址与凭据由用户填</td><td><span class="pri p1">P1</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>9.2 密钥层级</h3>
+<pre><code>用户主密码
+   │  argon2id (m=64MB, t=3, p=4)
+   ▼
+master_key ──┬──► 解密 SQLCipher 数据库
+             ├──► HKDF("ss-fp-v1", profile_id) ──► 每个环境的指纹种子
+             └──► HKDF("ss-exp-v1", profile_id) ──► 导出包密码校验</code></pre>
+<p>一条重要规则：<b>master_key 永不落盘、永不上网</b>。导出包用独立的导出密码重新加密，这样「把环境发给同事」不需要交出主密码。</p>
+
+<h3>9.3 数据存什么、不存什么</h3>
+<div class="tbl tight">
+<table>
+<thead><tr><th style="width:34%">数据</th><th style="width:16%">存储</th><th style="width:50%">说明</th></tr></thead>
+<tbody>
+<tr><td>环境配置、指纹种子</td><td class="yes">加密</td><td>核心资产，必须加密</td></tr>
+<tr><td>Cookie / LocalStorage</td><td class="yes">加密</td><td>等于账号本身</td></tr>
+<tr><td>代理凭据</td><td class="yes">加密</td><td>泄漏即被白嫖流量</td></tr>
+<tr><td>操作审计日志</td><td class="part">明文 + 哈希链</td><td>需要可查询，靠哈希链保证完整性</td></tr>
+<tr><td>页面快照 / 浏览历史</td><td class="no">不存</td><td>浏览内容不留痕，与 AI 模块的设计一致</td></tr>
+<tr><td>模型 API Key</td><td class="part">本地配置</td><td>与 AI 面板共用，明文存储但仅本机</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note warn">
+  <div class="lbl">一个必须说清楚的取舍</div>
+  <p>主密码丢了，数据就真的打不开了——<b>我们不设后门，也没有「找回」通道</b>。这是加密的必然代价。UI 上必须在设置主密码时强制确认一次，并提供「导出恢复密钥」的选项。</p>
+</div>
+
+<!-- ============ 10 ============ -->
+<h2 id="oss"><span class="n">10</span>开源实现路径</h2>
+<p class="lede">不重复造轮子。指纹领域已经有可用的开源实现，我们要做的是把它们拼成产品，而不是从零写内核。</p>
+
+<h3>10.1 可直接复用</h3>
+<div class="tbl">
+<table>
+<thead><tr><th style="width:20%">组件</th><th style="width:18%">项目</th><th style="width:34%">用途</th><th style="width:28%">集成注意</th></tr></thead>
+<tbody>
+<tr><td><b>反检测内核</b></td><td>Camoufox</td><td>Firefox 深度定制，在 C++ 层改指纹而非 JS 注入；兼容 Playwright</td><td>Firefox 内核，与 Chromium 指纹特征不同；需核对 LICENSE</td></tr>
+<tr><td><b>Chromium 底座</b></td><td>ungoogled-chromium</td><td>去 Google 服务的 Chromium，作为 fork 起点</td><td>BSD-3；<b>不要从 BrowserOS 等 AGPL 项目 fork</b></td></tr>
+<tr><td><b>自动化补丁</b></td><td>patchright</td><td>Playwright 的反检测补丁（去掉 <code>navigator.webdriver</code> 等痕迹）</td><td>与自研指纹注入可能冲突，需二选一或分层</td></tr>
+<tr><td><b>数据库加密</b></td><td>SQLCipher</td><td>页级加密 SQLite</td><td>社区版 BSD 类；注意编译依赖 OpenSSL</td></tr>
+<tr><td><b>密钥派生</b></td><td>libsodium / argon2</td><td>argon2id、HKDF</td><td>用成熟库，不自己实现密码学</td></tr>
+<tr><td><b>本地 API</b></td><td>Hono / Fastify</td><td>REST + WS 服务</td><td>轻量优先，避免引入重框架</td></tr>
+<tr><td><b>自动化引擎</b></td><td>Playwright</td><td>CDP 封装、跨浏览器 API</td><td>只用于测试与 RPA 回放，不作为运行时依赖</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note danger">
+  <div class="lbl">License 红线</div>
+  <p>集成前必须逐项核对仓库 LICENSE。<b>AGPL 项目的代码不能并入本项目</b>（除非本项目也采用 AGPL 并接受其传染性）。技术方案可以参考，代码不行——这条在 <a href="ai-native-browser-plan.html">技术路线文档</a>里已经写过一次，这里再强调：抄架构可以，抄代码是法律问题。</p>
+</div>
+
+<h3>10.2 必须自研</h3>
+<div class="tbl tight">
+<table>
+<thead><tr><th style="width:26%">模块</th><th style="width:40%">为什么没有现成的</th><th style="width:34%">工作量估计</th></tr></thead>
+<tbody>
+<tr><td><b>指纹种子引擎</b></td><td>开源实现多是「随机化」，缺少「确定性 + 可迁移」的种子模型</td><td>中：算法不难，参数池与一致性规则是细活</td></tr>
+<tr><td><b>一致性校验器</b></td><td>各家检测工具只给分数，不给「哪里矛盾、怎么修」</td><td>中：本质是一张规则表</td></tr>
+<tr><td><b>环境管理与迁移</b></td><td>商业产品闭源；开源侧没有同类产品</td><td>大：涉及存储、加密、包格式、并发</td></tr>
+<tr><td><b>窗口同步器</b></td><td>依赖具体客户端的窗口模型</td><td>大：多窗口协调 + 坐标归一化</td></tr>
+<tr><td><b>RPA 录制回放</b></td><td>通用录制工具（如 Playwright codegen）产出的是代码，不是可编辑步骤</td><td>大：但要与 AI 动作协议对齐，长期收益高</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>10.3 三阶段与内核选择</h3>
+<div class="fig">
+<svg viewBox="0 0 880 300" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,-apple-system,'PingFang SC','Microsoft YaHei',sans-serif">
+  <defs>
+    <marker id="ar3" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto">
+      <path d="M0,0 L7.5,3 L0,6 z" fill="#0f766e"/>
+    </marker>
+  </defs>
+
+  <!-- 时间轴 -->
+  <line x1="60" y1="52" x2="820" y2="52" stroke="#e3e0d9" stroke-width="1.5"/>
+  <circle cx="150" cy="52" r="6" fill="#0f766e"/>
+  <circle cx="440" cy="52" r="6" fill="#0f766e"/>
+  <circle cx="730" cy="52" r="6" fill="#0f766e"/>
+
+  <text x="150" y="34" font-size="11" fill="#0f766e" text-anchor="middle" font-weight="650">阶段一 · 扩展</text>
+  <text x="440" y="34" font-size="11" fill="#0f766e" text-anchor="middle" font-weight="650">阶段二 · Electron 壳</text>
+  <text x="730" y="34" font-size="11" fill="#0f766e" text-anchor="middle" font-weight="650">阶段三 · Chromium fork</text>
+
+  <rect x="40" y="76" width="220" height="150" rx="10" fill="#f2faf8" stroke="#bcdcd7"/>
+  <text x="56" y="98" font-size="11.5" font-weight="650" fill="#0f766e">能做什么</text>
+  <text x="56" y="118" font-size="10.5" fill="#454d54">AI 读页面 / 操作页面</text>
+  <text x="56" y="136" font-size="10.5" fill="#454d54">JS 层指纹（Canvas/Audio/字体）</text>
+  <text x="56" y="154" font-size="10.5" fill="#454d54">单窗口、单环境</text>
+  <text x="56" y="178" font-size="10.5" fill="#b3261e">做不到：TLS 指纹、多环境隔离</text>
+  <text x="56" y="196" font-size="10.5" fill="#b3261e">做不到：独立代理绑定</text>
+  <text x="56" y="214" font-size="10.5" fill="#767e86">周期：周级</text>
+
+  <rect x="330" y="76" width="220" height="150" rx="10" fill="#f2faf8" stroke="#bcdcd7"/>
+  <text x="346" y="98" font-size="11.5" font-weight="650" fill="#0f766e">能做什么</text>
+  <text x="346" y="118" font-size="10.5" fill="#454d54">每环境独立 BrowserContext</text>
+  <text x="346" y="136" font-size="10.5" fill="#454d54">独立代理 + 独立指纹种子</text>
+  <text x="346" y="154" font-size="10.5" fill="#454d54">CDP 端点 / 多窗口同步</text>
+  <text x="346" y="178" font-size="10.5" fill="#b3261e">仍做不到：TLS / HTTP2 指纹</text>
+  <text x="346" y="196" font-size="10.5" fill="#454d54">团队、审计、迁移全部可做</text>
+  <text x="346" y="214" font-size="10.5" fill="#767e86">周期：月级</text>
+
+  <rect x="620" y="76" width="220" height="150" rx="10" fill="#f2faf8" stroke="#bcdcd7"/>
+  <text x="636" y="98" font-size="11.5" font-weight="650" fill="#0f766e">能做什么</text>
+  <text x="636" y="118" font-size="10.5" fill="#454d54">内核层指纹（无 patch 痕迹）</text>
+  <text x="636" y="136" font-size="10.5" fill="#454d54">TLS / HTTP2 / 网络栈指纹</text>
+  <text x="636" y="154" font-size="10.5" fill="#454d54">万级环境、启动加速</text>
+  <text x="636" y="178" font-size="10.5" fill="#15803d">补丁控制在 20 个以内</text>
+  <text x="636" y="196" font-size="10.5" fill="#767e86">周期：季度级</text>
+  <text x="636" y="214" font-size="10.5" fill="#767e86">维护成本最高</text>
+
+  <!-- 能力递进箭头 -->
+  <line x1="264" y1="150" x2="322" y2="150" stroke="#0f766e" stroke-width="1.5" marker-end="url(#ar3)"/>
+  <line x1="554" y1="150" x2="612" y2="150" stroke="#0f766e" stroke-width="1.5" marker-end="url(#ar3)"/>
+
+  <text x="40" y="262" font-size="10.5" fill="#767e86">同一套 TypeScript 逻辑贯穿三阶段：指纹种子引擎、动作协议、REST/WS 契约、UI 组件均不重写，只替换承载层。</text>
+  <text x="40" y="282" font-size="10.5" fill="#767e86">功能清单里标注「需内核层」的项（TLS/HTTP2/TCP 指纹、WebGPU 深度伪装）在阶段三之前不承诺交付。</text>
+</svg>
+<div class="fig-cap">图 2　三阶段能力递进：多数 VIP 功能在阶段二即可全开，网络层指纹必须等到阶段三</div>
+</div>
+
+<!-- ============ 11 ============ -->
+<h2 id="cmp"><span class="n">11</span>功能对照表</h2>
+<p class="lede">47 项逐条对照。左两列是商业产品的普遍做法（据 2026-10 公开定价页与评测），右列是本项目的承诺。</p>
+
+<h3>11.1 指纹层</h3>
+<div class="tbl tight">
+<table>
+<thead><tr><th style="width:34%">能力</th><th style="width:20%">商业免费档</th><th style="width:22%">商业 VIP 档</th><th style="width:24%">ShadowSurf</th></tr></thead>
+<tbody>
+<tr><td>UA / 平台 / 语言 / 硬件参数</td><td class="yes">✓ 基础可改</td><td class="yes">✓ 全参数</td><td class="yes">✓ 全参数 + 种子</td></tr>
+<tr><td>Canvas 噪声</td><td class="part">开关式</td><td class="yes">✓ 可调强度</td><td class="yes">✓ 确定性算法可审计</td></tr>
+<tr><td>WebGL vendor / renderer</td><td class="part">有限预设</td><td class="yes">✓ GPU 池</td><td class="yes">✓ GPU 池 + 参数整包</td></tr>
+<tr><td>WebGL 参数集（30+ 常量）</td><td class="no">✗</td><td class="part">部分产品支持</td><td class="yes">✓ 按 GPU 模板</td></tr>
+<tr><td>AudioContext 噪声</td><td class="part">开关式</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+<tr><td>字体列表伪造</td><td class="part">有限</td><td class="yes">✓ 按 OS 分池</td><td class="yes">✓ 42 款白名单</td></tr>
+<tr><td>ClientRects 微扰</td><td class="no">✗</td><td class="part">少数支持</td><td class="yes">✓</td></tr>
+<tr><td>Client Hints 全字段</td><td class="part">部分</td><td class="yes">✓</td><td class="yes">✓ 与 UA 联动</td></tr>
+<tr><td>WebGPU 伪造</td><td class="no">✗</td><td class="part">新版本陆续支持</td><td class="yes">✓ 与 WebGL 一致</td></tr>
+<tr><td>指纹一致性检测</td><td class="no">✗</td><td class="part">给分数不给原因</td><td class="yes">✓ 给矛盾项 + 修正建议</td></tr>
+<tr><td>指纹模板共享</td><td class="no">✗</td><td class="part">官方预设</td><td class="yes">✓ JSON 可导入导出</td></tr>
+<tr><td>TLS / HTTP2 / TCP 指纹</td><td class="no">✗</td><td class="part">宣称支持，多数未改网络栈</td><td class="part">阶段三（内核层），之前明确不做承诺</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>11.2 环境管理</h3>
+<div class="tbl tight">
+<table>
+<thead><tr><th style="width:34%">能力</th><th style="width:20%">商业免费档</th><th style="width:22%">商业 VIP 档</th><th style="width:24%">ShadowSurf</th></tr></thead>
+<tbody>
+<tr><td>环境数量</td><td class="part">2–50 个</td><td class="yes">按套餐递增</td><td class="yes">无上限（本地存储）</td></tr>
+<tr><td>批量创建</td><td class="part">受限</td><td class="yes">✓</td><td class="yes">✓ 1–500 一次</td></tr>
+<tr><td>环境克隆</td><td class="part">受限</td><td class="yes">✓</td><td class="yes">✓ 同指纹/新指纹可选</td></tr>
+<tr><td>环境迁移（指纹不变）</td><td class="no">✗</td><td class="yes">✓ 部分要高级档</td><td class="yes">✓ <code>.ssp</code> 包</td></tr>
+<tr><td>模板与预设</td><td class="part">基础</td><td class="yes">✓</td><td class="yes">✓ JSON 可版本化</td></tr>
+<tr><td>标签 / 分组 / 筛选</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓ FTS5 全文搜索</td></tr>
+<tr><td>环境预热</td><td class="no">✗</td><td class="part">少数支持</td><td class="yes">✓ 可配置脚本</td></tr>
+<tr><td>定时启动</td><td class="no">✗</td><td class="part">企业版</td><td class="yes">✓ cron</td></tr>
+<tr><td>环境分享给他人</td><td class="no">✗</td><td class="yes">✓ 团队功能</td><td class="yes">✓ 环境级 ACL</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>11.3 代理与网络</h3>
+<div class="tbl tight">
+<table>
+<thead><tr><th style="width:34%">能力</th><th style="width:20%">商业免费档</th><th style="width:22%">商业 VIP 档</th><th style="width:24%">ShadowSurf</th></tr></thead>
+<tbody>
+<tr><td>代理绑定（含认证）</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓ 本地转发器</td></tr>
+<tr><td>批量代理检测</td><td class="part">受限</td><td class="yes">✓</td><td class="yes">✓ 并发 20</td></tr>
+<tr><td>代理池 / 轮换</td><td class="no">✗</td><td class="part">企业版</td><td class="yes">✓ 失败自动切换</td></tr>
+<tr><td>链式代理</td><td class="no">✗</td><td class="part">少数支持</td><td class="yes">✓ 本地中继</td></tr>
+<tr><td>流量统计</td><td class="no">✗</td><td class="part">与内置代理绑定</td><td class="yes">✓ 代理层统计</td></tr>
+<tr><td>时区 / 语言 / WebRTC 一致性</td><td class="part">手动</td><td class="yes">✓ 自动</td><td class="yes">✓ 绑定代理时自动</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>11.4 自动化与 API</h3>
+<div class="tbl tight">
+<table>
+<thead><tr><th style="width:34%">能力</th><th style="width:20%">商业免费档</th><th style="width:22%">商业 VIP 档</th><th style="width:24%">ShadowSurf</th></tr></thead>
+<tbody>
+<tr><td>Local API</td><td class="no">✗</td><td class="yes">✓ 按档限流</td><td class="yes">✓ 无限流</td></tr>
+<tr><td>事件流（WebSocket）</td><td class="no">✗</td><td class="part">部分支持</td><td class="yes">✓</td></tr>
+<tr><td>CDP 端点暴露</td><td class="no">✗</td><td class="part">多数仅提供启动参数</td><td class="yes">✓ 每环境独立端点</td></tr>
+<tr><td>Playwright / Puppeteer</td><td class="part">需自行拼参数</td><td class="part">同左</td><td class="yes">✓ <code>connectOverCDP</code> 一行接入</td></tr>
+<tr><td>无代码 RPA</td><td class="no">✗</td><td class="yes">✓ 付费档才有</td><td class="yes">✓ 与 AI 共用动作协议</td></tr>
+<tr><td>窗口同步器</td><td class="part">部分免费</td><td class="yes">✓</td><td class="yes">✓ 阶段二</td></tr>
+<tr><td>任务调度</td><td class="no">✗</td><td class="part">企业版</td><td class="yes">✓ 本地 cron</td></tr>
+<tr><td>Webhook</td><td class="no">✗</td><td class="part">企业版</td><td class="yes">✓ HMAC 签名</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>11.5 团队 / 安全 / AI</h3>
+<div class="tbl tight">
+<table>
+<thead><tr><th style="width:34%">能力</th><th style="width:20%">商业免费档</th><th style="width:22%">商业 VIP 档</th><th style="width:24%">ShadowSurf</th></tr></thead>
+<tbody>
+<tr><td>子账号与角色</td><td class="no">✗</td><td class="yes">✓ 按席位收费</td><td class="yes">✓ 不限席位</td></tr>
+<tr><td>环境级授权</td><td class="no">✗</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+<tr><td>操作审计日志</td><td class="no">✗</td><td class="part">企业版</td><td class="yes">✓ 哈希链防篡改</td></tr>
+<tr><td>环境锁定</td><td class="part">部分</td><td class="yes">✓</td><td class="yes">✓ 租约 + 心跳</td></tr>
+<tr><td>本地加密存储</td><td class="part">部分加密</td><td class="yes">✓</td><td class="yes">✓ SQLCipher + argon2id</td></tr>
+<tr><td>2FA</td><td class="no">✗</td><td class="part">企业版</td><td class="yes">✓ TOTP</td></tr>
+<tr><td>Cookie 批量导入导出</td><td class="part">受限</td><td class="yes">✓</td><td class="yes">✓ 三种格式</td></tr>
+<tr><td>云同步</td><td class="no">✗</td><td class="yes">✓ 绑定套餐存储</td><td class="part">自托管（WebDAV/S3），不自建云</td></tr>
+<tr><td>AI 读页面 / 操作页面</td><td class="no">✗</td><td class="part">加购，按次计费</td><td class="yes">✓ 自带 Key，零加价</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note ok">
+  <div class="lbl">对照结论</div>
+  <p>47 项里，<b>41 项在阶段二结束时即可全开</b>；5 项需要自托管（云同步）或依赖用户自有资源（代理流量）；1 项（网络层指纹）明确推迟到阶段三。没有一项需要付费解锁。</p>
+</div>
+
+<!-- ============ 12 ============ -->
+<h2 id="road"><span class="n">12</span>路线图</h2>
+<p class="lede">按「能验证的最小闭环」排序，不按功能列表长度排序。</p>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:12%">版本</th><th style="width:14%">承载</th><th style="width:44%">交付内容</th><th style="width:30%">验证方式</th></tr></thead>
+<tbody>
+<tr><td><b>v0.1</b><br><span style="color:var(--ink-3);font-size:11px">周级</span></td><td>MV3 扩展</td><td>AI 面板（读页面 + 操作 + 模型自配置）、单窗口 JS 层指纹基础、动作协议定稿</td><td>真实网页完成 10 个任务；CreepJS 不报明显矛盾</td></tr>
+<tr><td><b>v0.5</b><br><span style="color:var(--ink-3);font-size:11px">月级</span></td><td>Electron 壳</td><td>多环境隔离、指纹种子引擎、代理绑定与检测、CDP 端点、REST + WS、环境 CRUD 与迁移、加密存储</td><td>20 个环境并行；同一账号换环境后指纹不变；迁移后登录态保留</td></tr>
+<tr><td><b>v0.8</b><br><span style="color:var(--ink-3);font-size:11px">月级</span></td><td>Electron 壳</td><td>团队与权限、审计哈希链、RPA 录制回放、窗口同步器、任务调度、Webhook、自托管同步</td><td>三角色权限矩阵逐项验证；审计日志篡改可被检出</td></tr>
+<tr><td><b>v1.0</b><br><span style="color:var(--ink-3);font-size:11px">季度级</span></td><td>Chromium fork</td><td>内核层指纹（无 patch 痕迹）、TLS/HTTP2 指纹、启动加速、万级环境</td><td>深度检测工具无 lies 项；1000 环境冷启动 &lt; 60s</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>12.1 每个版本必须回答的问题</h3>
+<div class="tbl tight">
+<table>
+<thead><tr><th style="width:16%">版本</th><th style="width:44%">要回答的问题</th><th style="width:40%">答不上来就停</th></tr></thead>
+<tbody>
+<tr><td>v0.1</td><td>用户愿不愿意让 AI 在自己的真实账号上动手？</td><td>任务成功率 &lt; 60%，或用户普遍只敢在测试号上用</td></tr>
+<tr><td>v0.5</td><td>「指纹不变 + 代理隔离」能不能真的骗过检测？</td><td>三个主流检测站有一项持续标红且无法解释</td></tr>
+<tr><td>v0.8</td><td>团队场景是不是真需求，还是伪需求？</td><td>90% 用户是单人使用</td></tr>
+<tr><td>v1.0</td><td>维护内核 fork 的成本能不能承受？</td><td>每次上游安全更新需要 &gt; 2 人周</td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============ 13 ============ -->
+<h2 id="law"><span class="n">13</span>边界与合规</h2>
+
+<h3>13.1 功能不设限，行为有边界</h3>
+<div class="tbl">
+<table>
+<thead><tr><th style="width:24%">事项</th><th style="width:76%">立场</th></tr></thead>
+<tbody>
+<tr><td><b>开源协议</b></td><td>代码采用 <b>MIT</b>（与仓库 <code>LICENSE</code> 一致），允许商用、修改、闭源二次开发。不采用 AGPL——避免把用户的自建服务也拖进传染范围。</td></tr>
+<tr><td><b>不做破解</b></td><td>不提供「绕过平台风控」「破解验证码」「伪造实名」的成品能力。指纹一致性是技术问题，规避平台规则是另一回事。</td></tr>
+<tr><td><b>不卖资源</b></td><td>不销售代理 IP、不销售账号、不提供代运营。所有外部资源由用户自行采购，我们不抽成、不背书。</td></tr>
+<tr><td><b>零遥测</b></td><td>默认不上报任何数据。崩溃日志、使用统计一律本地保存，用户主动导出才会离开机器。</td></tr>
+<tr><td><b>责任边界</b></td><td>工具中立，用途由使用者负责。文档里明确写：多账号运营需遵守目标平台的服务条款与当地法律。</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>13.2 贡献者需要知道的</h3>
+<ul>
+<li><b>不合并</b>：任何形式的授权校验、功能闸门、按次计费的补丁。</li>
+<li><b>不合并</b>：绕过第三方服务技术保护措施的代码。</li>
+<li><b>需附测试</b>：指纹相关改动必须附带一致性测试（同一 seed 两次启动结果一致）。</li>
+<li><b>需核 License</b>：引入新依赖时在 PR 里注明协议，AGPL 依赖一律拒绝。</li>
+</ul>
+
+<!-- ============ 14 ============ -->
+<h2 id="accept"><span class="n">14</span>验收标准</h2>
+<p class="lede">功能「做完」和「能用」是两件事。每条能力都要有一个可执行的验收动作。</p>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:6%">#</th><th style="width:36%">验收项</th><th style="width:58%">通过标准</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>指纹确定性</td><td>同一环境连续启动 10 次，Canvas / WebGL / Audio 哈希完全一致</td></tr>
+<tr><td>2</td><td>指纹差异性</td><td>两个不同环境启动，上述三项哈希均不同</td></tr>
+<tr><td>3</td><td>一致性无矛盾</td><td>一致性校验器对默认模板返回 0 个矛盾项</td></tr>
+<tr><td>4</td><td>WebRTC 不泄漏</td><td>绑定代理后，检测页面读不到真实内网 IP</td></tr>
+<tr><td>5</td><td>时区跟随代理</td><td>绑定美国代理后，<code>Intl</code> 时区为 America/*，且与 <code>Date</code> 偏移一致</td></tr>
+<tr><td>6</td><td>迁移保真</td><td>导出再导入到另一台机器，指纹哈希不变、登录态保留</td></tr>
+<tr><td>7</td><td>批量创建</td><td>一次创建 100 个环境 &lt; 10 秒，且种子无碰撞</td></tr>
+<tr><td>8</td><td>列表性能</td><td>10000 个环境时，列表首屏 &lt; 300ms，筛选 &lt; 100ms</td></tr>
+<tr><td>9</td><td>代理认证</td><td>带用户名密码的 SOCKS5 代理可正常联网，且页面读不到认证信息</td></tr>
+<tr><td>10</td><td>API 无限流</td><td>连续 1000 次 REST 调用无 429</td></tr>
+<tr><td>11</td><td>CDP 接入</td><td>Playwright <code>connectOverCDP</code> 后，指纹与代理仍然生效</td></tr>
+<tr><td>12</td><td>权限隔离</td><td>只读账号调用删除接口返回 403，且日志有记录</td></tr>
+<tr><td>13</td><td>审计防篡改</td><td>手工修改数据库一条日志后，<code>/audit/verify</code> 能定位到断裂点</td></tr>
+<tr><td>14</td><td>环境锁</td><td>两个客户端同时启动同一环境，第二个被拒绝并提示持有者</td></tr>
+<tr><td>15</td><td>加密强度</td><td>直接打开数据库文件，看不到任何明文 Cookie 或种子</td></tr>
+<tr><td>16</td><td>无付费闸门</td><td>全代码库搜索不到 license / plan / tier / 授权校验相关逻辑</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note ok">
+  <div class="lbl">一句话总结</div>
+  <p>商业产品锁住的 47 项能力，<b>41 项在阶段二就能全开</b>，因为它们本来就是零边际成本的软件能力。真正需要成本的只有代理流量和云存储，那两样我们不自建、不赚差价。<b>功能全开的代价不是收入，而是维护责任——这才是开源项目真正要扛的东西。</b></p>
+</div>
+
+<footer class="doc-foot">
+  <div>ShadowSurf · 开源功能清单 v1.0 · 2026-10</div>
+  <div class="rel">
+    <a href="ai-integration.html">AI 集成设计</a>
+    <a href="architecture.html">架构设计</a>
+    <a href="api.html">API 文档</a>
+    <a href="../README.md">返回索引</a>
+  </div>
+</footer>
+
+</main>
+</div>
+
+
+</body>
+</html>

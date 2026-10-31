@@ -1,0 +1,1156 @@
+openapi: 3.1.0
+info:
+  title: ShadowSurf Local API
+  version: 1.0.0
+  description: |
+    ShadowSurf 本地控制面 API。桌面 UI、CLI、SDK、IDE 插件共用同一套契约。
+
+    - 仅监听 127.0.0.1，不对外暴露
+    - 所有写操作支持 Idempotency-Key（24h 内幂等）
+    - 任务执行为异步：POST /v1/tasks 返回 202，进度经 WebSocket 推送
+  contact:
+    name: ShadowSurf Engineering
+  license:
+    name: Proprietary
+
+servers:
+  - url: http://127.0.0.1:7801
+    description: 本地服务
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: profiles
+    description: 环境（指纹配置 + 代理绑定）
+  - name: spaces
+    description: 运行实例（人与影子隔离）
+  - name: tasks
+    description: 任务与步骤
+  - name: proxies
+    description: 代理池
+  - name: models
+    description: 模型与路由
+  - name: audit
+    description: 审计日志
+
+paths:
+  /v1/profiles:
+    get:
+      tags: [profiles]
+      summary: 环境列表
+      operationId: listProfiles
+      parameters:
+        - name: group_name
+          in: query
+          schema: { type: string }
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [idle, running, proxy_error, inconsistent]
+        - name: q
+          in: query
+          description: 模糊搜索名称、标签、代理 IP
+          schema: { type: string }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Profile' }
+                  meta: { $ref: '#/components/schemas/PageMeta' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [profiles]
+      summary: 创建环境
+      operationId: createProfile
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProfileCreate' }
+            example:
+              name: Amazon-US-01
+              group_name: 电商
+              os: windows_11
+              proxy_id: prx_4d21
+              timezone: America/Los_Angeles
+              locale: en-US
+              tags: [amazon, us]
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Profile' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/profiles/{profileId}:
+    parameters:
+      - $ref: '#/components/parameters/ProfileId'
+    get:
+      tags: [profiles]
+      summary: 环境详情
+      operationId: getProfile
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Profile' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [profiles]
+      summary: 局部更新
+      operationId: updateProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProfileUpdate' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Profile' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+    delete:
+      tags: [profiles]
+      summary: 删除环境
+      operationId: deleteProfile
+      parameters:
+        - name: force
+          in: query
+          description: 允许删除运行中的环境
+          schema: { type: boolean, default: false }
+      responses:
+        '204': { description: No Content }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/profiles/{profileId}/duplicate:
+    parameters:
+      - $ref: '#/components/parameters/ProfileId'
+    post:
+      tags: [profiles]
+      summary: 复制环境
+      operationId: duplicateProfile
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Profile' }
+
+  /v1/profiles/{profileId}/fingerprint/regenerate:
+    parameters:
+      - $ref: '#/components/parameters/ProfileId'
+    post:
+      tags: [profiles]
+      summary: 重新生成指纹
+      description: 可指定保留项，未保留的字段全部重新生成。
+      operationId: regenerateFingerprint
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                keep:
+                  type: array
+                  items:
+                    type: string
+                    enum: [os, timezone, locale, screen, webgl_vendor]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Profile' }
+
+  /v1/profiles/{profileId}/consistency:
+    parameters:
+      - $ref: '#/components/parameters/ProfileId'
+    get:
+      tags: [profiles]
+      summary: 指纹一致性检查
+      operationId: checkConsistency
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/ConsistencyReport' }
+
+  /v1/profiles/batch:
+    post:
+      tags: [profiles]
+      summary: 批量操作
+      description: 单次最多 200 个 ID，逐项执行，部分失败不回滚。
+      operationId: batchProfiles
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids, action]
+              properties:
+                ids:
+                  type: array
+                  maxItems: 200
+                  items: { type: string }
+                action:
+                  type: string
+                  enum: [start, stop, move_group, switch_proxy, delete]
+                params:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      succeeded:
+                        type: array
+                        items: { type: string }
+                      failed:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id: { type: string }
+                            code: { type: string }
+                            message: { type: string }
+
+  /v1/spaces:
+    get:
+      tags: [spaces]
+      summary: 运行中的空间
+      operationId: listSpaces
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Space' }
+    post:
+      tags: [spaces]
+      summary: 打开空间
+      operationId: createSpace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [profile_id, mode]
+              properties:
+                profile_id: { type: string }
+                mode:
+                  type: string
+                  enum: [human, shadow]
+                isolation:
+                  type: string
+                  enum: [L1, L2, L3]
+                  default: L2
+                initial_url: { type: string, default: 'about:blank' }
+                force:
+                  type: boolean
+                  default: false
+                  description: 跳过一致性检查
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Space' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+
+  /v1/spaces/{spaceId}:
+    parameters:
+      - $ref: '#/components/parameters/SpaceId'
+    get:
+      tags: [spaces]
+      summary: 空间详情
+      operationId: getSpace
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Space' }
+    delete:
+      tags: [spaces]
+      summary: 关闭空间
+      operationId: closeSpace
+      responses:
+        '204': { description: No Content }
+
+  /v1/spaces/{spaceId}/focus:
+    parameters:
+      - $ref: '#/components/parameters/SpaceId'
+    post:
+      tags: [spaces]
+      summary: 窗口置前
+      description: 仅 human 模式空间允许；shadow 空间调用返回 403。
+      operationId: focusSpace
+      responses:
+        '204': { description: No Content }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /v1/tasks:
+    get:
+      tags: [tasks]
+      summary: 任务列表
+      operationId: listTasks
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [queued, running, paused, done, failed, cancelled]
+        - name: profile_id
+          in: query
+          schema: { type: string }
+        - name: from
+          in: query
+          description: 起始时间（Unix 毫秒）
+          schema: { type: integer, format: int64 }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Task' }
+                  meta: { $ref: '#/components/schemas/PageMeta' }
+    post:
+      tags: [tasks]
+      summary: 创建任务
+      operationId: createTask
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: wait
+          in: query
+          description: 阻塞等待完成（最长 120s）
+          schema: { type: boolean, default: false }
+        - name: timeout
+          in: query
+          schema: { type: integer, default: 120, maximum: 120 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskCreate' }
+      responses:
+        '202':
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Task' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+
+  /v1/tasks/{taskId}:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [tasks]
+      summary: 任务详情
+      operationId: getTask
+      parameters:
+        - name: wait
+          in: query
+          description: 阻塞至终态
+          schema: { type: boolean, default: false }
+        - name: timeout
+          in: query
+          schema: { type: integer, default: 120, maximum: 120 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Task' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/tasks/{taskId}/pause:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [tasks]
+      summary: 暂停任务
+      operationId: pauseTask
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Task' }
+
+  /v1/tasks/{taskId}/resume:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [tasks]
+      summary: 恢复任务
+      operationId: resumeTask
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Task' }
+
+  /v1/tasks/{taskId}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [tasks]
+      summary: 取消任务
+      operationId: cancelTask
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Task' }
+
+  /v1/tasks/{taskId}/takeover:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [tasks]
+      summary: 人工接管
+      operationId: takeoverTask
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      task_id: { type: string }
+                      status: { type: string, enum: [paused] }
+                      space_id: { type: string }
+                      takeover_token: { type: string }
+                      expires_at: { type: integer, format: int64 }
+                      reason: { type: string }
+
+  /v1/tasks/{taskId}/release:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [tasks]
+      summary: 释放接管
+      operationId: releaseTask
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Task' }
+
+  /v1/tasks/{taskId}/confirm:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [tasks]
+      summary: 确认 L2 高风险动作
+      operationId: confirmAction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [step_id, decision]
+              properties:
+                step_id: { type: string }
+                decision:
+                  type: string
+                  enum: [approve, reject]
+                remember_domain:
+                  type: boolean
+                  default: false
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Task' }
+
+  /v1/tasks/{taskId}/steps:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [tasks]
+      summary: 步骤列表
+      operationId: listSteps
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Step' }
+                  meta: { $ref: '#/components/schemas/PageMeta' }
+
+  /v1/tasks/{taskId}/artifacts:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [tasks]
+      summary: 产物列表
+      operationId: listArtifacts
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Artifact' }
+
+  /v1/tasks/{taskId}/replay:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [tasks]
+      summary: 回放索引
+      operationId: getReplay
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      duration_ms: { type: integer }
+                      fps: { type: integer }
+                      frames:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            ts: { type: integer }
+                            kind: { type: string, enum: [frame, action, human] }
+                            artifact: { type: string }
+                            step_id: { type: string }
+                            label: { type: string }
+
+  /v1/proxies:
+    get:
+      tags: [proxies]
+      summary: 代理列表
+      operationId: listProxies
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Proxy' }
+    post:
+      tags: [proxies]
+      summary: 添加代理
+      operationId: createProxy
+      parameters:
+        - name: bulk
+          in: query
+          description: 批量导入（换行分隔）
+          schema: { type: boolean, default: false }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProxyCreate' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    oneOf:
+                      - $ref: '#/components/schemas/Proxy'
+                      - type: array
+                        items: { $ref: '#/components/schemas/Proxy' }
+
+  /v1/proxies/{proxyId}/check:
+    parameters:
+      - name: proxyId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [proxies]
+      summary: 连通性检测
+      operationId: checkProxy
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      ok: { type: boolean }
+                      latency_ms: { type: integer }
+                      exit_ip: { type: string }
+                      country: { type: string }
+                      region: { type: string }
+                      timezone: { type: string }
+                      dns_leak: { type: boolean }
+                      checked_at: { type: integer, format: int64 }
+
+  /v1/models:
+    get:
+      tags: [models]
+      summary: 模型列表
+      operationId: listModels
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Model' }
+
+  /v1/models/routing:
+    patch:
+      tags: [models]
+      summary: 更新路由策略
+      operationId: updateRouting
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                plan: { type: string }
+                decide: { type: string }
+                locate: { type: string }
+                verify: { type: string }
+      responses:
+        '200':
+          description: OK
+
+  /v1/audit:
+    get:
+      tags: [audit]
+      summary: 审计日志
+      operationId: listAudit
+      parameters:
+        - name: from
+          in: query
+          schema: { type: integer, format: int64 }
+        - name: to
+          in: query
+          schema: { type: integer, format: int64 }
+        - name: domain
+          in: query
+          schema: { type: string }
+        - name: risk_level
+          in: query
+          schema:
+            type: string
+            enum: [L0, L1, L2]
+        - name: operator
+          in: query
+          schema:
+            type: string
+            enum: [agent, human]
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AuditLog' }
+                  meta: { $ref: '#/components/schemas/PageMeta' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: token 存放于 ~/.shadowsurf/token
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PageSize:
+      name: page_size
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    ProfileId:
+      name: profileId
+      in: path
+      required: true
+      schema: { type: string, example: prf_7c9a2e4b1d }
+    SpaceId:
+      name: spaceId
+      in: path
+      required: true
+      schema: { type: string, example: spc_2b81f0 }
+    TaskId:
+      name: taskId
+      in: path
+      required: true
+      schema: { type: string, example: tsk_5e12a9c3 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: 24 小时内相同 key 返回首次结果
+      schema: { type: string, maxLength: 64 }
+
+  responses:
+    BadRequest:
+      description: 参数校验失败
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Unauthorized:
+      description: token 缺失或失效
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Forbidden:
+      description: 无权限或被策略拦截
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Conflict:
+      description: 状态冲突
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Unprocessable:
+      description: 业务校验失败（如指纹不一致）
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  schemas:
+    PageMeta:
+      type: object
+      properties:
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer }
+
+    ErrorEnvelope:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - INVALID_ARGUMENT
+                - UNAUTHORIZED
+                - ORIGIN_FORBIDDEN
+                - POLICY_DENIED
+                - NOT_FOUND
+                - SPACE_CONFLICT
+                - PROXY_IN_USE
+                - PROFILE_INCONSISTENT
+                - BUDGET_EXCEEDED
+                - RATE_LIMITED
+                - INTERNAL
+                - BROWSER_UNAVAILABLE
+                - CDP_COMMAND_TIMEOUT
+                - MODEL_TIMEOUT
+            message: { type: string }
+            details: { type: object, additionalProperties: true }
+            trace_id: { type: string }
+
+    Fingerprint:
+      type: object
+      properties:
+        os: { type: string, enum: [windows_10, windows_11, macos_14, macos_15] }
+        ua: { type: string }
+        timezone: { type: string }
+        locale: { type: string }
+        screen:
+          type: object
+          properties:
+            width: { type: integer }
+            height: { type: integer }
+            dpr: { type: number }
+        webgl_vendor: { type: string }
+        canvas_noise: { type: boolean }
+        seed: { type: string, description: 噪声种子，同环境保持一致 }
+
+    ProfileCreate:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        group_name: { type: string }
+        os: { type: string, enum: [windows_10, windows_11, macos_14, macos_15] }
+        proxy_id: { type: string }
+        timezone: { type: string }
+        locale: { type: string }
+        screen:
+          type: object
+          properties:
+            width: { type: integer }
+            height: { type: integer }
+            dpr: { type: number }
+        canvas_noise: { type: boolean, default: true }
+        share_session: { type: boolean, default: true }
+        tags:
+          type: array
+          maxItems: 8
+          items: { type: string }
+
+    ProfileUpdate:
+      type: object
+      properties:
+        name: { type: string }
+        group_name: { type: string }
+        proxy_id: { type: [string, 'null'] }
+        share_session: { type: boolean }
+        tags:
+          type: array
+          items: { type: string }
+
+    Profile:
+      allOf:
+        - type: object
+          properties:
+            id: { type: string }
+            status:
+              type: string
+              enum: [idle, running, proxy_error, inconsistent]
+            fingerprint: { $ref: '#/components/schemas/Fingerprint' }
+            consistency_score: { type: integer, minimum: 0, maximum: 100 }
+            created_at: { type: integer, format: int64 }
+            last_used_at: { type: [integer, 'null'], format: int64 }
+        - $ref: '#/components/schemas/ProfileCreate'
+
+    ConsistencyReport:
+      type: object
+      properties:
+        score: { type: integer }
+        issues:
+          type: array
+          items:
+            type: object
+            properties:
+              code: { type: string }
+              severity: { type: string, enum: [info, warning, error] }
+              message: { type: string }
+              suggestion: { type: string }
+
+    Space:
+      type: object
+      properties:
+        id: { type: string }
+        profile_id: { type: string }
+        mode: { type: string, enum: [human, shadow] }
+        isolation: { type: string, enum: [L1, L2, L3] }
+        state: { type: string, enum: [opening, ready, closed] }
+        tabs:
+          type: array
+          items:
+            type: object
+            properties:
+              target_id: { type: string }
+              url: { type: string }
+              title: { type: string }
+        opened_at: { type: integer, format: int64 }
+
+    Budget:
+      type: object
+      properties:
+        max_steps: { type: integer, default: 40, maximum: 200 }
+        max_tokens: { type: integer, default: 200000 }
+        max_duration_ms: { type: integer, default: 600000 }
+        max_cost_cny: { type: number, default: 2.0 }
+
+    TaskPolicy:
+      type: object
+      properties:
+        allow_l1: { type: boolean, default: true }
+        l2_whitelist:
+          type: array
+          description: 允许自动执行 L2 动作的域名
+          items: { type: string }
+        vision_fallback: { type: boolean, default: true }
+
+    TaskCreate:
+      type: object
+      required: [profile_id, intent]
+      properties:
+        profile_id: { type: string }
+        intent: { type: string, minLength: 1, maxLength: 2000 }
+        space_id: { type: string }
+        budget: { $ref: '#/components/schemas/Budget' }
+        policy: { $ref: '#/components/schemas/TaskPolicy' }
+        output:
+          type: object
+          properties:
+            format: { type: string, enum: [table, json, markdown] }
+            schema: { type: object, additionalProperties: true }
+        skill_id: { type: string }
+
+    Task:
+      type: object
+      properties:
+        id: { type: string }
+        profile_id: { type: string }
+        space_id: { type: string }
+        intent: { type: string }
+        status:
+          type: string
+          enum: [queued, running, paused, done, failed, cancelled]
+        progress:
+          type: object
+          properties:
+            current_step: { type: integer }
+            total_steps: { type: integer }
+        budget_usage:
+          type: object
+          properties:
+            used_steps: { type: integer }
+            cost_cny: { type: number }
+            tokens_used: { type: integer }
+        output: { type: object, additionalProperties: true }
+        error:
+          type: [object, 'null']
+          properties:
+            code: { type: string }
+            message: { type: string }
+        created_at: { type: integer, format: int64 }
+        started_at: { type: [integer, 'null'], format: int64 }
+        ended_at: { type: [integer, 'null'], format: int64 }
+
+    Step:
+      type: object
+      properties:
+        id: { type: string }
+        seq: { type: integer }
+        intent: { type: string }
+        action:
+          type: object
+          properties:
+            type:
+              type: string
+              enum: [navigate, click, type, scroll, extract, screenshot, wait, submit]
+            ref: { type: string }
+            url: { type: string }
+            text: { type: string }
+        expected: { type: string }
+        status:
+          type: string
+          enum: [pending, running, ok, failed, skipped]
+        duration_ms: { type: integer }
+        evidence:
+          type: object
+          properties:
+            before_snapshot: { type: string }
+            after_snapshot: { type: string }
+            screenshot: { type: string }
+            model_call_id: { type: string }
+        human_intervention:
+          type: object
+          properties:
+            reason: { type: string }
+            duration_ms: { type: integer }
+
+    Artifact:
+      type: object
+      properties:
+        id: { type: string }
+        task_id: { type: string }
+        step_id: { type: string }
+        kind: { type: string, enum: [snapshot, screenshot, video, output] }
+        path: { type: string }
+        sha256: { type: string }
+        bytes: { type: integer }
+        created_at: { type: integer, format: int64 }
+
+    Proxy:
+      type: object
+      properties:
+        id: { type: string }
+        protocol: { type: string, enum: [http, https, socks5] }
+        host: { type: string }
+        port: { type: integer }
+        username: { type: [string, 'null'] }
+        country: { type: string }
+        latency_ms: { type: [integer, 'null'] }
+        status: { type: string, enum: [ok, degraded, unreachable] }
+        last_checked_at: { type: [integer, 'null'], format: int64 }
+
+    ProxyCreate:
+      type: object
+      required: [protocol, host, port]
+      properties:
+        protocol: { type: string, enum: [http, https, socks5] }
+        host: { type: string }
+        port: { type: integer }
+        username: { type: string }
+        password: { type: string }
+        country: { type: string }
+
+    Model:
+      type: object
+      properties:
+        id: { type: string }
+        provider: { type: string }
+        roles:
+          type: array
+          items: { type: string, enum: [plan, decide, locate, verify, summarize] }
+        context: { type: integer }
+        price_per_1k_in: { type: number }
+        price_per_1k_out: { type: number }
+
+    AuditLog:
+      type: object
+      properties:
+        id: { type: integer }
+        ts: { type: integer, format: int64 }
+        task_id: { type: string }
+        step_id: { type: string }
+        action_type: { type: string }
+        target_ref: { type: string }
+        url: { type: string }
+        domain: { type: string }
+        risk_level: { type: string, enum: [L0, L1, L2] }
+        policy_decision: { type: string }
+        model_call_id: { type: string }
+        screenshot_hash: { type: string }
+        operator: { type: string, enum: [agent, human] }

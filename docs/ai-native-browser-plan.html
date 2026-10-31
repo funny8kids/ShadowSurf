@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShadowSurf · AI 原生浏览器技术方案</title>
+<link rel="stylesheet" href="assets/doc.css">
+<script src="assets/doc.js"></script>
+</head>
+<body>
+<div class="shell">
+
+<aside class="toc">
+  <div class="toc-brand">
+    <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2.5-7 3.5 14 2.5-7H21"/></svg></div>
+    <b>ShadowSurf</b>
+  </div>
+  <div class="toc-doc">技术路线与落地方案<br>v1.0 · 2026-10</div>
+  <nav>
+    <div class="grp">判断</div>
+    <a href="#s1">1 核心结论</a>
+    <a href="#s2">2 市场尸检</a>
+    <a href="#s3">3 五条技术路线</a>
+    <div class="grp">方案</div>
+    <a href="#s4">4 参考架构</a>
+    <a href="#s5">5 技术选型清单</a>
+    <a href="#s6">6 竞品机制拆解</a>
+    <a href="#s7">7 产品定位</a>
+    <div class="grp">执行</div>
+    <a href="#s8">8 落地路线图</a>
+    <a href="#s9">9 风险清单</a>
+    <a href="#refs">10 参考来源</a>
+  </nav>
+</aside>
+
+<main class="content">
+
+
+<header class="doc-head">
+  <div class="doc-kicker">Technical Proposal · 2026 Q4</div>
+  <h1>ShadowSurf：AI 原生浏览器<br><em>技术路线与落地方案</em></h1>
+  <p class="sub">
+    本文回答一个问题：在 Atlas 关停、Mariner 退休、Arc 停运之后，一个新团队该用什么技术底座、
+    什么架构范式、什么产品切口，去做一台真正 AI 原生的浏览器。
+  </p>
+  <div class="doc-meta">
+    <div><b>调研截止</b>　2026-10-31</div>
+    <div><b>覆盖</b>　12 个产品 / 9 个开源项目 / 5 条技术路线</div>
+    <div><b>结论</b>　三级火箭：扩展 → 壳 → fork</div>
+  </div>
+</header>
+
+<!-- ============ 01 ============ -->
+<section id="s1">
+  <h2><span class="n">01</span>核心结论</h2>
+  <p class="lede">先给判断，再给依据。五条结论按重要性排序。</p>
+
+  <div class="verdicts">
+    <div class="v">
+      <div class="n">01</div>
+      <div>
+        <h4>不要做"通用 AI 浏览器入口"——这条路在 2026 年已被证伪</h4>
+        <p>OpenAI 用 9 个月、Google 用 17 个月、The Browser Company 用整个 Arc 产品线，分别验证了同一件事：用户不会为了"AI 能干活"而更换默认浏览器。留存靠任务完成，不靠浏览习惯。</p>
+      </div>
+    </div>
+    <div class="v">
+      <div class="n">02</div>
+      <div>
+        <h4>真正的机会是"人机双轨的 Agent 工作台"，不是"更聪明的浏览器"</h4>
+        <p>活下来的产品全部满足一个特征：AI 不是浏览器的主角，而是与你并行的第二个操作者。BrowserOS neo 的"第二浏览器"、Ego Lite 的 Space 隔离、豆包的虚拟桌面，本质是同一件事——给 Agent 一个不打扰你的独立工作区。</p>
+      </div>
+    </div>
+    <div class="v">
+      <div class="n">03</div>
+      <div>
+        <h4>技术上不要一上来 fork Chromium，用三级火箭</h4>
+        <p>扩展（周级）→ Electron 壳（月级）→ Chromium fork（季度级）。关键不是"选哪个"，而是让同一套 TypeScript UI 与 Agent 逻辑贯穿三个阶段，内核只做胶水。BrowserOS 用这个架构把 90% 代码放在扩展层，fork 只打了少量补丁。</p>
+      </div>
+    </div>
+    <div class="v">
+      <div class="n">04</div>
+      <div>
+        <h4>能力抽象统一走 CDP，不要绑死任何一个自动化框架</h4>
+        <p>无论底座是扩展、Electron 还是 fork，浏览器能力都通过 Chrome DevTools Protocol 暴露。上层再包一层薄工具集（click / type / snapshot / navigate），这样 Playwright、Stagehand、browser-use 都只是可替换的实现细节。</p>
+      </div>
+    </div>
+    <div class="v">
+      <div class="n">05</div>
+      <div>
+        <h4>安全与可接管是产品功能，不是合规成本</h4>
+        <p>Comet 靠 BrowseSafe 把注入检测做到 91% 才敢放开自动执行；腾讯 BrowserSkill 把 CAPTCHA/OTP 明确设计成"人工接管"；国内政务采购把"操作可回放审计"列为一票否决项。可回放 + 可中断，是这个品类唯一的信任货币。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 02 ============ -->
+<section id="s2">
+  <h2><span class="n">02</span>市场尸检：谁死了，为什么</h2>
+  <p class="lede">过去 18 个月，这个赛道发生了 5 次发布、3 次撤退、2 次免费化。把时间线摊开看，规律比结论更清楚。</p>
+
+  <div class="tl">
+    <div class="tl-row">
+      <div class="tl-date">2024.12</div>
+      <div class="tl-line"><div class="tl-dot pivot"></div></div>
+      <div class="tl-body"><div class="t">Google 发布 Project Mariner <span class="tag pivot">转折</span></div><div class="d">截图 + 计算机视觉驱动，$249.99/月，仅美国。Pichai 在 I/O 2025 亲自演示。</div></div>
+    </div>
+    <div class="tl-row">
+      <div class="tl-date">2025.01</div>
+      <div class="tl-line"><div class="tl-dot live"></div></div>
+      <div class="tl-body"><div class="t">Dia 亮相，Arc 进入维护模式</div><div class="d">The Browser Company 战略转型，对话式主界面 + Skills 技能系统。</div></div>
+    </div>
+    <div class="tl-row">
+      <div class="tl-date">2025.07</div>
+      <div class="tl-line"><div class="tl-dot live"></div></div>
+      <div class="tl-body"><div class="t">Perplexity Comet 发布 <span class="tag live">存活</span></div><div class="d">Chromium 内核，首周百万下载。侧边栏助手 + 跨标签上下文 + 多模型切换。</div></div>
+    </div>
+    <div class="tl-row">
+      <div class="tl-date">2025.10</div>
+      <div class="tl-line"><div class="tl-dot pivot"></div></div>
+      <div class="tl-body"><div class="t">OpenAI ChatGPT Atlas 发布</div><div class="d">Sam Altman 称之为"重新思考浏览器的机会"。内置 ChatGPT + 记忆。</div></div>
+    </div>
+    <div class="tl-row">
+      <div class="tl-date">2026.02</div>
+      <div class="tl-line"><div class="tl-dot live"></div></div>
+      <div class="tl-body"><div class="t">Chrome 146 上线 WebMCP 早期预览 <span class="tag live">基础设施</span></div><div class="d">Google + Microsoft 联合推动的 W3C 提案，网站可主动向 Agent 暴露工具函数。</div></div>
+    </div>
+    <div class="tl-row">
+      <div class="tl-date">2026.05</div>
+      <div class="tl-line"><div class="tl-dot dead"></div></div>
+      <div class="tl-body"><div class="t">Mariner 悄然退休 <span class="tag dead">死亡</span></div><div class="d">技术折进 Gemini Agent、Chrome Auto Browse、Computer Use API。没有告别公告。</div></div>
+    </div>
+    <div class="tl-row">
+      <div class="tl-date">2026.07</div>
+      <div class="tl-line"><div class="tl-dot dead"></div></div>
+      <div class="tl-body"><div class="t">Operator 并入 ChatGPT Work</div><div class="d">独立的 Agent 界面开始被统一收编。</div></div>
+    </div>
+    <div class="tl-row">
+      <div class="tl-date">2026.08</div>
+      <div class="tl-line"><div class="tl-dot dead"></div></div>
+      <div class="tl-body"><div class="t">Atlas 停服 <span class="tag dead">死亡</span></div><div class="d">2026-08-09 停止工作，08-13 官宣退役。从发布到终结 9 个月。能力并入 ChatGPT 桌面端与 Codex。</div></div>
+    </div>
+    <div class="tl-row">
+      <div class="tl-date">2026.08</div>
+      <div class="tl-line"><div class="tl-dot live"></div></div>
+      <div class="tl-body"><div class="t">Cloudflare Kitesurf + Comet 免费化 <span class="tag live">新范式</span></div><div class="d">Kitesurf 是纯机器可读的 agent-native 运行时（无标签页/无扩展），宣称比 Chromium 省 3-7 倍 CPU 内存。Comet 拆掉 $200/月付费墙。</div></div>
+    </div>
+    <div class="tl-row">
+      <div class="tl-date">2026.12</div>
+      <div class="tl-line"><div class="tl-dot dead"></div></div>
+      <div class="tl-body"><div class="t">Arc 彻底停运 <span class="tag dead">已排期</span></div><div class="d">12-22 起 macOS/Windows 停止运行，账户停用，数据 30 天内删除。全公司资源转 Dia。</div></div>
+    </div>
+  </div>
+
+  <h3>三个结构性死因</h3>
+  <div class="cols">
+    <div class="card">
+      <h4>太重了</h4>
+      <p style="font-size:13px;margin:0">独立浏览器要同时扛四件事：渲染引擎、登录态管理、身份授权、分发渠道。这四件事任何一件做不好产品就废，而巨头已经用十亿级主产品把后三件做完了。</p>
+    </div>
+    <div class="card">
+      <h4>留存不成立</h4>
+      <p style="font-size:13px;margin:0">"能帮你做事"是功能，不是习惯。用户没有理由为一个偶尔用的功能迁移默认浏览器、重建书签密码扩展。这是 Atlas 用户量起不来的根本原因。</p>
+    </div>
+  </div>
+  <div class="cols">
+    <div class="card">
+      <h4>成本结构倒挂</h4>
+      <p style="font-size:13px;margin:0">豆包公开的困境极具代表性：2 亿 DAU，日收入不足 ¥100 万，日算力成本数千万。Agent 的每次任务都是真金白银的 token，而浏览器本身不产生收入。</p>
+    </div>
+    <div class="card">
+      <h4>风控墙（中国特有）</h4>
+      <p style="font-size:13px;margin:0">极验 Geetest、TLS 指纹、滑块验证码，让无人值守的干净内核寸步难行。这直接解释了为什么中国玩家不做 agent-native 内核，而去做"云机 + 人工接管"。</p>
+    </div>
+  </div>
+
+  <div class="callout warn">
+    <div class="label">最重要的反面教材</div>
+    <p>Atlas 不是技术失败，是<strong>定位失败</strong>。它把 AI 做成浏览器的主角，于是既没赢过 Chrome 的默认地位，也没赢过 ChatGPT 的使用频次。OpenAI 的最终解法是把能力收回 ChatGPT 桌面端——这说明<strong>入口不在浏览器这一层</strong>。任何新方案都必须先回答："为什么用户要为一个功能换掉浏览器？"</p>
+  </div>
+</section>
+
+<!-- ============ 03 ============ -->
+<section id="s3">
+  <h2><span class="n">03</span>五条技术路线</h2>
+  <p class="lede">这是本文最核心的部分。市面上所有 AI 浏览器，技术底座无非这五种。选错路线的代价是 6-12 个月。</p>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:15%">路线</th>
+          <th style="width:18%">代表产品</th>
+          <th style="width:12%">起步成本</th>
+          <th style="width:26%">能力天花板</th>
+          <th style="width:29%">主要坑</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>A. MV3 扩展</strong><br><span style="font-size:11.5px;color:var(--ink-3)">Side Panel + CDP</span></td>
+          <td>Nanobrowser、ibl.ai、腾讯 BrowserSkill</td>
+          <td><span class="pill lo">1-2 人周</span></td>
+          <td>无法改地址栏 / 新标签页 / 内核行为；体验止步于"侧边栏工具"</td>
+          <td>Service Worker 会被休眠；商店审核；<code>chrome.debugger</code> 会显示"正在调试"横幅</td>
+        </tr>
+        <tr>
+          <td><strong>B. Electron 壳</strong><br><span style="font-size:11.5px;color:var(--ink-3)">WebContentsView</span></td>
+          <td>electron-browser-shell、Min</td>
+          <td><span class="pill mid">1-2 人月</span></td>
+          <td>UI 完全自主；多标签、分屏、Space 都好做；TS 全栈</td>
+          <td>扩展支持不完整（需 electron-chrome-extensions）；无 Chrome 内置 AI；下载/PDF/密码管理要自己补</td>
+        </tr>
+        <tr>
+          <td><strong>C. CEF + 自研外壳</strong></td>
+          <td>多数企业级浏览器、部分金融终端</td>
+          <td><span class="pill mid">2-4 人月</span></td>
+          <td>接近 fork 的控制力，但升级只需换 CEF 二进制</td>
+          <td>C++ 门槛高；CEF 不含 Chrome 内置 AI（Gemini Nano 是 Chrome 私有）；UI 开发慢</td>
+        </tr>
+        <tr>
+          <td><strong>D. Chromium fork</strong><br><span style="font-size:11.5px;color:var(--ink-3)">真·浏览器</span></td>
+          <td>Comet、Dia、Neon、BrowserOS、Ego Lite、Tabbit</td>
+          <td><span class="pill hi">3-6 人月<br>+ 永久维护</span></td>
+          <td>完全控制：地址栏、新标签页、网络栈、扩展、性能、内置 API</td>
+          <td>100GB 磁盘 + 数小时编译；每次上游升级要 rebase 全部补丁；必须有 C++ 团队</td>
+        </tr>
+        <tr>
+          <td><strong>E. 外部驱动真实 Chrome</strong></td>
+          <td>browser-use、Manus Browser Operator</td>
+          <td><span class="pill lo">1 人周</span></td>
+          <td>不是浏览器，是 Agent 遥控器；登录态天然复用</td>
+          <td>依赖调试端口或扩展桥；用户一动就冲突；无法做产品化体验</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <div class="label">推荐：三级火箭，而非单选题</div>
+    <p>三条路线不是互斥的，而是<strong>时间上的三个阶段</strong>。真正决定成败的架构决策只有一个：<strong>把 Agent 逻辑与 UI 写在 TypeScript 层（扩展 / WebUI），内核只暴露 API 和少量补丁</strong>。做到这一点，从 A 迁到 B、从 B 迁到 D，都不需要重写业务代码。</p>
+    <p style="margin-top:10px">BrowserOS 是这个架构最有力的证明：它同时发布"人类浏览器"和"Agent 第二浏览器"两个产品，共用一套 WXT + React 扩展代码；Chromium 侧只有 <code>chromium_patches/</code> 目录下的少量补丁；Agent 平台是独立的 TypeScript + Rust 服务，跑在 <code>127.0.0.1</code>。</p>
+  </div>
+
+  <h3>迁移路径</h3>
+  <div class="flow">
+    <span class="step"><b>A</b> MV3 扩展<br><span style="color:var(--ink-3);font-size:11px">验证场景与成功率</span></span>
+    <span class="arrow">→</span>
+    <span class="step"><b>B</b> Electron 壳<br><span style="color:var(--ink-3);font-size:11px">补足体验与 Space</span></span>
+    <span class="arrow">→</span>
+    <span class="step"><b>D</b> Chromium fork<br><span style="color:var(--ink-3);font-size:11px">补丁 ≤ 20 个</span></span>
+    <span class="arrow">→</span>
+    <span class="step"><b>+</b> WebMCP<br><span style="color:var(--ink-3);font-size:11px">站点级工具直连</span></span>
+  </div>
+  <p style="font-size:13.5px;color:var(--ink-3)">每一阶段结束时都有一个明确的"继续 / 停止"判据（见第 08 节）。<strong>不要在没有验证任务成功率之前启动 fork</strong>——这是 Atlas 之外最常见的死法。</p>
+</section>
+
+<!-- ============ 04 ============ -->
+<section id="s4">
+  <h2><span class="n">04</span>参考架构</h2>
+  <p class="lede">六层。自上而下是产品，自下而上是能力。核心设计原则：<strong>内核薄、协议厚、UI 可移植</strong>。</p>
+
+  <div class="arch">
+    <div class="arch-head"><span>ShadowSurf 分层架构</span><span>L5 → L0</span></div>
+
+    <div class="layer">
+      <div class="layer-id"><span>L5</span>产品层</div>
+      <div class="layer-body">
+        <div class="chips">
+          <span class="chip">侧边栏对话</span>
+          <span class="chip">地址栏 AI</span>
+          <span class="chip">新标签页</span>
+          <span class="chip">Space 双轨</span>
+          <span class="chip">技能库</span>
+          <span class="chip">任务面板</span>
+          <span class="chip">回放时间线</span>
+        </div>
+        <div class="layer-note">React + Tailwind。扩展形态用 WXT 打包，壳形态用 Vite。同一套组件，两处复用。</div>
+      </div>
+    </div>
+
+    <div class="layer">
+      <div class="layer-id"><span>L4</span>安全与治理</div>
+      <div class="layer-body">
+        <div class="chips">
+          <span class="chip key">指令/内容分离</span>
+          <span class="chip key">动作白名单</span>
+          <span class="chip">敏感操作确认</span>
+          <span class="chip">域信誉分级</span>
+          <span class="chip">录屏回放</span>
+          <span class="chip">审计日志</span>
+        </div>
+        <div class="layer-note">不依赖模型"自觉遵守"，而在执行器层面强制约束：支付、删除、发信等动作默认拦截，需二次确认或人工接管。</div>
+      </div>
+    </div>
+
+    <div class="layer">
+      <div class="layer-id"><span>L3</span>Agent 运行时</div>
+      <div class="layer-body">
+        <div class="chips">
+          <span class="chip">Planner</span>
+          <span class="chip">Executor</span>
+          <span class="chip key">Verifier</span>
+          <span class="chip">多 Agent 并行</span>
+          <span class="chip">任务队列</span>
+          <span class="chip">失败重规划</span>
+        </div>
+        <div class="layer-note">Plan → Act → Observe → Verify 循环。Verifier 是关键：每步执行后做一次"目标是否达成"的判定，避免连续无效点击。</div>
+      </div>
+    </div>
+
+    <div class="layer">
+      <div class="layer-id"><span>L2</span>上下文引擎<br><span>（眼睛）</span></div>
+      <div class="layer-body">
+        <div class="chips">
+          <span class="chip key">DOM 简化管道</span>
+          <span class="chip">A11y Tree</span>
+          <span class="chip">截图兜底</span>
+          <span class="chip">跨标签上下文</span>
+          <span class="chip">页面语义索引</span>
+        </div>
+        <div class="layer-note">参考 browser-use 的五步管道：原始 DOM → 可见性过滤 → 可交互元素标记（编号）→ 结构序列化 → token 预算裁剪。视觉只在 DOM 失效时启用，避免成本失控。</div>
+      </div>
+    </div>
+
+    <div class="layer">
+      <div class="layer-id"><span>L1</span>能力桥</div>
+      <div class="layer-body">
+        <div class="chips">
+          <span class="chip key">CDP 薄封装</span>
+          <span class="chip">MCP Server</span>
+          <span class="chip">WebMCP Adapter</span>
+          <span class="chip">本地 HTTP/WS</span>
+        </div>
+        <div class="layer-note">对内有统一工具集（click / type / scroll / navigate / extract / screenshot / wait）；对外通过 MCP 暴露给 Claude Code、Cursor 等任意 Agent 客户端。</div>
+      </div>
+    </div>
+
+    <div class="layer">
+      <div class="layer-id"><span>L0</span>内核层</div>
+      <div class="layer-body">
+        <div class="chips">
+          <span class="chip gray">Chromium fork / CEF / Electron WebContentsView</span>
+          <span class="chip gray">扩展 API</span>
+          <span class="chip gray">网络栈</span>
+        </div>
+        <div class="layer-note">只做三件事：渲染、提供 CDP、暴露少量自有 API。任何业务逻辑都不下沉到 C++。</div>
+      </div>
+    </div>
+  </div>
+
+  <h3>一次任务的数据流</h3>
+  <div class="flow">
+    <span class="step"><b>指令</b> 自然语言</span><span class="arrow">→</span>
+    <span class="step"><b>Planner</b> 拆成 N 步</span><span class="arrow">→</span>
+    <span class="step"><b>Snapshot</b> DOM+a11y+截图</span><span class="arrow">→</span>
+    <span class="step"><b>定位</b> 选元素编号</span><span class="arrow">→</span>
+    <span class="step"><b>CDP 执行</b></span><span class="arrow">→</span>
+    <span class="step"><b>Verify</b> 是否达成</span><span class="arrow">→</span>
+    <span class="step" style="border-color:var(--accent);color:var(--accent)"><b>重规划 / 下一步</b></span>
+  </div>
+  <p style="font-size:13.5px;color:var(--ink-3)">每一步的 snapshot 与动作都落盘，构成可回放的时间线。这既是调试工具，也是企业版的合规卖点。</p>
+</section>
+
+<!-- ============ 05 ============ -->
+<section id="s5">
+  <h2><span class="n">05</span>技术选型清单</h2>
+  <p class="lede">按模块给出首选、备选与理由。可直接作为技术评审的输入。</p>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead>
+        <tr><th style="width:16%">模块</th><th style="width:24%">首选</th><th style="width:22%">备选</th><th style="width:38%">理由 / 注意</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>浏览器底座</strong></td>
+          <td>Phase 0/1：Electron <code>WebContentsView</code><br>Phase 2：Chromium fork</td>
+          <td>CEF（要 C++ 团队时）</td>
+          <td>Electron 的多标签方案已被 electron-browser-shell 验证；fork 阶段参考 BrowserOS 的 patch 组织方式</td>
+        </tr>
+        <tr>
+          <td><strong>自动化引擎</strong></td>
+          <td>CDP 直连 + 自研薄工具集</td>
+          <td>Stagehand / Playwright / browser-use / Midscene.js</td>
+          <td>不要绑死框架。CDP 是唯一所有底座都支持的稳定层；上层按场景插拔（结构化用 DOM，兜底用视觉）</td>
+        </tr>
+        <tr>
+          <td><strong>DOM 抽取</strong></td>
+          <td>自研，参考 browser-use <code>buildDomTree</code></td>
+          <td>Readability + 自研裁剪</td>
+          <td>browser-use 的"可见性过滤 + 可交互标记 + token 裁剪"五步管道是目前最成熟的工程解</td>
+        </tr>
+        <tr>
+          <td><strong>视觉兜底</strong></td>
+          <td>Midscene.js（MIT）</td>
+          <td>自研截图 + VLM</td>
+          <td>字节开源，中文生态好，支持 Web/Android/iOS；只在 DOM 失效或 canvas 场景启用</td>
+        </tr>
+        <tr>
+          <td><strong>模型路由</strong></td>
+          <td>规划：Claude / GPT / Qwen3-Max<br>定位：小模型</td>
+          <td>本地 Ollama / LM Studio</td>
+          <td>规划用强模型、元素定位用小模型，成本可降一个数量级。Comet 与 Tabbit 都做多模型切换，用户会为此付费</td>
+        </tr>
+        <tr>
+          <td><strong>对外协议</strong></td>
+          <td>MCP Server（本地）</td>
+          <td>WebMCP（站点侧，Chrome 146+）</td>
+          <td>MCP 让浏览器变成"任意 Agent 的工具箱"，是 BrowserOS neo 的核心卖点；WebMCP 是 2026 年的增量红利，越早适配越占位</td>
+        </tr>
+        <tr>
+          <td><strong>进程与通信</strong></td>
+          <td>本地 <code>127.0.0.1</code> 服务 + WS</td>
+          <td>Electron IPC</td>
+          <td>API Key 只存在于主进程/本地服务，渲染进程永不接触。这是安全底线，也方便做多客户端（IDE 插件、手机端）</td>
+        </tr>
+        <tr>
+          <td><strong>存储</strong></td>
+          <td>SQLite（任务/历史/审计）</td>
+          <td>本地文件 + 录屏分片</td>
+          <td>BrowserOS 把数据全部落在本地目录，不上传。国内企业客户对"数据不出域"是硬要求</td>
+        </tr>
+        <tr>
+          <td><strong>可观测</strong></td>
+          <td>任务级 trace + 成功率看板</td>
+          <td>OpenTelemetry</td>
+          <td>Tabbit 用"任务成功率 53.1% → 91.8%"作为对外指标；你需要同样一把尺子来驱动迭代</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout bad">
+    <div class="label">License 雷区</div>
+    <p><strong>BrowserOS 是 AGPL-3.0</strong>。它的架构值得学，代码不能直接抄进闭源商业产品——AGPL 的网络分发条款会传染。可安全借鉴的是：<code>ungoogled-chromium</code> 的补丁集（BSD）、Chromium 本身的 BSD 许可、以及各 MIT 项目（Midscene.js 等）。如果要做 fork，从 Chromium 官方源码 + 自研补丁起步，而不是从 AGPL 分支起步。</p>
+  </div>
+</section>
+
+<!-- ============ 06 ============ -->
+<section id="s6">
+  <h2><span class="n">06</span>竞品机制拆解</h2>
+  <p class="lede">不看功能列表，只看"哪些机制值得抄进架构"。</p>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead>
+        <tr><th style="width:14%">产品</th><th style="width:32%">值得借鉴的机制</th><th style="width:26%">不要抄的部分</th><th style="width:28%">对你的启示</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Dia</strong></td>
+          <td>Skills 技能系统（预设 + 用户自定义的 prompt+action 宏）；对话即主界面</td>
+          <td>封闭单模型；首发仅 macOS</td>
+          <td>技能 = 把一次性任务沉淀为可复用资产，这是留存的关键</td>
+        </tr>
+        <tr>
+          <td><strong>Comet</strong></td>
+          <td>侧边栏 + 跨标签上下文；多模型切换；BrowseSafe 注入检测（宣称 91%）</td>
+          <td>$200/月定价（已转免费）</td>
+          <td>安全能力要产品化命名、可量化，否则用户感知不到</td>
+        </tr>
+        <tr>
+          <td><strong>Neon</strong></td>
+          <td>Agent 执行可中断、可接管</td>
+          <td>过度营销"全自动"</td>
+          <td>承认失败率，把"接管"做成第一等功能</td>
+        </tr>
+        <tr>
+          <td><strong>BrowserOS</strong></td>
+          <td>① fork + 扩展混合架构 ② MCP 端点 ③ 每会话可回放 ④ 多 Agent 各自独立 tab ⑤ Ollama 本地跑</td>
+          <td>AGPL 代码；双产品线易分散</td>
+          <td><strong>架构范本</strong>。90% 代码在 TS 层，内核只打补丁</td>
+        </tr>
+        <tr>
+          <td><strong>Ego Lite</strong></td>
+          <td>Space 隔离（人与 Agent 共享浏览器但不同工作区）；一键导入 Chrome 登录态</td>
+          <td>平台覆盖窄</td>
+          <td>"不抢焦点"是用户最直接的痛点，必须做进架构</td>
+        </tr>
+        <tr>
+          <td><strong>豆包</strong></td>
+          <td>虚拟桌面 + 云电脑模式；定时任务可后台跑；"接口优先、GUI 兜底"</td>
+          <td>算力成本结构</td>
+          <td>国内路线：隔离环境 + 人工接管，比干净内核更实用</td>
+        </tr>
+        <tr>
+          <td><strong>Tabbit（美团）</strong></td>
+          <td>"妙招"任务模板；多模型自由切换；公开任务成功率指标</td>
+          <td>—</td>
+          <td>成功率是唯一可信的对外叙事</td>
+        </tr>
+        <tr>
+          <td><strong>Kitesurf（Cloudflare）</strong></td>
+          <td>agent-native 运行时：砍掉标签页/主题/扩展，只输出机器可读页面；兼容 CDP</td>
+          <td>不能给人用</td>
+          <td>可作为"影子执行环境"的参考——Agent 不需要漂亮的 UI</td>
+        </tr>
+        <tr>
+          <td><strong>腾讯 BrowserSkill</strong></td>
+          <td>CLI + 扩展驱动真实浏览器；复用登录态；CAPTCHA/OTP 走人工接管</td>
+          <td>—</td>
+          <td>开源可读，是国内风控环境下最务实的参考实现</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ============ 07 ============ -->
+<section id="s7">
+  <h2><span class="n">07</span>产品定位建议</h2>
+  <p class="lede">ShadowSurf 这个名字其实已经给出了答案：不是"更聪明的浏览器"，是"影子"。</p>
+
+  <div class="callout">
+    <div class="label">一句话定位</div>
+    <p style="font-size:17px;color:var(--ink);line-height:1.6">你照常冲浪，影子在另一个 Space 里把活干完。</p>
+    <p style="margin-top:8px">不做入口，做<strong>并行操作者</strong>。用户不需要迁移浏览器，只需要在需要干活时叫出影子。</p>
+  </div>
+
+  <h3>三条产品原则（直接决定架构）</h3>
+  <div class="cols">
+    <div class="card">
+      <h4>不抢焦点</h4>
+      <p style="font-size:13px;margin:0">Agent 的标签页在独立 Space 里，不夺走鼠标、不切换你的当前页。这是 Ego Lite 验证过的第一痛点。</p>
+    </div>
+    <div class="card">
+      <h4>可接管</h4>
+      <p style="font-size:13px;margin:0">任意时刻可暂停、可接手、可让人过验证码。国内风控墙决定了"全自动"是伪需求。</p>
+    </div>
+  </div>
+  <div class="cols" style="grid-template-columns:1fr">
+    <div class="card">
+      <h4>可回放</h4>
+      <p style="font-size:13px;margin:0">每一步有截图、有动作、有时间线。对内是调试工具，对外是合规卖点，对用户是信任来源。三件事一套实现。</p>
+    </div>
+  </div>
+
+  <h3>差异化三角</h3>
+  <p><strong>双轨隔离 × 可回放审计 × 成本可见</strong>。前两点 Ego Lite 和 BrowserOS 各做了一个，第三点（每个任务花多少 token / 多少钱，实时可见）目前没人做好——而"Cost per Task"已经成为企业采购的正式指标。</p>
+
+  <h3>切口选择</h3>
+  <ul>
+    <li><strong>推荐：跨站信息工作流</strong>（多标签调研 → 结构化产出 → 定时监控）。这是 Polar 验证过的方向，任务边界清晰、成功率可度量、付费意愿强。</li>
+    <li><strong>次选：企业内网/政务的重复性操作</strong>。合规审计 + 私有部署 + 信创适配，客单价高，但销售周期长。</li>
+    <li><strong>避开：通用"帮我订机票"</strong>。这是 Atlas 的死因——演示效果极好，真实成功率极低，且直接撞上支付与风控。</li>
+  </ul>
+</section>
+
+<!-- ============ 08 ============ -->
+<section id="s8">
+  <h2><span class="n">08</span>落地路线图</h2>
+  <p class="lede">每阶段有明确的"继续 / 停止"判据。没达标就不要进下一阶段——这是控制风险的核心手段。</p>
+
+  <div class="road">
+    <div class="phase">
+      <div class="phase-l">
+        <div class="p">Phase 0</div>
+        <div class="m">M1 – M2</div>
+        <div class="st">形态：MV3 扩展</div>
+      </div>
+      <div>
+        <h4>用最小成本验证"用户真的会让 AI 干活"</h4>
+        <ul>
+          <li>Side Panel 对话 + 当前页上下文（DOM 简化管道 v0）</li>
+          <li>三个场景：跨标签调研汇总、表单批量填充、页面变更监控</li>
+          <li>CDP 薄封装（<code>chrome.debugger</code>）+ 动作白名单 + 每步截图</li>
+        </ul>
+        <div class="kpi">继续判据：任务成功率 ≥ 70%，次周留存 ≥ 25%，单任务成本 ≤ ¥0.5</div>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="phase-l">
+        <div class="p">Phase 1</div>
+        <div class="m">M3 – M6</div>
+        <div class="st">形态：Electron 壳</div>
+      </div>
+      <div>
+        <h4>补足体验：双轨 Space + 本地 Agent 服务</h4>
+        <ul>
+          <li><code>WebContentsView</code> 多标签 + 垂直标签 + Space 分组（人与影子分离）</li>
+          <li>本地 <code>127.0.0.1</code> Agent 服务：持有密钥、跑 Agent 循环、落盘回放</li>
+          <li>MCP Server 端点（让 Cursor / Claude Code 直接调用这台浏览器）</li>
+          <li>扩展代码整体搬进内置 WebUI，业务层零重写</li>
+        </ul>
+        <div class="kpi">继续判据：周活用户日均任务数 ≥ 3，任务成功率 ≥ 85%，留存 ≥ 40%</div>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="phase-l">
+        <div class="p">Phase 2</div>
+        <div class="m">M7 – M12</div>
+        <div class="st">形态：Chromium fork</div>
+      </div>
+      <div>
+        <h4>拿回内核控制权，补丁控制在 20 个以内</h4>
+        <ul>
+          <li>补丁只做四件事：侧边栏容器、地址栏 AI 入口、自有 API 暴露、默认新标签页</li>
+          <li>跟随 Chromium 稳定版，建立补丁 CI（每次上游更新自动 rebase + 冒烟）</li>
+          <li>WebMCP 适配：站点主动暴露工具时优先走结构化调用，绕开 DOM 解析</li>
+          <li>扩展完整兼容（这是 fork 相对 Electron 的最大优势）</li>
+        </ul>
+        <div class="kpi">继续判据：启动速度与内存对齐 Chrome ±10%，扩展兼容率 ≥ 95%</div>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="phase-l">
+        <div class="p">Phase 3</div>
+        <div class="m">M13+</div>
+        <div class="st">形态：平台化</div>
+      </div>
+      <div>
+        <h4>从产品到平台</h4>
+        <ul>
+          <li>技能市场（用户沉淀的任务模板可分享/交易）</li>
+          <li>企业版：私有部署、审计日志、Agent 身份标识、数据不出域</li>
+          <li>按任务计费（Cost per Task）与订阅并行</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 09 ============ -->
+<section id="s9">
+  <h2><span class="n">09</span>风险清单</h2>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th style="width:22%">风险</th><th style="width:10%">等级</th><th style="width:32%">表现</th><th style="width:36%">对策</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>巨头内嵌化挤压</strong></td>
+          <td><span class="pill hi">高</span></td>
+          <td>Chrome / Edge 免费内置同类能力，你的"通用助手"瞬间失去差异</td>
+          <td>不做通用入口。做垂直工作流、企业合规、本地私有化——这三块巨头不会碰</td>
+        </tr>
+        <tr>
+          <td><strong>提示注入</strong></td>
+          <td><span class="pill hi">高</span></td>
+          <td>网页里的隐藏文本诱导 Agent 转账、泄露 Cookie、删除数据</td>
+          <td>指令与网页内容物理分离；执行器层动作白名单；支付/删除/发信强制确认；域信誉分级</td>
+        </tr>
+        <tr>
+          <td><strong>fork 维护黑洞</strong></td>
+          <td><span class="pill hi">高</span></td>
+          <td>补丁越打越多，上游一升级全线崩溃，团队被拖死</td>
+          <td>补丁 ≤ 20 且只做 UI 挂载点；建补丁 CI；Phase 2 之前不许 fork</td>
+        </tr>
+        <tr>
+          <td><strong>任务成功率不达标</strong></td>
+          <td><span class="pill mid">中</span></td>
+          <td>演示惊艳、实际 50%，用户三次失败后永久流失</td>
+          <td>限定场景边界；公开成功率；失败时给"接管"按钮而不是道歉</td>
+        </tr>
+        <tr>
+          <td><strong>国内风控墙</strong></td>
+          <td><span class="pill mid">中</span></td>
+          <td>极验滑块、TLS 指纹、短信 OTP 让自动化中断</td>
+          <td>设计人工接管通道；关键站点做适配层；不承诺"全自动"</td>
+        </tr>
+        <tr>
+          <td><strong>算力成本</strong></td>
+          <td><span class="pill mid">中</span></td>
+          <td>每任务多次全页 snapshot，token 成本吃掉毛利</td>
+          <td>规划/定位模型分离；DOM 裁剪到 token 预算；本地小模型跑元素定位；缓存页面结构</td>
+        </tr>
+        <tr>
+          <td><strong>License 传染</strong></td>
+          <td><span class="pill lo">低</span></td>
+          <td>误用 AGPL 分支导致闭源产品被迫开源</td>
+          <td>只借鉴架构不抄代码；从 Chromium 官方 + BSD 补丁起步</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ============ refs ============ -->
+<section id="refs">
+  <h2><span class="n">10</span>参考来源</h2>
+  <ul class="refs">
+    <li>BrowserOS（开源 agentic 浏览器，Chromium fork，AGPL-3.0）— <a href="https://github.com/browseros-ai/BrowserOS">github.com/browseros-ai/BrowserOS</a></li>
+    <li>electron-browser-shell（WebContentsView 多标签 + chrome 扩展 API 参考实现）</li>
+    <li>Midscene.js（字节跳动开源，MIT，视觉驱动 UI 自动化）</li>
+    <li>browser-use（DOM 五步管道与 agent loop 的工程范本）</li>
+    <li>Stagehand / Playwright（AI + 确定性代码混合范式）</li>
+    <li>WebMCP（Google + Microsoft，W3C 社区组，Chrome 146 早期预览）</li>
+    <li>Cloudflare Kitesurf（agent-native browser runtime）</li>
+    <li>腾讯 BrowserSkill（CLI + 扩展驱动真实浏览器，开源）</li>
+    <li>行业分析：《独立 AI 浏览器之死与「内嵌化」之生》，2026-08</li>
+    <li>Perplexity BrowseSafe（提示注入检测）、Google CaMeL（能力隔离）</li>
+  </ul>
+</section>
+
+<footer>
+  ShadowSurf 技术方案 · 调研截止 2026-10-31 · 文中产品数据来自公开报道与官方仓库，部分指标为厂商自报，引用前建议交叉核实。
+</main>
+
+</div>
+</body>
+</html>

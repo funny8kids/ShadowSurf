@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShadowSurf 前端界面设计文档</title>
+<link rel="stylesheet" href="assets/doc.css">
+<style>
+  .type-row{display:flex;align-items:baseline;gap:16px;padding:9px 0;border-bottom:1px solid var(--line-2)}
+  .type-row:last-child{border-bottom:none}
+  .type-row .spec{
+    font-family:var(--mono);font-size:10px;color:var(--ink-4);width:104px;flex:none;
+    white-space:nowrap;
+  }
+  .type-row .demo{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+  .space-scale{display:flex;align-items:flex-end;gap:5px;margin:14px 0 6px}
+  .space-scale div{
+    background:var(--accent-2);border:1px solid var(--accent-line);border-radius:3px 3px 0 0;
+    display:grid;place-items:end center;font-size:9px;color:var(--accent);
+    padding-bottom:3px;font-family:var(--mono);
+  }
+  .radius-row{display:flex;gap:14px;margin:14px 0}
+  .radius-row div{text-align:center;font-family:var(--mono);font-size:9.5px;color:var(--ink-3)}
+  .radius-row i{
+    display:block;width:52px;height:38px;background:var(--bg-elev);border:1px solid var(--line);
+    margin-bottom:5px;box-shadow:var(--sh-1,0 1px 2px rgba(0,0,0,.04));
+  }
+  .shadow-row{display:flex;gap:16px;margin:14px 0}
+  .shadow-row div{text-align:center;font-family:var(--mono);font-size:9.5px;color:var(--ink-3)}
+  .shadow-row i{
+    display:block;width:78px;height:46px;background:var(--bg-elev);border-radius:8px;margin-bottom:6px;
+  }
+  .layout-diagram{
+    border:1px solid var(--line);border-radius:11px;overflow:hidden;background:var(--bg-elev);margin:16px 0;
+    font-size:11px;color:var(--ink-3);
+  }
+  .ld-row{display:flex;border-bottom:1px solid var(--line-2)}
+  .ld-row:last-child{border-bottom:none}
+  .ld-cell{
+    padding:9px 12px;border-right:1px solid var(--line-2);line-height:1.5;
+  }
+  .ld-cell:last-child{border-right:none}
+  .ld-cell b{display:block;font-size:10px;color:var(--ink-2);font-weight:650;margin-bottom:1px}
+  .ld-cell span{font-family:var(--mono);font-size:9.5px;color:var(--ink-4)}
+  .ld-side{width:110px;background:var(--paper-2);flex:none}
+  .ld-top{height:38px;background:var(--paper-2)}
+</style>
+<script src="assets/doc.js"></script>
+</head>
+<body>
+<div class="shell">
+
+<aside class="toc">
+  <div class="toc-brand">
+    <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2.5-7 3.5 14 2.5-7H21"/></svg></div>
+    <b>ShadowSurf</b>
+  </div>
+  <div class="toc-doc">前端界面设计文档<br>v1.0 · 2026-10</div>
+  <nav>
+    <div class="grp">基础</div>
+    <a href="#principles">1 设计原则</a>
+    <a href="#tokens">2 设计令牌</a>
+    <a href="#layout">3 布局与栅格</a>
+    <a href="#components">4 组件库</a>
+    <div class="grp">页面</div>
+    <a href="#p-env">5 环境列表</a>
+    <a href="#p-drawer">6 指纹配置抽屉</a>
+    <a href="#p-dual">7 双轨窗口</a>
+    <a href="#p-task">8 任务与回放</a>
+    <a href="#p-wizard">9 新建向导（P1）</a>
+    <a href="#p-sync">10 窗口同步器（P2）</a>
+    <div class="grp">规范</div>
+    <a href="#interaction">11 交互规范</a>
+    <a href="#a11y">12 可访问性</a>
+    <a href="#responsive">13 响应式</a>
+    <a href="#copy">14 文案与本地化</a>
+  </nav>
+</aside>
+
+<main class="content">
+
+<header class="doc-head">
+  <div class="doc-kicker">Frontend Design Spec · v1.0</div>
+  <h1>ShadowSurf <em>前端界面设计文档</em></h1>
+  <p class="sub">定义设计令牌、组件库、页面规格与交互规范。实现参照 <a href="prototype.html">prototype.html</a>，数据契约见 <a href="api.html">API 文档</a>。</p>
+  <div class="doc-meta">
+    <div><b>技术栈</b>　React 18 + TypeScript + Tailwind</div>
+    <div><b>目标分辨率</b>　≥ 1280 × 800</div>
+    <div class="rel"><b>关联</b>
+      <a href="prototype.html">交互原型</a>
+      <a href="architecture.html">架构设计</a>
+      <a href="api.html">API 文档</a>
+    </div>
+  </div>
+</header>
+
+<!-- ============ 1 ============ -->
+<h2 id="principles"><span class="n">01</span>设计原则</h2>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:22%">原则</th><th style="width:44%">具体做法</th><th style="width:34%">反面案例</th></tr></thead>
+<tbody>
+<tr><td><b>状态先于操作</b></td><td>每个环境卡在左上角先给状态点与编号，再给操作按钮。用户扫一眼就知道哪些在跑、哪些挂了</td><td>把"启动"做成大按钮，用户点下去才发现代理不通</td></tr>
+<tr><td><b>密度服务于扫描</b></td><td>一屏 9 个环境，每张卡承载 7 项身份信息。字号降到 10.5–11.5px 但保持对比度 ≥ 4.5:1</td><td>为了"呼吸感"把卡片做到 240px 高，一屏只放 4 个</td></tr>
+<tr><td><b>危险操作可逆</b></td><td>删除走二次确认；批量操作先显示影响范围；Agent 的 L2 动作强制人工确认</td><td>一个 ✕ 图标直接删环境</td></tr>
+<tr><td><b>键盘优先</b></td><td>⌘K 搜索、⌘N 新建、Esc 逐层返回，所有交互都有键盘路径</td><td>只支持鼠标，批量操作要拖 20 次</td></tr>
+<tr><td><b>影子可见不打扰</b></td><td>影子空间用斜纹 + 徽章 + 独立标签组三重标识，但永不抢焦点、不弹窗</td><td>Agent 跑到一半把窗口切到前台，打断用户正在填的表单</td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============ 2 ============ -->
+<h2 id="tokens"><span class="n">02</span>设计令牌</h2>
+<p class="lede">全部以 CSS 变量暴露，禁止在组件里写死颜色与尺寸。切换主题只改变量。</p>
+
+<h3>2.1 品牌与中性色</h3>
+<div class="swatches">
+  <div class="sw"><div class="c" style="background:#0f766e"></div><div class="m"><b>Accent</b><span>#0F766E</span></div></div>
+  <div class="sw"><div class="c" style="background:#0b5d56"></div><div class="m"><b>Accent Hover</b><span>#0B5D56</span></div></div>
+  <div class="sw"><div class="c" style="background:#4d938c"></div><div class="m"><b>Accent Muted</b><span>#4D938C</span></div></div>
+  <div class="sw"><div class="c" style="background:#e2f1ee"></div><div class="m"><b>Accent Subtle</b><span>#E2F1EE</span></div></div>
+  <div class="sw"><div class="c" style="background:#111417"></div><div class="m"><b>Ink 900</b><span>#111417</span></div></div>
+  <div class="sw"><div class="c" style="background:#454d54"></div><div class="m"><b>Ink 600</b><span>#454D54</span></div></div>
+  <div class="sw"><div class="c" style="background:#767e86"></div><div class="m"><b>Ink 400</b><span>#767E86</span></div></div>
+  <div class="sw"><div class="c" style="background:#a4abb2"></div><div class="m"><b>Ink 300</b><span>#A4ABB2</span></div></div>
+  <div class="sw"><div class="c" style="background:#e3e0d9"></div><div class="m"><b>Line</b><span>#E3E0D9</span></div></div>
+  <div class="sw"><div class="c" style="background:#eeece6"></div><div class="m"><b>Surface 2</b><span>#EEECE6</span></div></div>
+  <div class="sw"><div class="c" style="background:#f6f5f2"></div><div class="m"><b>Canvas</b><span>#F6F5F2</span></div></div>
+  <div class="sw"><div class="c" style="background:#ffffff;box-shadow:inset 0 0 0 1px #eee"></div><div class="m"><b>Surface</b><span>#FFFFFF</span></div></div>
+</div>
+
+<h3>2.1.1 深色主题</h3>
+<p>深色不是简单反色：画布压到近黑（<code>#0A0C0F</code>）降低眩光，强调色换成高亮度 teal（<code>#2DD4BF</code>）——原来的深青在深底上对比度不足。语义色统一改为「9% 透明度做底、纯亮色做字」，保证在暗背景上仍能分辨四种状态。</p>
+<div class="swatches">
+  <div class="sw"><div class="c" style="background:#0a0c0f"></div><div class="m"><b>Canvas</b><span>#0A0C0F</span></div></div>
+  <div class="sw"><div class="c" style="background:#12161b"></div><div class="m"><b>Surface</b><span>#12161B</span></div></div>
+  <div class="sw"><div class="c" style="background:#e8ecf0"></div><div class="m"><b>Ink 900</b><span>#E8ECF0</span></div></div>
+  <div class="sw"><div class="c" style="background:#a6b0ba"></div><div class="m"><b>Ink 600</b><span>#A6B0BA</span></div></div>
+  <div class="sw"><div class="c" style="background:#232a32"></div><div class="m"><b>Line</b><span>#232A32</span></div></div>
+  <div class="sw"><div class="c" style="background:#2dd4bf"></div><div class="m"><b>Accent</b><span>#2DD4BF</span></div></div>
+</div>
+
+<h3>2.2 语义色</h3>
+<div class="swatches">
+  <div class="sw"><div class="c" style="background:#15803d"></div><div class="m"><b>Success</b><span>#15803D</span></div></div>
+  <div class="sw"><div class="c" style="background:#e9f6ee"></div><div class="m"><b>Success Bg</b><span>#E9F6EE</span></div></div>
+  <div class="sw"><div class="c" style="background:#9a5b06"></div><div class="m"><b>Warning</b><span>#9A5B06</span></div></div>
+  <div class="sw"><div class="c" style="background:#fdf4e2"></div><div class="m"><b>Warning Bg</b><span>#FDF4E2</span></div></div>
+  <div class="sw"><div class="c" style="background:#b3261e"></div><div class="m"><b>Danger</b><span>#B3261E</span></div></div>
+  <div class="sw"><div class="c" style="background:#fdecea"></div><div class="m"><b>Danger Bg</b><span>#FDECEA</span></div></div>
+  <div class="sw"><div class="c" style="background:#1d4ed8"></div><div class="m"><b>Info</b><span>#1D4ED8</span></div></div>
+  <div class="sw"><div class="c" style="background:#eaf0fe"></div><div class="m"><b>Info Bg</b><span>#EAF0FE</span></div></div>
+</div>
+
+<div class="note info">
+  <div class="lbl">环境标识色</div>
+  <p>卡片左侧 3px 色带用于区分环境，从 9 色预设中取（<code>#2f7d6a</code> <code>#8a6f4e</code> <code>#b0603f</code> <code>#5a6d8c</code> <code>#6b7f5c</code> <code>#7d6a8c</code> <code>#4e7a86</code> <code>#8c6a6a</code> <code>#6f7b4e</code>）。创建时按 ID 哈希分配，也允许用户手改。<b>不要用它表达状态</b>——状态只由状态点表达，避免语义冲突。</p>
+</div>
+
+<h3>2.3 字号阶梯</h3>
+<div style="border:1px solid var(--line);border-radius:8px;background:#fff;padding:6px 16px;margin:14px 0 6px">
+  <div class="type-row"><div class="spec">26 / 700 / 1.25</div><div class="demo" style="font-size:26px;font-weight:700;letter-spacing:-.02em">页面标题</div></div>
+  <div class="type-row"><div class="spec">19 / 650 / 1.3</div><div class="demo" style="font-size:19px;font-weight:650;letter-spacing:-.02em">区块标题 Environment</div></div>
+  <div class="type-row"><div class="spec">15 / 650 / 1.4</div><div class="demo" style="font-size:15px;font-weight:650">抽屉标题 Amazon-US-01</div></div>
+  <div class="type-row"><div class="spec">13 / 620 / 1.5</div><div class="demo" style="font-size:13px;font-weight:620">卡片主标题 TikTok-UK-03</div></div>
+  <div class="type-row"><div class="spec">12.5 / 400 / 1.6</div><div class="demo" style="font-size:12.5px">正文与表格内容，最常用的字号</div></div>
+  <div class="type-row"><div class="spec">11.5 / 500 / 1.55</div><div class="demo" style="font-size:11.5px">辅助信息、按钮文字、字段标签</div></div>
+  <div class="type-row"><div class="spec">10.5 / 500 / 1.5</div><div class="demo" style="font-size:10.5px">元信息：编号、时间戳、指纹摘要</div></div>
+  <div class="type-row"><div class="spec">9.5 / 700 / 1.4</div><div class="demo" style="font-size:9.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">分组标签 SECTION LABEL</div></div>
+</div>
+
+<h3>2.4 间距、圆角、阴影</h3>
+<div class="space-scale">
+  <div style="width:8px;height:8px">2</div>
+  <div style="width:16px;height:16px">4</div>
+  <div style="width:24px;height:24px">6</div>
+  <div style="width:32px;height:32px">8</div>
+  <div style="width:40px;height:40px">10</div>
+  <div style="width:48px;height:48px">12</div>
+  <div style="width:64px;height:56px">16</div>
+  <div style="width:80px;height:64px">20</div>
+</div>
+<p style="font-size:11.5px;color:var(--ink-3)">间距基数为 2px，常用档位 4 / 6 / 8 / 10 / 12 / 14 / 16 / 20 / 22。卡片内边距 11–13px，区块间距 12–16px。</p>
+
+<div class="radius-row">
+  <div><i style="border-radius:5px"></i>5 标签</div>
+  <div><i style="border-radius:7px"></i>7 按钮</div>
+  <div><i style="border-radius:10px"></i>10 卡片</div>
+  <div><i style="border-radius:14px"></i>14 窗口</div>
+  <div><i style="border-radius:999px"></i>999 圆点</div>
+</div>
+
+<div class="shadow-row">
+  <div><i style="box-shadow:0 1px 2px rgba(24,26,28,.05)"></i>sh-1 静置</div>
+  <div><i style="box-shadow:0 1px 2px rgba(24,26,28,.04),0 8px 22px -14px rgba(24,26,28,.18)"></i>sh-2 悬停</div>
+  <div><i style="box-shadow:0 2px 6px rgba(24,26,28,.06),0 24px 48px -24px rgba(24,26,28,.28)"></i>sh-3 浮层</div>
+</div>
+
+<h3>2.5 动效</h3>
+<div class="tbl">
+<table class="tight">
+<thead><tr><th style="width:22%">场景</th><th style="width:18%">时长</th><th style="width:30%">曲线</th><th style="width:30%">说明</th></tr></thead>
+<tbody>
+<tr><td>悬停 / 颜色变化</td><td>120 ms</td><td><code>ease-out</code></td><td>只变颜色与阴影，不变尺寸</td></tr>
+<tr><td>卡片浮起</td><td>160 ms</td><td><code>ease-out</code></td><td><code>translateY(-1px)</code> + sh-2</td></tr>
+<tr><td>抽屉滑入</td><td>260 ms</td><td><code>cubic-bezier(.32,.72,0,1)</code></td><td>右侧滑入，遮罩同步淡入</td></tr>
+<tr><td>状态点脉冲</td><td>2400 ms</td><td><code>ease-in-out</code> 循环</td><td>仅运行中的环境，振幅极小</td></tr>
+</tbody>
+</table>
+</div>
+<p>尊重 <code>prefers-reduced-motion</code>：开启后所有过渡降为 0ms，脉冲动画停止。</p>
+
+<!-- ============ 3 ============ -->
+<h2 id="layout"><span class="n">03</span>布局与栅格</h2>
+
+<div class="layout-diagram">
+  <div class="ld-row ld-top">
+    <div class="ld-cell ld-side" style="background:#f8f6f2"><b>侧栏</b><span>196 px</span></div>
+    <div class="ld-cell" style="flex:1"><b>顶栏 54 px</b><span>面包屑 · 搜索 · 通知 · 主操作</span></div>
+  </div>
+  <div class="ld-row">
+    <div class="ld-cell ld-side"><b>导航</b><span>环境 / 任务 / 代理 / 审计 / 成员</span></div>
+    <div class="ld-cell" style="flex:1">
+      <b>内容区</b><span>padding 20 / 22 · 底部预留 84（批量栏）</span>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <div style="flex:1;height:34px;border:1px dashed #d8d3ca;border-radius:5px;display:grid;place-items:center;font-size:9.5px;color:#a4abb2">卡片 1fr</div>
+        <div style="flex:1;height:34px;border:1px dashed #d8d3ca;border-radius:5px;display:grid;place-items:center;font-size:9.5px;color:#a4abb2">卡片 1fr</div>
+        <div style="flex:1;height:34px;border:1px dashed #d8d3ca;border-radius:5px;display:grid;place-items:center;font-size:9.5px;color:#a4abb2">卡片 1fr</div>
+      </div>
+    </div>
+  </div>
+  <div class="ld-row">
+    <div class="ld-cell ld-side" style="background:#fbf9f6"><b>浮层</b><span>抽屉 460</span></div>
+    <div class="ld-cell" style="flex:1"><b>批量操作栏</b><span>底部居中 · 高 36 · 距底 9</span></div>
+  </div>
+</div>
+
+<div class="tbl">
+<table class="tight">
+<thead><tr><th style="width:26%">区域</th><th style="width:24%">尺寸</th><th style="width:50%">规则</th></tr></thead>
+<tbody>
+<tr><td>侧栏</td><td>196 px 固定</td><td>&lt; 1024 折叠为 56 px 图标栏；&lt; 768 收进抽屉</td></tr>
+<tr><td>顶栏</td><td>54 px 固定</td><td>面包屑随视图切换，主按钮文案随之变化</td></tr>
+<tr><td>内容区</td><td>padding 20 22</td><td>卡片网格 3 列，gap 11；&lt; 1180 降 2 列；&lt; 860 单列</td></tr>
+<tr><td>抽屉</td><td>460 px</td><td>从右滑入，遮罩 <code>rgba(28,30,32,.32)</code> + blur 1.5px</td></tr>
+<tr><td>批量栏</td><td>高 36，距底 9</td><td>仅环境列表出现；内容底部预留 84px 防遮挡</td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============ 4 ============ -->
+<h2 id="components"><span class="n">04</span>组件库</h2>
+<p class="lede">共 18 个基础组件。命名遵循 <code>Ss</code> 前缀，全部受控、无内部状态（除纯 UI 的展开/收起）。</p>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:18%">组件</th><th style="width:26%">变体</th><th style="width:26%">状态</th><th style="width:30%">使用约束</th></tr></thead>
+<tbody>
+<tr><td><b>Button</b></td><td>primary / ghost / quiet / danger；sm(26) / md(30)</td><td>default · hover · active · disabled · loading</td><td>一屏最多 1 个 primary</td></tr>
+<tr><td><b>IconButton</b></td><td>30×30 / 24×24</td><td>default · hover · active</td><td>必须有 <code>aria-label</code> 与 tooltip</td></tr>
+<tr><td><b>Checkbox</b></td><td>14×14，仅方形</td><td>unchecked · checked · indeterminate</td><td>批量选择用，点击区域扩到 24×24</td></tr>
+<tr><td><b>Toggle</b></td><td>30×17</td><td>off · on · disabled</td><td>即时生效，不配"保存"；失败回滚并 toast</td></tr>
+<tr><td><b>Input</b></td><td>28 高，含前置图标变体</td><td>default · focus · error · disabled</td><td>错误时下方 11px 红字，不改变高度</td></tr>
+<tr><td><b>SearchInput</b></td><td>30 高，带 ⌘K 提示</td><td>—</td><td>宽度 230，聚焦时展开到 320</td></tr>
+<tr><td><b>Tabs</b></td><td>pills（分组）/ underline（抽屉）</td><td>default · active · disabled</td><td>pills 用于筛选，underline 用于同级内容</td></tr>
+<tr><td><b>SegmentedControl</b></td><td>2–3 项，仅图标或图标+文字</td><td>—</td><td>用于视图切换（网格/列表）</td></tr>
+<tr><td><b>Badge</b></td><td>solid / subtle</td><td>—</td><td>计数、版本号；不超过 4 字符</td></tr>
+<tr><td><b>Tag / Pill</b></td><td>neutral / accent / semantic</td><td>—</td><td>标签不可点击；可点击的用 Button quiet</td></tr>
+<tr><td><b>StatusDot</b></td><td>6px 圆点，可带 pulse</td><td>idle · running · warning · error</td><td>必须与文字配对出现，不单独用颜色表意</td></tr>
+<tr><td><b>EnvCard</b></td><td>default / selected / running / warning</td><td>hover 浮起 1px</td><td>左侧 3px 标识色带；整卡可点进双轨窗口</td></tr>
+<tr><td><b>TaskCard</b></td><td>running / done / failed</td><td>selected 有 2px 光环</td><td>列表内高度 58–64，不换行</td></tr>
+<tr><td><b>StatCard</b></td><td>4 列固定</td><td>—</td><td>数值用 tabular-nums，变化时不做滚动动画</td></tr>
+<tr><td><b>Drawer</b></td><td>右侧 460</td><td>closed · open</td><td>打开时焦点陷阱，Esc 关闭，返回焦点到触发元素</td></tr>
+<tr><td><b>Timeline / StepList</b></td><td>竖向，带连接线</td><td>pending · running · ok · failed</td><td>步骤序号固定 16px 圆，连接线不穿过圆点</td></tr>
+<tr><td><b>Toast</b></td><td>info / success / error</td><td>3s 自动消失，error 需手动关</td><td>右下角堆叠，最多 3 条</td></tr>
+<tr><td><b>EmptyState</b></td><td>插画 + 一句说明 + 主操作</td><td>—</td><td>必须给"下一步做什么"，不能只写"暂无数据"</td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============ 5 ============ -->
+<h2 id="p-env"><span class="n">05</span>环境列表（P0）</h2>
+
+<div class="tbl">
+<table class="tight">
+<thead><tr><th style="width:18%">项</th><th style="width:82%">规格</th></tr></thead>
+<tbody>
+<tr><td><b>页面目标</b></td><td>一屏内看清所有环境的状态，并完成启动、配置、批量操作</td></tr>
+<tr><td><b>数据源</b></td><td><code>GET /v1/profiles</code> · <code>POST /v1/profiles/batch</code> · 事件 <code>profile.status_changed</code></td></tr>
+<tr><td><b>结构</b></td><td>标题区（标题 + 统计描述 + 视图切换）→ 4 个 StatCard → 工具栏（分组 Tabs + 筛选）→ 卡片网格 → 底部批量栏</td></tr>
+<tr><td><b>卡片信息</b></td><td>状态点 · 编号 · 名称 · 地区码 · 系统 · Chrome 版本 · 代理 IP + 延迟 · 时区 / 语言 / 分辨率 · 状态文案 · 操作</td></tr>
+<tr><td><b>操作显隐</b></td><td>默认隐藏操作按钮，hover 或选中时显示（<code>opacity 0→1</code>，160ms），避免卡片视觉噪声</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>5.1 状态矩阵</h3>
+<div class="tbl">
+<table class="tight">
+<thead><tr><th style="width:16%">场景</th><th style="width:42%">呈现</th><th style="width:42%">可执行动作</th></tr></thead>
+<tbody>
+<tr><td><span class="state idle">加载中</span></td><td>6 张骨架卡（灰块，带 1.2s 微光扫过）</td><td>无</td></tr>
+<tr><td><span class="state idle">空</span></td><td>EmptyState："还没有环境" + "新建环境"主按钮 + 次要链接"从 Chrome 导入"</td><td>新建 / 导入</td></tr>
+<tr><td><span class="state ok">正常</span></td><td>卡片网格，运行中的卡片带进度条与脉冲点</td><td>全部</td></tr>
+<tr><td><span class="state warn">代理异常</span></td><td>卡片状态转橙，代理行显示"超时"，操作变为"换代理"</td><td>换代理 / 编辑</td></tr>
+<tr><td><span class="state err">加载失败</span></td><td>整页错误块，显示 trace_id + "重试"按钮，不显示空状态</td><td>重试</td></tr>
+<tr><td><span class="state run">批量选中</span></td><td>选中卡加 2.5px 光环，底部浮出批量栏，显示"已选 N 项"</td><td>启动 / 停止 / 移组 / 换代理 / 删除</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>5.2 边界处理</h3>
+<ul>
+<li><b>环境超过 60 个</b>：虚拟滚动，卡片保持固定高度 148px。</li>
+<li><b>名称过长</b>：单行省略，hover 显示 tooltip 全名。</li>
+<li><b>代理 IP 过长</b>：等宽字体，超出时省略中段（<code>45.132…8.21:8000</code>）。</li>
+<li><b>批量操作部分失败</b>：不整体回滚，用 Toast 汇总"成功 3 个，失败 1 个"，点击展开失败明细。</li>
+</ul>
+
+<!-- ============ 6 ============ -->
+<h2 id="p-drawer"><span class="n">06</span>指纹配置抽屉（P0）</h2>
+
+<div class="tbl">
+<table class="tight">
+<thead><tr><th style="width:18%">项</th><th style="width:82%">规格</th></tr></thead>
+<tbody>
+<tr><td><b>页面目标</b></td><td>在不离开列表的情况下完成指纹调整，并立刻知道配置是否自洽</td></tr>
+<tr><td><b>数据源</b></td><td><code>GET /v1/profiles/{id}</code> · <code>PATCH</code> · <code>POST /fingerprint/regenerate</code> · <code>GET /consistency</code></td></tr>
+<tr><td><b>结构</b></td><td>头部（名称 + 编号 + 状态 + 元信息）→ 4 个 Tab（基础 / 指纹 / 代理 / 影子）→ 字段分组 → 一致性卡片 → 底部操作栏</td></tr>
+<tr><td><b>字段行</b></td><td>三列网格 <code>104px / 1fr / 30px</code>：标签 · 值 · 随机按钮或开关</td></tr>
+<tr><td><b>长值</b></td><td>UA 允许两行（<code>white-space: normal</code>，行高 1.45，字号 10px），其余单行省略</td></tr>
+<tr><td><b>一致性</b></td><td>右上角徽章显示分数；底部绿/橙卡片显示结论与修复建议，低于 90 时卡片转橙并出现"一键修复"</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>6.1 分组与字段</h3>
+<div class="tbl">
+<table class="tight">
+<thead><tr><th style="width:22%">分组</th><th style="width:44%">字段</th><th style="width:34%">控件</th></tr></thead>
+<tbody>
+<tr><td>系统与浏览器</td><td>操作系统 · User-Agent · 浏览器版本</td><td>值 + 随机骰子</td></tr>
+<tr><td>区域与语言</td><td>时区 · 语言 · 地理位置</td><td>值 + 骰子；地理位置为 Toggle（跟随代理）</td></tr>
+<tr><td>硬件指纹</td><td>分辨率 · CPU/内存 · WebGL 渲染器</td><td>值 + 骰子</td></tr>
+<tr><td>隐私噪声</td><td>Canvas · AudioContext · WebRTC · 字体列表</td><td>前三项 Toggle，字体为值 + 骰子</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note">
+  <div class="lbl">交互细节</div>
+  <p>点"骰子"只改这一个字段，但会立刻触发一致性重算——如果新值与其它字段冲突，分数实时下降并高亮冲突项。这样用户能建立"字段之间有关联"的直觉，而不是攒一堆随机值到启动时才发现不匹配。</p>
+</div>
+
+<!-- ============ 7 ============ -->
+<h2 id="p-dual"><span class="n">07</span>双轨窗口（P0）</h2>
+
+<div class="tbl">
+<table class="tight">
+<thead><tr><th style="width:18%">项</th><th style="width:82%">规格</th></tr></thead>
+<tbody>
+<tr><td><b>页面目标</b></td><td>让用户直观看到"影子在另一个空间里干活，我在自己的空间里不受影响"</td></tr>
+<tr><td><b>数据源</b></td><td><code>POST /v1/spaces</code> · <code>POST /v1/tasks</code> · 事件 <code>task.step</code> · <code>GET /tasks/{id}</code></td></tr>
+<tr><td><b>结构</b></td><td>窗口标题栏 → 双组标签栏 → 地址栏 → 左右分屏（57 / 43）→ 底部 Agent 控制条</td></tr>
+<tr><td><b>分组</b></td><td>左侧「人」标签组，右侧「影子」标签组，中间 1px 分隔线；影子标签带深青图标与旋转加载环</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>7.1 影子区的三重标识</h3>
+<div class="tbl">
+<table class="tight">
+<thead><tr><th style="width:22%">标识</th><th style="width:38%">实现</th><th style="width:40%">作用</th></tr></thead>
+<tbody>
+<tr><td>斜纹底纹</td><td>45° 斜纹，线宽 7px、间隔 15px、深青透明度 4.2%</td><td>余光可辨"这不是我的窗口"，但对比度低不干扰阅读</td></tr>
+<tr><td>虚线边框</td><td>左侧 <code>1px dashed #bcd3ce</code></td><td>明确边界，暗示"临时 / 隔离"</td></tr>
+<tr><td>空间徽章</td><td>左上角「影子 Space · 独立会话」，白底 90% 不透明 + 6px 模糊</td><td>新用户第一次看就理解发生了什么</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>7.2 Agent 控制条</h3>
+<p>高度 66px，三段式：</p>
+<ul>
+<li><b>左</b>：30×30 图标块（品牌渐变），建立"这是 AI 在说话"的视觉锚点。</li>
+<li><b>中</b>：当前动作（12.5px 加粗）+ 步骤徽章 <code>12 / 20</code> + 说明文字（10.5px）+ 20 格进度条（每格代表一个条目，已完成实心、当前半透明）。</li>
+<li><b>右</b>：<code>暂停</code>（ghost）与 <code>接管</code>（描边强调）。接管按钮必须常驻，不能收进菜单。</li>
+</ul>
+
+<div class="note warn">
+  <div class="lbl">禁止事项</div>
+  <p>影子空间<b>不得</b>触发以下行为：抢占窗口焦点、弹出系统通知、在用户标签页上覆盖遮罩、自动切换用户当前标签。所有状态变化只通过控制条与侧边栏徽章表达。</p>
+</div>
+
+<!-- ============ 8 ============ -->
+<h2 id="p-task"><span class="n">08</span>任务与回放（P0）</h2>
+
+<div class="tbl">
+<table class="tight">
+<thead><tr><th style="width:18%">项</th><th style="width:82%">规格</th></tr></thead>
+<tbody>
+<tr><td><b>页面目标</b></td><td>回答三个问题：跑成了吗？怎么跑的？产出在哪？</td></tr>
+<tr><td><b>数据源</b></td><td><code>GET /v1/tasks</code> · <code>/steps</code> · <code>/artifacts</code> · <code>/replay</code></td></tr>
+<tr><td><b>结构</b></td><td>4 个 StatCard → 左右两栏（任务列表 330px + 回放面板）→ 回放面板内含播放控制条、时间线、产出预览</td></tr>
+<tr><td><b>列表项</b></td><td>状态点 · 任务名 · 时间 · 环境编号 + 名称 · 耗时或失败原因</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>8.1 时间线规格</h3>
+<div class="tbl">
+<table class="tight">
+<thead><tr><th style="width:20%">元素</th><th style="width:30%">规格</th><th style="width:50%">说明</th></tr></thead>
+<tbody>
+<tr><td>序号圆</td><td>16px，边框 2px 白，外环 1px</td><td>ok 绿底、running 深青底、pending 灰底</td></tr>
+<tr><td>连接线</td><td>1px，<code>#eeece6</code></td><td>从圆点下方 10px 到下一步，不穿过圆点</td></tr>
+<tr><td>动作文本</td><td>11.5px，代码片段用等宽 10.5px + 浅底</td><td>动词开头，如"导航到 …"、"提取 …"</td></tr>
+<tr><td>元信息</td><td>10.5px，时间 + 增量 + 特殊标记</td><td>人工接管标橙："人工接管 · 4s"</td></tr>
+<tr><td>缩略图</td><td>62×38，圆角 4</td><td>pending 步骤降到 40% 不透明</td></tr>
+</tbody>
+</table>
+</div>
+
+<p><b>回放控制条</b>：播放按钮（24px 圆形实心）+ 进度条（3px 轨道，9px 滑块）+ 时间码 + 接管按钮。拖动时暂停播放，松手继续。</p>
+
+<!-- ============ 9 ============ -->
+<h2 id="p-wizard"><span class="n">09</span>新建环境向导（P1 · 规划）</h2>
+<p class="lede">三步向导，把"建一个能用的环境"从 8 个字段压缩到 3 个决策。目标：从点击到可用 ≤ 30 秒。</p>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:12%">步骤</th><th style="width:34%">内容</th><th style="width:26%">默认值</th><th style="width:28%">校验</th></tr></thead>
+<tbody>
+<tr><td><b>1 系统</b></td><td>选操作系统（4 个卡片：Win10 / Win11 / macOS 14 / 15），自动推导 UA、分辨率、WebGL</td><td>Win11</td><td>—</td></tr>
+<tr><td><b>2 网络</b></td><td>选代理（从池中挑 / 粘贴新代理），显示出口地区与延迟</td><td>最近使用的代理</td><td>连通性检测，失败可跳过</td></tr>
+<tr><td><b>3 校验</b></td><td>实时一致性评分 + 冲突列表 + "一键修复"，命名与分组</td><td>自动命名 <code>Win11-US-01</code></td><td>分数 &lt; 90 时"创建"按钮降级为次要</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note info">
+  <div class="lbl">设计取舍</div>
+  <p>不把指纹字段全暴露在向导里。90% 的用户只需要"一个看起来正常的美国 Windows 环境"，而不是 20 个可调参数。高级用户走"创建后进抽屉细调"的路径。</p>
+</div>
+
+<!-- ============ 10 ============ -->
+<h2 id="p-sync"><span class="n">10</span>窗口同步器（P2 · 规划）</h2>
+<p class="lede">指纹浏览器的招牌功能，也是影子批量执行的天然入口：一个操作，同步到 N 个环境。</p>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:20%">能力</th><th style="width:44%">交互</th><th style="width:36%">技术约束</th></tr></thead>
+<tbody>
+<tr><td>窗口平铺</td><td>2×2 / 3×2 / 4×3 三种布局，按环境数自动选择</td><td>每个窗口独立 Space，独立 BrowserContext</td></tr>
+<tr><td>主控窗口</td><td>点击任一窗口右上角"设为主控"，边框变深青</td><td>主控的输入事件广播到其余窗口</td></tr>
+<tr><td>同步范围</td><td>滚动 / 点击 / 输入 / 导航，可勾选</td><td>坐标按各窗口视口比例映射，不按绝对像素</td></tr>
+<tr><td>影子接管</td><td>勾选"由影子执行"，主控操作变成任务模板</td><td>需先跑通单环境，再复制到 N 个</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note warn">
+  <div class="lbl">风险提示</div>
+  <p>同步操作在风控严格的站点上极易触发关联判定。UI 必须在开启同步时显示一次性警告，并在检测到验证码时自动暂停全部窗口、逐个转人工。</p>
+</div>
+
+<!-- ============ 11 ============ -->
+<h2 id="interaction"><span class="n">11</span>交互规范</h2>
+
+<h3>11.1 快捷键</h3>
+<div class="tbl">
+<table class="tight">
+<thead><tr><th style="width:26%">快捷键</th><th style="width:34%">动作</th><th style="width:40%">作用域</th></tr></thead>
+<tbody>
+<tr><td><kbd>⌘K</kbd> / <kbd>Ctrl K</kbd></td><td>聚焦全局搜索</td><td>全局</td></tr>
+<tr><td><kbd>⌘N</kbd></td><td>新建环境 / 新建任务（随视图）</td><td>全局</td></tr>
+<tr><td><kbd>⌘1</kbd> – <kbd>⌘4</kbd></td><td>切换一级导航</td><td>全局</td></tr>
+<tr><td><kbd>⌘Enter</kbd></td><td>启动选中的环境</td><td>环境列表</td></tr>
+<tr><td><kbd>Space</kbd></td><td>预览选中环境（不打开窗口）</td><td>环境列表</td></tr>
+<tr><td><kbd>⌘A</kbd></td><td>全选当前筛选结果</td><td>环境列表</td></tr>
+<tr><td><kbd>Esc</kbd></td><td>逐层关闭：弹窗 → 抽屉 → 双轨窗口</td><td>全局</td></tr>
+<tr><td><kbd>⌘⇧P</kbd></td><td>暂停 / 恢复当前任务</td><td>任务页 / 双轨窗口</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>11.2 焦点管理</h3>
+<ul>
+<li>抽屉打开时焦点移入第一个可交互元素，并在抽屉内循环（焦点陷阱）；关闭后返回触发按钮。</li>
+<li>双轨窗口打开时焦点留在 UI，<b>不</b>自动聚焦到页面内容——避免用户误输入。</li>
+<li>Toast 不抢焦点，用 <code>aria-live="polite"</code> 播报。</li>
+</ul>
+
+<h3>11.3 加载策略</h3>
+<div class="tbl">
+<table class="tight">
+<thead><tr><th style="width:24%">场景</th><th style="width:34%">策略</th><th style="width:42%">理由</th></tr></thead>
+<tbody>
+<tr><td>首屏列表</td><td>骨架屏（6 张卡）</td><td>保持布局稳定，避免跳动</td></tr>
+<tr><td>抽屉打开</td><td>立即显示框架，字段区骨架</td><td>感知延迟最低</td></tr>
+<tr><td>Toggle 切换</td><td>乐观更新 + 失败回滚</td><td>开关是高频操作，等 300ms 会烦</td></tr>
+<tr><td>任务启动</td><td>按钮转 loading，不阻塞列表</td><td>用户可能连续启动多个</td></tr>
+<tr><td>步骤推送</td><td>增量插入，不做整列表重渲染</td><td>每步都有新数据，重渲染会闪</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>11.4 错误处理</h3>
+<div class="tbl">
+<table class="tight">
+<thead><tr><th style="width:20%">级别</th><th style="width:36%">呈现</th><th style="width:44%">示例</th></tr></thead>
+<tbody>
+<tr><td>字段级</td><td>输入框下方 11px 红字</td><td>环境名称超过 64 字符</td></tr>
+<tr><td>操作级</td><td>Toast（error 常驻，手动关）</td><td>批量启动中 1 个代理超时</td></tr>
+<tr><td>页面级</td><td>整块错误状态 + trace_id + 重试</td><td>列表加载失败</td></tr>
+<tr><td>阻断级</td><td>Modal，必须处理</td><td>L2 动作待确认、指纹不一致阻止启动</td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============ 12 ============ -->
+<h2 id="a11y"><span class="n">12</span>可访问性</h2>
+<ul>
+<li><b>对比度</b>：正文 ≥ 4.5:1，大字号 ≥ 3:1，禁用态也需 ≥ 3:1（不用 <code>opacity</code> 降到看不见）。</li>
+<li><b>焦点环</b>：<code>2px solid var(--accent)</code> + <code>offset 2px</code>，禁止 <code>outline: none</code>。</li>
+<li><b>语义</b>：卡片用 <code>article</code>，列表用 <code>ul/li</code>，抽屉用 <code>role="dialog" aria-modal="true"</code>。</li>
+<li><b>状态播报</b>：任务状态变化用 <code>aria-live="polite"</code>，错误用 <code>assertive</code>。</li>
+<li><b>不依赖颜色</b>：状态点必须配文字（"影子执行中 3/5"），不能只用绿点。</li>
+<li><b>动效</b>：响应 <code>prefers-reduced-motion</code>，关闭脉冲与滑入。</li>
+<li><b>触控目标</b>：最小 24×24，卡片上的复选框视觉 14px 但点击区扩到 24px。</li>
+</ul>
+
+<!-- ============ 13 ============ -->
+<h2 id="responsive"><span class="n">13</span>响应式</h2>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:18%">断点</th><th style="width:28%">布局</th><th style="width:28%">侧栏</th><th style="width:26%">卡片列数</th></tr></thead>
+<tbody>
+<tr><td>≥ 1440</td><td>完整布局，内容区最大 1360</td><td>196 展开</td><td>3</td></tr>
+<tr><td>1280 – 1440</td><td>完整布局</td><td>196 展开</td><td>3</td></tr>
+<tr><td>1024 – 1280</td><td>紧凑，统计卡 2 列</td><td>196 展开</td><td>2</td></tr>
+<tr><td>768 – 1024</td><td>侧栏折叠为图标栏</td><td>56</td><td>2</td></tr>
+<tr><td>&lt; 768</td><td>单列，侧栏收进抽屉</td><td>抽屉</td><td>1</td></tr>
+</tbody>
+</table>
+</div>
+<p>双轨窗口在小屏下改为上下分屏（人 50% / 影子 50%），Agent 控制条固定在底部。窗口最小可用宽度 1024。</p>
+
+<!-- ============ 14 ============ -->
+<h2 id="copy"><span class="n">14</span>文案与本地化</h2>
+
+<div class="tbl">
+<table class="tight">
+<thead><tr><th style="width:24%">规则</th><th style="width:38%">正确</th><th style="width:38%">错误</th></tr></thead>
+<tbody>
+<tr><td>按钮动词开头</td><td>新建环境 / 换代理 / 导出审计</td><td>确定 / 提交</td></tr>
+<tr><td>错误说怎么办</td><td>代理连接超时，请检查端口或换一个代理</td><td>错误：ECONNREFUSED</td></tr>
+<tr><td>状态用进行时</td><td>影子执行中 3/5</td><td>运行 / 已运行</td></tr>
+<tr><td>数字带单位</td><td>42 ms · 1.2 s · ¥0.31</td><td>42 · 1.2 · 0.31</td></tr>
+<tr><td>时间相对优先</td><td>2 分钟前（hover 显示 14:02:11）</td><td>2026-10-31 14:02:11</td></tr>
+<tr><td>避免拟人化过度</td><td>影子正在提取第 12 条</td><td>我正在努力为你工作哦～</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>14.1 本地化</h3>
+<ul>
+<li>默认简体中文，预留英文。所有文案走 i18n key，不硬编码。</li>
+<li>中文文案长度按英文的 <b>0.7 倍</b>估算，布局按英文（更长）预留空间，避免切换语言后溢出。</li>
+<li>数字与日期用 <code>Intl.NumberFormat</code> / <code>Intl.DateTimeFormat</code>，不手工拼接。</li>
+<li>环境名称、分组名允许任意 Unicode，但做长度校验（64 字符）。</li>
+</ul>
+
+<div class="doc-foot">
+  <span>ShadowSurf 前端设计文档 v1.0 · 2026-10-31</span>
+  <span>← <a href="architecture.html">架构设计</a> · <a href="api.html">API 文档</a> · <a href="prototype.html">交互原型</a></span>
+</div>
+
+</main>
+</div>
+
+
+</body>
+</html>

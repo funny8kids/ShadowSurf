@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "ShadowSurf",
+  "version": "0.1.0",
+  "description": "AI 原生浏览器 · 影子 Agent：让 AI 读懂页面并替你操作，支持任意 OpenAI 兼容接口。",
+  "minimum_chrome_version": "116",
+
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "tabs",
+    "scripting",
+    "activeTab"
+  ],
+
+  "host_permissions": ["<all_urls>"],
+
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+
+  "action": {
+    "default_title": "打开 ShadowSurf 侧边栏"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

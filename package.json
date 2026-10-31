@@ -1,0 +1,34 @@
+{
+  "name": "shadowsurf",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ShadowSurf — AI 原生浏览器，人机双轨的 Agent 工作台",
+  "license": "MIT",
+  "main": "out/main/index.js",
+  "author": "Violet Notes",
+  "scripts": {
+    "dev": "node tools/launch.mjs dev",
+    "build": "electron-vite build",
+    "start": "node tools/launch.mjs preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "mock": "node tools/mock-llm.mjs",
+    "shot": "node tools/shot-prototype.mjs",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "check": "npm run typecheck && npm run test"
+  },
+  "dependencies": {
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "electron": "^45.2.1",
+    "electron-vite": "^6.0.0",
+    "playwright-core": "^1.64.1",
+    "typescript": "^5.9.0",
+    "vite": "^8.3.5"
+  }
+}

@@ -1,0 +1,344 @@
+/**
+ * 本地 API 面板样式。
+ *
+ * 类名统一 api- 前缀：六个工具面板的样式最终会进同一张表，
+ * 谁都不加前缀就会互相覆盖（.tool-panel 已经在几处重复定义了）。
+ * 颜色只用 tokens.css 的变量，不写死色值。
+ */
+
+.api-panel {
+  padding: 22px 26px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 100%;
+}
+
+.api-head h2 {
+  margin: 0 0 4px;
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+
+.api-head p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-3);
+  max-width: 640px;
+}
+
+/* ────────────────────────────── 卡片 ────────────────────────────── */
+
+.api-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 13px 15px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+
+.api-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.api-card-head h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.api-card-head span {
+  font-size: 11px;
+  color: var(--ink-4);
+  text-align: right;
+}
+
+/* ────────────────────────────── 状态行 ────────────────────────────── */
+
+.api-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.api-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-3);
+  flex: none;
+}
+
+.api-state i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink-4);
+}
+
+.api-state.on {
+  color: var(--green);
+}
+
+.api-state.on i {
+  background: var(--green);
+}
+
+.api-addr {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-xs);
+  padding: 2px 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.api-controls {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.api-input {
+  width: 74px;
+  height: 30px;
+  padding: 0 8px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  transition: border-color 0.14s, background 0.14s;
+}
+
+.api-input:hover:not(:disabled) {
+  border-color: var(--line-strong);
+}
+
+.api-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.api-input:disabled {
+  background: var(--surface-3);
+  color: var(--ink-3);
+  cursor: not-allowed;
+}
+
+/* ────────────────────────────── 指标 ────────────────────────────── */
+
+.api-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--line-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+
+.api-metric {
+  background: var(--surface);
+  padding: 8px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.api-metric span {
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+.api-metric b {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.api-metric em {
+  font-style: normal;
+  font-size: 10px;
+  color: var(--ink-4);
+}
+
+/* ────────────────────────────── 令牌 ────────────────────────────── */
+
+.api-token {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.api-token-value {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  padding: 7px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.api-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+/* ────────────────────────────── 端点表 ────────────────────────────── */
+
+.api-endpoints {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+
+.api-ep {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line-2);
+  transition: background 0.14s;
+}
+
+.api-ep:last-child {
+  border-bottom: none;
+}
+
+.api-ep:hover {
+  background: var(--surface-hover);
+}
+
+.api-method {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-align: center;
+  padding: 2px 0;
+  border-radius: var(--r-xs);
+  background: var(--surface-3);
+  color: var(--ink-3);
+}
+
+.api-method.get {
+  color: var(--blue);
+}
+
+.api-method.post {
+  color: var(--amber);
+}
+
+.api-path {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.api-desc {
+  font-size: 11px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+/* ────────────────────────────── 示例 ────────────────────────────── */
+
+.api-curl {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.75;
+  color: var(--ink-2);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.api-curl-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ────────────────────────────── 说明文字 ────────────────────────────── */
+
+.api-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ink-3);
+}
+
+.api-note {
+  margin: 2px 0 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+
+.api-note svg {
+  flex: none;
+  color: var(--accent);
+}
+
+@media (max-width: 900px) {
+  .api-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .api-token {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .api-tools {
+    justify-content: flex-end;
+  }
+}

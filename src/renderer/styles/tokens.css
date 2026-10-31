@@ -1,0 +1,82 @@
+/**
+ * 设计令牌。
+ *
+ * 唯一来源：docs/prototype.html 的 :root 与 docs/frontend.html 第 2 章。
+ * 渲染层所有颜色、圆角、阴影、尺寸都必须走这里的变量，禁止在组件里写死色值。
+ */
+
+:root {
+  /* ── 品牌 ── */
+  --accent: #0f766e;
+  --accent-hover: #0b5d56;
+  --accent-2: #e4efed;
+  --accent-3: #4d938c;
+  --accent-line: #cfe0dc;
+
+  /* ── 画布与表面 ── */
+  --stage: #e9e7e2;
+  --bg: #f6f5f2;
+  --surface: #ffffff;
+  --surface-2: #f6f5f2;
+  --surface-3: #f4f2ee;
+  --surface-hover: #faf9f7;
+  --line: #e3e0d9;
+  --line-2: #efebe4;
+  --line-strong: #d5d0c7;
+
+  /* ── 文本三级 ── */
+  --ink: #111417;
+  --ink-2: #454d54;
+  --ink-3: #767e86;
+  --ink-4: #a4abb2;
+
+  /* ── 语义色 ── */
+  --green: #15803d;
+  --green-2: #e8f3ec;
+  --green-line: #cbe3d6;
+  --amber: #9a5b06;
+  --amber-2: #fbf1e2;
+  --amber-line: #ecdcbf;
+  --red: #b3261e;
+  --red-2: #fbeceb;
+  --red-line: #f0d5d1;
+  --blue: #1d4ed8;
+
+  /* ── 圆角 ── */
+  --r-xs: 5px;
+  --r-sm: 7px;
+  --r: 10px;
+  --r-lg: 14px;
+
+  /* ── 阴影 ── */
+  --sh-1: 0 1px 2px rgba(24, 26, 28, 0.05);
+  --sh-2: 0 1px 2px rgba(24, 26, 28, 0.04), 0 8px 22px -14px rgba(24, 26, 28, 0.18);
+  --sh-3: 0 2px 6px rgba(24, 26, 28, 0.06), 0 24px 48px -24px rgba(24, 26, 28, 0.28);
+
+  /* ── 布局尺寸（改这里必须同步 BrowserShell 的 inset 上报） ── */
+  --side-w: 196px;
+  --topbar-h: 54px;
+  --bw-title-h: 36px;
+  --tabsbar-h: 38px;
+  --addr-h: 40px;
+  --agentbar-h: 66px;
+  --panel-w: 380px;
+  --drawer-w: 460px;
+
+  /* ── 字体 ── */
+  --font: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* ── 影子区标识：45° 斜纹，线宽 7px、间隔 15px、深青 4.2% ── */
+  --stripe: repeating-linear-gradient(
+    45deg,
+    rgba(20, 81, 78, 0.042) 0 7px,
+    transparent 7px 15px
+  );
+  --stripe-strong: repeating-linear-gradient(
+    45deg,
+    rgba(20, 81, 78, 0.075) 0 7px,
+    transparent 7px 15px
+  );
+}

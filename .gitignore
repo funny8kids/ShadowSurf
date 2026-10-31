@@ -1,0 +1,13 @@
+node_modules/
+out/
+dist/
+.DS_Store
+*.log
+
+# 工具与临时产物
+.workbuddy-ai/
+api.txt
+arch.txt
+front.txt
+osf.txt
+tsconfig.*.tsbuildinfo

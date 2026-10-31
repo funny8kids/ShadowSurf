@@ -1,0 +1,646 @@
+/*
+ * 自动化脚本面板样式。
+ *
+ * 只写本模块自己的类，颜色/圆角/阴影全部走 tokens.css 里的变量，
+ * 不碰 app.css，避免和其他并行模块互相覆盖。
+ * 类名统一 scr- 前缀，只有 .tool-panel / .tool-head / .tool-body 与骨架保持一致。
+ */
+
+.tool-panel {
+  padding: 22px 26px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 100%;
+}
+
+.tool-head h2 {
+  margin: 0 0 4px;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.tool-head p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink-3);
+  max-width: 620px;
+}
+
+.tool-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.tool-empty {
+  padding: 26px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r);
+  color: var(--ink-3);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* ────────────────────────────── 头部 ────────────────────────────── */
+
+.scr-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.scr-head-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+/* ────────────────────────────── 两栏骨架 ────────────────────────────── */
+
+.scr-wrap {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 262px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  min-height: 0;
+}
+
+.scr-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.scr-side-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+}
+
+.scr-count {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--ink-4);
+}
+
+.scr-side-empty {
+  padding: 18px 14px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r);
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--ink-3);
+  background: var(--surface-2);
+}
+
+.scr-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.scr-item {
+  width: 100%;
+  text-align: left;
+  padding: 9px 11px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  transition: border-color 0.14s, box-shadow 0.14s, background 0.14s;
+}
+
+.scr-item:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--sh-1);
+}
+
+.scr-item.on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-2);
+}
+
+.scr-item .r1 {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.scr-item .t {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.scr-item .tm {
+  margin-left: auto;
+  flex: none;
+  font-size: 10px;
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+}
+
+.scr-item .r2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+.scr-item .env-tag {
+  flex: none;
+  padding: 0 4px;
+  border-radius: var(--r-xs);
+  background: var(--surface-3);
+  color: var(--ink-2);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.scr-item .d {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ────────────────────────────── 编辑器 ────────────────────────────── */
+
+.scr-editor {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  box-shadow: var(--sh-1);
+  overflow: hidden;
+}
+
+.scr-ed-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 13px 16px 11px;
+  border-bottom: 1px solid var(--line-2);
+}
+
+.scr-title {
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: var(--r-xs);
+  background: transparent;
+  padding: 2px 6px;
+  margin-left: -6px;
+  font-size: 14.5px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  transition: background 0.14s, border-color 0.14s;
+}
+
+.scr-title:hover {
+  background: var(--surface-2);
+}
+
+.scr-title:focus {
+  outline: none;
+  background: var(--surface);
+  border-color: var(--accent-3);
+  box-shadow: 0 0 0 3px var(--accent-2);
+}
+
+.scr-desc {
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: var(--r-xs);
+  background: transparent;
+  padding: 2px 6px;
+  margin-left: -6px;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  transition: background 0.14s, border-color 0.14s;
+}
+
+.scr-desc:hover {
+  background: var(--surface-2);
+}
+
+.scr-desc:focus {
+  outline: none;
+  background: var(--surface);
+  border-color: var(--accent-3);
+  box-shadow: 0 0 0 3px var(--accent-2);
+}
+
+.scr-title::placeholder,
+.scr-desc::placeholder {
+  color: var(--ink-4);
+}
+
+.scr-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 16px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line-2);
+}
+
+.scr-steps-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.scr-dirty {
+  font-style: normal;
+  padding: 0 5px;
+  border-radius: var(--r-xs);
+  background: var(--amber-2);
+  color: var(--amber);
+  font-size: 9.5px;
+}
+
+.scr-spacer {
+  margin-left: auto;
+}
+
+.scr-run-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.scr-run-select {
+  max-width: 190px;
+}
+
+/* ────────────────────────────── 表单控件 ────────────────────────────── */
+
+.scr-input {
+  height: 27px;
+  padding: 0 8px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-xs);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: 11.5px;
+  transition: border-color 0.14s, background 0.14s, box-shadow 0.14s;
+}
+
+.scr-input:hover {
+  border-color: var(--line);
+  background: var(--surface);
+}
+
+.scr-input:focus {
+  outline: none;
+  background: var(--surface);
+  border-color: var(--accent-3);
+  box-shadow: 0 0 0 3px var(--accent-2);
+}
+
+.scr-input::placeholder {
+  color: var(--ink-4);
+}
+
+select.scr-input {
+  cursor: pointer;
+  appearance: none;
+  padding-right: 22px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink-4) 50%),
+    linear-gradient(135deg, var(--ink-4) 50%, transparent 50%);
+  background-position: calc(100% - 12px) 11px, calc(100% - 8px) 11px;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+}
+
+/* ────────────────────────────── 步骤列表 ────────────────────────────── */
+
+.scr-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px 16px;
+}
+
+.scr-steps-empty {
+  padding: 26px 18px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-sm);
+  text-align: center;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--ink-3);
+}
+
+.scr-step {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  transition: border-color 0.14s, background 0.14s;
+}
+
+.scr-step:hover {
+  border-color: var(--line);
+  background: var(--surface-hover);
+}
+
+.scr-step-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.scr-no {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-xs);
+  background: var(--surface-3);
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.scr-sel {
+  flex: none;
+  width: 96px;
+}
+
+.scr-selector {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.scr-step-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--ink-4);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.scr-tools {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex: none;
+}
+
+.scr-icon {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-xs);
+  color: var(--ink-4);
+  font-size: 11px;
+  line-height: 1;
+  transition: background 0.14s, color 0.14s;
+}
+
+.scr-icon:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.scr-icon:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.scr-icon.danger:hover:not(:disabled) {
+  background: var(--red-2);
+  color: var(--red);
+}
+
+.scr-extra {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-left: 27px;
+}
+
+.scr-extra > label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.scr-param {
+  width: 150px;
+}
+
+.scr-wide {
+  width: 100%;
+}
+
+.scr-grow {
+  flex: 1;
+  min-width: 160px;
+}
+
+.scr-delay {
+  width: 68px;
+  font-variant-numeric: tabular-nums;
+}
+
+.scr-add {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 11px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-sm);
+  color: var(--ink-2);
+  font-size: 11.5px;
+  transition: border-color 0.14s, color 0.14s, background 0.14s;
+}
+
+.scr-add:hover {
+  border-color: var(--accent-line);
+  background: var(--accent-2);
+  color: var(--accent);
+}
+
+/* ────────────────────────────── 回放结果 ────────────────────────────── */
+
+.scr-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 12px 16px 0;
+  padding: 9px 11px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.scr-result svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.scr-result b {
+  display: block;
+  font-weight: 600;
+}
+
+.scr-result span {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+.scr-result.ok {
+  background: var(--green-2);
+  border-color: var(--green-line);
+  color: var(--green);
+}
+
+.scr-result.bad {
+  background: var(--red-2);
+  border-color: var(--red-line);
+  color: var(--red);
+}
+
+/* ────────────────────────────── 空状态 ────────────────────────────── */
+
+.scr-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 54px 26px;
+  text-align: center;
+}
+
+.scr-empty-mark {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r);
+  background: var(--accent-2);
+  color: var(--accent);
+  margin-bottom: 2px;
+}
+
+.scr-empty h3 {
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.scr-empty p {
+  margin: 0 0 6px;
+  max-width: 380px;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--ink-3);
+}
+
+/* ────────────────────────────── 导入弹窗 ────────────────────────────── */
+
+.scr-modal-empty {
+  padding: 16px 2px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ink-3);
+}
+
+.scr-import-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.scr-import-row {
+  padding: 8px 10px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+
+.scr-import-row .r1 {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.scr-import-row .t {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.scr-import-row .c {
+  margin-left: auto;
+  flex: none;
+  font-size: 10px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.scr-import-row .r2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 5px;
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+.scr-import-row .r2 .btn {
+  margin-left: auto;
+}
