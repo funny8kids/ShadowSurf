@@ -14,3 +14,6 @@ tsconfig.*.tsbuildinfo
 
 # 探针产物：由 tools/check-injection.mjs 生成，每次跑都会变
 artifacts/
+
+# 一次性排查用的临时工程（手工 new Electron 跑单点探针），不进版本库
+probe-tmp/

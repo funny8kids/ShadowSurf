@@ -951,13 +951,13 @@ function judge(fp, d) {
     '先采基线，不断死',
     d.electronSurface,
     null,
-    'window.chrome 存在但 loadTimes/csi/app/runtime 全无（真实 Chrome 156 的 getOwnPropertyNames(window.chrome) = app/csi/loadTimes 共 3 个，本处 0 个）；' +
-      'process/require/module 全 undefined；' +
-      'toString 栈形状 = ' +
+    'window.chrome 形状已补齐：自有属性 = app/csi/loadTimes 三个，与真实 Chrome 156 实测一致（细节见 AC-19）；' +
+      'chrome.runtime 故意不加 —— 真实 Chrome 也没有，stub 它反而造出新的假红；' +
+      'process/require/module 全 undefined，UA 不含 Electron；' +
+      '剩下唯一的缺口是 toString 栈形状 = ' +
       d.toStringStack +
-      '：这是**已接受的代价**（触发需检测方主动踩异常路径），不是待修项 —— ' +
+      '：这是**已接受的代价**（要检测方主动踩异常路径才看得到），不是待修项 —— ' +
       'Proxy 方案会把这条换成「fn.name 与 toString 名字矛盾」，那个被检查得更频繁，AC-15 已钉住。' +
-      '注意：chrome.runtime 真实 Chrome 也没有，别顺手 stub 它，那会造出新的假红。' +
       'EME 见 AC-19/AC-20。',
     { gate: false }
   )
@@ -1152,28 +1152,32 @@ function judge(fp, d) {
   )
 
   /* 17 —— RTC 全局接口一致性
-     「删掉 RTCPeerConnection」这个方向比抛错更原生，但清单靠字面量维护就会漏：
-     漏掉的后果是「RTCPeerConnection 不存在、RTCRtpSender 存在」——
-     真实 Chromium 里不存在这个组合，是比不删更强的信号。
 
-     所以断言的不是「全删」，而是**矛盾**：要么一个都没删，要么一个都不剩。
-     只删一半正是要拦的那种。 */
+     【语义已变，别按旧理解读这条】
+     早先 webrtc=disabled 的做法是 delete 掉一批 RTC 全局。方向是错的：
+     注入只作用于 frame，Worker 里接口原样都在，于是「主世界 undefined、Worker 里 function」——
+     真实 Chromium 的 WebRTC 是整特性开关，永远同真同假，这个组合不可能出现，等于自证。
+     现在 disabled 不再删任何接口，只把候选全部丢弃（网络层本来也设了 disable_non_proxied_udp）。
+
+     所以断言跟着改成：**接口必须全部存在**。
+     - 少于 23 个 → 有人又开始删了，回到「删一半」的老问题，判红；
+     - 一个都没有 → 整体删除，Worker 侧会立刻暴露矛盾，也判红。
+     这条从「要么全在要么全不在」收紧成「必须全在」，是因为「全不在」已经不是合法状态了。 */
+  const RTC_EXPECTED = 23
   const hasPeer = d.rtcGlobals.includes('RTCPeerConnection')
-  const rtcConsistent = hasPeer || d.rtcGlobals.length === 0
+  const rtcConsistent = hasPeer && d.rtcGlobals.length === RTC_EXPECTED
   add(
     'AC-17',
-    'RTC 全局接口要么全在、要么全不在（不许删一半）',
-    hasPeer ? '未启用删除，全部存在' : '已启用删除，必须一个不剩',
+    `RTC 全局接口必须全部存在（${RTC_EXPECTED} 个）—— 不再走删除路径`,
+    `期望 ${RTC_EXPECTED} 个且含 RTCPeerConnection`,
     { count: d.rtcGlobals.length, hasPeer, list: d.rtcGlobals },
     rtcConsistent,
     rtcConsistent
-      ? hasPeer
-        ? '当前 profile 未走删除路径（webrtc≠disabled），此断言只验证「没有部分删除」'
-        : ''
-      : `RTCPeerConnection 已删除，但仍有 ${d.rtcGlobals.length} 个 RTC 接口存在：${d.rtcGlobals.join(', ')}。修法应用运行时枚举（/^RTC/）而不是字面量数组` +
-        '  |  重要边界：本条只覆盖主世界。Object.getOwnPropertyNames(window) 在 Worker 里是另一套全局，' +
-        '所以 webrtc=disabled 时可能出现「主世界 23 个全删、Worker 里 23 个全在」—— ' +
-        '本条会绿，但矛盾比不删更大（一次 new Worker(blob) 就能比出来）。AC-17 通过 ≠ disabled 模式安全。'
+      ? '接口全部保留，与 Worker 侧一致；候选由网络层 + 注入双层丢弃，泄漏面见 AC-10'
+      : `接口数量或成员不符：实得 ${d.rtcGlobals.length} 个，hasPeer=${hasPeer}，列表 ${d.rtcGlobals.join(', ')}。` +
+        '若是新增 Chromium 版本带来的接口，改 RTC_EXPECTED 并说明；若是被删，改回去 —— ' +
+        '删除只作用于主世界，Worker 会立刻把这个矛盾暴露出来。' +
+        '  |  边界：本条只覆盖主世界。Worker 侧的候选泄漏仍归 P0-2（AC-14），AC-17 通过 ≠ Worker 安全。'
   )
 
   /* 18 —— 成对读数一致性
@@ -1247,7 +1251,9 @@ function judge(fp, d) {
     (wProblems.length
       ? '已知缺口（P0）：Worker 里读到的是宿主真实值，主世界是伪装值 —— 一段 `new Worker(blob)` 就能同时拿到两套并判定伪装。修法：Target.setAutoAttach + waitForDebuggerOnStart，对 Worker 也注入。'
       : 'Worker 与主世界一致') +
-      '  |  同一条缺口也吃 AC-17：RTC 删除只作用于主世界，webrtc=disabled 时可能「主世界全删、Worker 全在」，AC-17 仍会绿 —— 通过 ≠ disabled 模式安全。',
+      '  |  这条缺口同样吃 WebRTC：注入只作用于 frame，所以 Worker 里的 RTC 候选过滤（_keep）不会执行 —— ' +
+      'webrtc=disabled/proxy 时主世界候选全丢、Worker 里照旧，一次 new Worker(blob) 就能比出来。' +
+      'AC-10 / AC-17 覆盖的都只是主世界，通过 ≠ Worker 侧安全。',
     { gate: false }
   )
 }
