@@ -9,20 +9,38 @@
  */
 
 import { JsonStore } from './db'
+import { evictInPlace } from './evict'
 
 export interface Entity {
   id: string
 }
 
+export interface CollectionOptions<T> {
+  /**
+   * 淘汰保护：返回 true 的记录不会被容量裁剪掉。
+   *
+   * 为什么需要它：审计日志的上限是 5000 条，按时间从头丢最旧的。但闸门记录
+   * （「谁批准了这笔支付」）恰恰是最不该丢的 —— 一次高频 API 自动化跑几十万步，
+   * 就能把自己之前所有闸门记录挤出窗口，而且过程完全无声：`verifyChain` 看到
+   * 链头 prev 指向已裁掉的记录，会当成「正常裁剪」放行。
+   *
+   * 注意这里**只保护记录，不拆存储**。把闸门事件放到独立 store 会让哈希链断成
+   * 两条，`seq` 也不再连续 —— 那比丢记录更糟，因为它看起来还是完整的。
+   */
+  retain?: (item: T) => boolean
+}
+
 export class CollectionStore<T extends Entity> {
   private readonly store: JsonStore<T[]>
   private readonly maxItems: number
+  private readonly retain: ((item: T) => boolean) | undefined
 
-  constructor(name: string, maxItems = 0) {
+  constructor(name: string, maxItems = 0, options: CollectionOptions<T> = {}) {
     // JsonStore 构造器自己会调 filePath()，这里只能传裸文件名，
     // 否则会拼成 <dataDir>\<dataDir>\xxx.json 这种双层路径
     this.store = new JsonStore<T[]>(name, () => [])
     this.maxItems = maxItems
+    this.retain = options.retain
   }
 
   list(): T[] {
@@ -36,10 +54,7 @@ export class CollectionStore<T extends Entity> {
   add(item: T): T {
     this.store.update((draft) => {
       draft.push(item)
-      if (this.maxItems > 0 && draft.length > this.maxItems) {
-        // 超出上限从头部丢弃：调用方按时间正序追加，头部就是最旧的
-        draft.splice(0, draft.length - this.maxItems)
-      }
+      evictInPlace(draft, this.maxItems, this.retain)
     })
     return item
   }

@@ -23,7 +23,7 @@ import type {
   FingerprintConfig,
   OSKind
 } from '@shared/types'
-import { CollectionStore, type Stores } from '@main/store'
+import { CollectionStore, GATE_ACTION_PREFIX, type Stores } from '@main/store'
 import { bridgeFor } from '@main/core/cdp'
 import type { GateEvent } from '@main/agent/actions'
 import type { ModuleContext } from './context'
@@ -108,7 +108,10 @@ export function auditGate(stores: Stores, event: GateEvent): void {
 
   appendAudit(
     stores,
-    event.level === 'L2' ? '闸门·不可逆' : '闸门·可回退',
+    // 前缀是淘汰保护的判据（见 store/index.ts 的 AUDIT_RETAIN），
+    // 两边必须用同一个常量 —— 写字面量的话改一边另一边会静默失效：
+    // 记录还在写，但已经不再受保护了。
+    GATE_ACTION_PREFIX + (event.level === 'L2' ? '不可逆' : '可回退'),
     target,
     `${who}；${event.reason}${matched ? `；命中「${matched}」` : ''}`
   )
