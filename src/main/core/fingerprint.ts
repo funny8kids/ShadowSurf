@@ -583,7 +583,14 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('        return function (l, o) {')
   L.push('          var q = {};')
   L.push('          if (o) { for (var k in o) { q[k] = o[k]; } }')
-  L.push('          q.timeZone = C.tz;')
+  /* 只在调用方没指定时补 profile 的时区。
+     原先是无条件 `q.timeZone = C.tz`，于是页面显式要求东京或 UTC 也会被改成本地，
+     同一个时间戳在同一页上出现两个值：
+       new Date(0).toLocaleString('en-US', {timeZone:'UTC'})        → 洛杉矶时间
+       new Intl.DateTimeFormat('en-US',{timeZone:'UTC'}).format(...) → UTC
+     这是**不需要任何参照值**就能判定的自相矛盾 —— 比缺字段严重得多。
+     原生语义是「不传就用默认时区」，那就照原生来。 */
+  L.push('          if (!q.timeZone) { q.timeZone = C.tz; }')
   L.push('          if (l === undefined || l === null) { l = _lang; }')
   L.push('          return fn.call(this, l, q);')
   L.push('        };')

@@ -222,6 +222,38 @@ const PROBES = [
       var b = new Intl.Collator().compare('中文', 'abc');
       return a === b;
     })()`
+  },
+  {
+    // 调用方**显式指定**的 timeZone 必须被放行，不能被 profile 的时区覆盖。
+    //
+    // 原先 _withTz 里是无条件 `q.timeZone = C.tz`，于是同一个时间戳在同一页出现两个值：
+    //   new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Tokyo'}).format(new Date(0)) → 东京
+    //   new Date(0).toLocaleString('en-US',{timeZone:'Asia/Tokyo'})                  → profile 时区
+    // 东京和 UTC 会得到同一个结果 —— 不需要任何参照值就能判定被插桩。
+    //
+    // 断言不能拿 DateTimeFormat 的结果去比：它默认只出日期、toLocaleString 默认带时间，
+    // 两者原生就不相等。改用两个不依赖 profile 的判据：
+    //   1. Date(0) 在 UTC 下必须是 12:00:00 AM —— 固定锚点，换任何 profile 都成立
+    //   2. 三个相距很远的时区必须给出三个互不相同的结果
+    id: 'explicit-timezone-honored',
+    expect: [],
+    expr: `(function () {
+      var bad = [];
+      var d = new Date(0);
+      var utc = d.toLocaleString('en-US', { timeZone: 'UTC' });
+      if (utc.indexOf('12:00:00 AM') < 0) {
+        bad.push('UTC 应为 12:00:00 AM，实际 ' + utc);
+      }
+      var zones = ['UTC', 'Asia/Tokyo', 'America/Los_Angeles'];
+      var seen = {};
+      for (var i = 0; i < zones.length; i++) {
+        seen[d.toLocaleString('en-US', { timeZone: zones[i] })] = 1;
+      }
+      if (Object.keys(seen).length < 3) {
+        bad.push('三个时区只得到 ' + Object.keys(seen).length + ' 种结果：' + Object.keys(seen).join(' | '));
+      }
+      return bad;
+    })()`
   }
 ]
 
