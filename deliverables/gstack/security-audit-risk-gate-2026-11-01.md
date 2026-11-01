@@ -1,21 +1,26 @@
-# 风险闸门与指纹覆盖 —— 审计修复交付（第四轮）
+# 风险闸门与指纹覆盖 —— 残余项清零交付（第五轮）
 
 **日期**：2026-11-01
-**HEAD**：`ad1e18e`（工作区 **0 个未提交改动**，`build.dirty = false`）
+**HEAD**：`435b0cd`（工作区 **0 个未提交改动**，`build.dirty = false`，`outSha1 = 36c5177fd6b0`）
+　　（本报告自身是随后的一次 docs-only 提交，不改任何源码；所有读数仍归属 `435b0cd`，
+　　　并用 `outSha1` 钉住当时那一份构建产物 —— 只认 commit 不认产物的读数会被「重新构建」骗过去。）
 **参与**：安全官 · 质量门神 ×3 · 排障手 ×3 · 产品评审员 · 设计顾问
-**本轮目标**：把第三轮留下的三条 P0 真正做完 —— P0-2 Worker 露宿主真值、P0-3 seed 明文落盘、P0-4 确认窗口伪造。
+**本轮目标**：把 `remediation-plan-2026-11-01.md` 的 3 条 🟠 + 5 条 🟡 **全部**落地 —— 包括计划里标了「建议不修」的 `#22 4.4`，和两条标了「必须先测」的 B 档项。
 
-> 第三轮的报告把「未完成」写成了结论，本轮把它改成了读数。
-> 所有数字都来自 `ad1e18e` 这一次干净构建，命令逐条可复跑。
+> 上一轮把「未完成」改成了读数。本轮把**读数变成了行动** ——
+> 其中有两条行动的前提，在测完之后被自己的读数推翻了。
 
 ---
 
 ## TL;DR
 
-- **整体结论**：🟢 **三条 P0 全部关闭**。P0-2 找到根因并修掉，开关翻回 `true`，AC-14 从「未测量」变回硬门禁并**通过**。
-- **P0-2 的根因不是「注入不生效」，是「注入会崩」**：`new OffscreenCanvas(1,1).getContext("webgl")` 在**暂停态** worker 里执行会让渲染进程崩。修法是**不建 context**，只装 `WebGLRenderingContext.prototype.getParameter`。验收方式随之改变 —— 不是「脚本不报错」，而是**让 worker 自己建 GL 上下文，读 37445/37446 必须等于 profile 配置**。
-- **本轮最意外的产出是一条「假失败」**：`CdpBridge.evaluate` 把 CDP 的 RemoteObject 原样当值返回，导致 worker 自检**每一次**都判「不通过」。注入明明是成功的，审计里却一直写着「注入失败」。这条比假绿更隐蔽 —— 假绿骗过门禁，假红骗过**所有人**，因为没人会去查一条「已经在修」的告警。
-- **闸门与执行器的语义分歧修掉了，而且是在结构层修掉的**：三处手拼（不是两处）、两套元素查找规则（trim 与不 trim）。现在元素名由 `actionSemantic` 自己从快照取，调用方只能传 `note` —— 「拼两次」写不出来。
+- **整体结论**：🟢 **残余项清零**。8 条全部处置：**6 条修复 + 2 条按读数改判**（一条原方案被推翻，一条按计划改成环境级配置而非按钮）。
+- **最重要的三条读数**（它们各自改变了要做的动作）：
+  1. **`RTCPeerConnection` 在 worker 里是 `undefined`** → 「WebRTC 下沉 worker」**无对象**。计划 §1.2 的前提（`[Exposed=(Window,Worker)]`）在本仓库的实际内核上不成立。改成一条断言 **AC-23**，盯「内核哪天把它开进 worker」。
+  2. **`shared_worker` 不被 `setAutoAttach` 覆盖，但手动 `attachToTarget` 拿到的 session 是可用的** → 从「不可达」变成「可事后注入」。它没被暂停，却在脚本 fetch 之前就把 target 建出来了，**注入赢了竞态**（3/3）。
+  3. **`service_worker` 顶层结构性不可覆盖，`install` 抢得到** → 覆盖被拆成两层承诺，各自一条门禁，顶层**只作读数不作判据**。
+- **门禁从 8 段扩到 10 段**，新增 3 个验收脚本、1 个探针；`verify:all` 本身修掉一处**自己踩自己的假绿**（见 §6 第 10 类）。
+- **本轮翻出两个旧缺陷**：`listInjectionIssues()` **零调用方**（攒了一堆事实，没有任何界面能读到）；`verify:all` 用**开发模式**跑单测，导致一条三态断言在门禁里**每次都 skip**。
 
 ---
 
@@ -23,249 +28,305 @@
 
 | 项目 | 内容 |
 |------|------|
-| Go / No-Go | 🟢 **Go**（三条 P0 关闭；残余项见 §5，均不阻断） |
-| P0 状态 | P0-4 ✅ · P0-3 ✅ · P0-2 ✅ |
-| 实测读数 | typecheck 双绿 · 155 tests / 154 pass / 0 fail / 1 skip · injection 25/25 + worker 24/24 · **worker 链路 exit 0** · anticheat **20/20** · seed-at-rest **exit 0** |
-| 唯一 skip | 「注入脚本不得改写 `Function.prototype.toString`」—— 真实债务，见 §5 |
-| 读数归属 | `ad1e18e`，工作区干净，`build.dirty=false` |
+| Go / No-Go | 🟢 **Go**（残余项 8/8 已处置；剩余的是**边界**不是欠账，见 §8） |
+| 处置结果 | 修复 6 · 按读数改判 2 |
+| 实测读数 | typecheck 双绿 · **176 tests / 175 pass / 0 fail / 1 skip** · seed-at-rest exit 0（反向 7/7）· seed-ipc 成立 · mask-ui 成立 · mask-exemption **8/8** · injection **25/25** · worker exit 0 · shared-worker **5/5** · anticheat **21/21** |
+| 唯一 skip | 「注入脚本不得改写 `Function.prototype.toString`」—— **已知代价，不是欠账**，§3 有矩阵支撑 |
+| 读数归属 | `435b0cd`，工作区干净，`build.dirty=false` |
+| 提交数 | 11（`2d19963` → `435b0cd`） |
 
 ---
 
-## 1. 三条 P0 的真实状态
+## 1. 三条 🟠
 
-### P0-4 确认窗口伪造 —— ✅ 完成
+### 1.1 `service_worker` / `shared_worker` 注入 —— ✅ 完成，但**只承诺覆盖到哪一层**
 
-同意只能来自一个来源：操作系统绘制的原生对话框。三个旧旁路全部封闭，`verify:consent` 逐条实测：
+原计划要求「先测再谈」。测完的结论是：两条路径**都能注入**，但**能覆盖的阶段完全不同**，所以不能合并成一句「已覆盖」。
 
-| 旁路 | 旧行为 | 现在 |
+| 阶段 | `shared_worker` | `service_worker` |
 |---|---|---|
-| 渲染层 `ss:agent:confirm(true)` | `Boolean('false') === true` → 字符串即批准 | 通道已删除 |
-| 脚本回放 `{confirmed: true}` | 调用方自称「用户已同意」 | 传了仍然弹窗，实测 `asked=1` |
-| 本地 API `payload.confirm === true` | 无人值守执行 L2 | 无人确认 → `409 E_CONSENT_TIMEOUT` |
+| 脚本**顶层** | 竞态赢了（3/3 读到 profile 值）—— **不保证** | **结构性不可覆盖**（读到宿主值 32） |
+| 事件处理器（`message` / `install` / `fetch`） | ✅ | ✅（`resume` → 注入完成 **2–5ms**，稳定抢在 `install` 之前） |
 
-本轮补强：`Approval` 类型里**删掉了 `approvedBy`**。此前它是一句调用方声明，现在授权来源是「票据有没有被消费成功」，而票据只有 `consent.ts` 里那次 `dialog.showMessageBox` 能铸。调用方连「我授权了」这句话都说不了了。
+原因分别是：
 
-新增结构断言：`Approval` 不得包含 `level` / `approvedBy`（反向验证见 §4）。
+- **`shared_worker`**：`Target.setAutoAttach` 不覆盖它（B2 探针的读数），所以走「`setDiscoverTargets` → `targetCreated` → 手动 `attachToTarget`」。它**没有被暂停**，但 target 在脚本 fetch **之前**就建出来了，所以 attach + 注入通常赶在脚本执行前。这是**竞态赢了**，不是保证 —— 所以顶层只写进读数，不写成门禁。
+- **`service_worker`**：暂停态下**任何命令都不返回**，只能先 `runIfWaitingForDebugger` 再抢注入，而 resume 那一刻顶层已经执行完了。`install` 事件要等脚本解析 + 微任务，注入的本地往返（2–5ms）抢得过。
 
-### P0-3 seed 明文落盘 —— ✅ 完成
-
-落盘侧封口 + 启动时就地重封历史备份 + 令牌迁移。
-
-- `master.key` 用 `safeStorage`（DPAPI）封装，`SSKEYv1:` 前缀
-- `seed` 字段 `enc:` 密封；scrypt(N=2^15,r=8,p=1) → AES-256-GCM，AAD 绑 `name|platform`
-- 历史 `.schema0-*` 备份：**启动时原地重封**（写 tmp → 回读 → 逐条解密校验 → rename），不删文件、不改名
-- `local-api-token.json` 改原子写，并在模块注册时迁移 —— 此前只有调用 `startService`/`copyToken` 的用户才会被迁移，不用本地 API 的人令牌永远明文
-
-**反向验证 7/7**（`verify:seed-at-rest --self-test`，spawn 自己打临时目录）：
+`npm run verify:shared-worker`（`435b0cd`）的读数：
 
 ```
-ok  A1 明文 seed：exit 1
-ok  A2 明文 seed：输出里点名了字段路径
-ok  B1 密封 seed：exit 0
-ok  C1 裸 master.key：exit 1
-ok  C2 裸 master.key：分类正确
-ok  D1 全合规：exit 0
-ok  E1 真实数据目录被拒（不回落）
-ok  E2 报错里点名了那个目录
+宿主核数 = 32，profile 核数 = 4（时区 America/Los_Angeles）
+[页面]            cores=4   tz=America/Los_Angeles
+[shared_worker]   顶层读       cores=4   tz=America/Los_Angeles
+                  延迟消息读    cores=4   tz=America/Los_Angeles
+[service_worker]  顶层读       cores=32  tz=Asia/Shanghai      ← 结构性不可覆盖
+                  install 时刻 cores=4   tz=America/Los_Angeles
+                  message 事件 cores=4   tz=America/Los_Angeles
+[记账] shared_worker  /  service_worker  两条 [inject-issue] 都在
 ```
 
-B1/D1 是必须有的：**一条恒红的门禁和恒绿的一样没用**。
+5 条门禁全部成立：`main`（对照）· `shared`（延迟消息）· `swc`（message 事件）· `ledger`（stderr 有记录）· `ledger-ipc`（**IPC 读得到**）。
 
-真实数据目录读数：`文件 19 个，敏感字段 10 处 → 通过：无明文凭据，主密钥非裸密钥形态`。
+#### 三个在实现里被踩到的坑（都写进了代码注释）
 
-### P0-2 Worker 露宿主真值 —— ✅ 完成
+1. **手动 attach 的 target 未暂停** —— 无条件发 `runIfWaitingForDebugger` 会回错误，被记成「放行失败（该 target 会一直挂住）」的**假警报**。改成按 `waitingForDebugger` 决定是否发，且用 `released` 标记去重。
+2. **注入脚本不幂等** —— `_maskOne` 会把已包过的函数再包一层。`swAttached` Set 去重。
+3. **`SERVICE_WORKER_EVAL_TIMEOUT = 2_000`** —— 默认 15s 在这条竞态路线上没有意义：抢不到就是抢不到，等 15s 只是让页面多卡 15s。
 
-#### 根因（第三轮只到「会崩」，本轮定位到「哪一行崩」）
+### 1.2 WebRTC 下沉 worker —— ❌ **原方案被推翻**，改成一条断言
 
-崩溃点在注入脚本里的这一行 —— 为了拿 prototype 而建实例：
+计划 §1.2 的前提是 `RTCPeerConnection` 是 `[Exposed=(Window,Worker)]`，worker 里存在，所以「移植是机械工作」。
 
-```js
-var c = new OffscreenCanvas(1, 1).getContext("webgl")
-var _glp = Object.getPrototypeOf(c)
+**前置实测（一行）的读数推翻了它**：
+
+```
+[worker]        rtcPeer=undefined  rtcSender=undefined  rtcReceiver=undefined
+[shared_worker] rtcPeer=undefined  rtcSender=undefined  rtcReceiver=undefined
 ```
 
-三组对照把条件钉死：
+本仓库实际内核（Electron）里，三个 WebRTC 接口在 **dedicated worker 与 shared worker 里都是 `undefined`**。规范确实是 `[Exposed=(Window,Worker)]`，但 Chromium 在 worker 侧的 WebRTC 是**按需启用**的，这里没启用。
 
-| 场景 | 结果 |
+所以「下沉」**没有对象** —— 没有 `RTCPeerConnection` 可以 hook，`new Worker(blob)` 里也拿不到候选。
+
+**处置**：不加 hook，加一条**断言** `AC-23`「Worker 里不得有 WebRTC 接口」。三态：
+
+| 读数 | 判定 |
 |---|---|
-| 普通 worker 顶层执行同一行（全程无 CDP） | 不崩 |
-| 同一会话先 `runIfWaitingForDebugger` 再 evaluate 同一行 | 不崩 |
-| **暂停态只执行这一行、别的什么都不做** | **崩**（`render-process-gone: crashed`） |
+| 读到定义值（`function` 等） | **FAIL** —— 内核把它开进 worker 了，候选过滤必须立刻下沉 |
+| 读到 `undefined` | PASS |
+| 没读到（探针没跑起来） | **未测量**（exit 3），不是通过 |
 
-排除项：不是 evaluate 参数、不是脚本体积、不是改写 `Function.prototype.toString`。
+这条断言的价值在于**它会在需要动手的那一刻自己变红**，而不是等人想起来「当初说 worker 里没有 WebRTC」。同时 `session.ts` 的威胁模型里删掉了「Worker 里的新 `RTCPeerConnection`」这一条 —— 不存在的泄漏面留着，会让真正那几条看起来更少。
 
-#### 修法：不建 context
+`fingerprint.ts` 的 `buildWorkerScript` 注释里写明了「**为什么这里没有 WebRTC 那一段（别『补全』它）**」—— 否则下一个人看到 page 脚本有、worker 脚本没有，第一反应就是补上。
 
-`WebGLRenderingContext` 是 `[Exposed=(Window,Worker)]`，worker 里直接可取 prototype，建实例纯属多余。现在只装 `WebGLRenderingContext.prototype.getParameter`。
+### 1.3 `seed` 仍跨 IPC —— ✅ 完成
 
-#### 验收口径（这条是关键）
+`Profile` 类型里**删掉了 `seed`**，换成 `seedHint`（`sha256(seed)` 前 8 位，用于「这两个环境是不是同一个种子」的肉眼比对）。完整种子只存在于 main 的 `StoredProfile`，渲染层要预览指纹时走 `profiles.preview(id, patch)`。
 
-「脚本不报错」证明不了任何事 —— 原脚本失败时是**静默抛错**，主世界读到的仍是宿主值。真正的判据是：
+**为什么是删而不是加权限校验**：类型层删除是**编译期**的 —— 任何读取都是编译错误，不需要运行时断言，也不会因为某个 `as any` 漏网。
 
-> **让 worker 自己**执行 `new OffscreenCanvas(1,1).getContext("webgl")`，
-> 读 `getParameter(37445)` / `getParameter(37446)`，必须等于 profile 的 `glVendor` / `glRenderer`。
-
-`npm run verify:worker` 的读数（`ad1e18e`）：
+读数（`verify:seed-ipc`）：
 
 ```
---- WebGL：worker 自建 OffscreenCanvas 上下文 ---
-  配置    vendor="Google Inc. (NVIDIA)"  renderer="ANGLE (NVIDIA, ... D3D11)"
-  主世界  ctx=true  vendor="Google Inc. (NVIDIA)"  renderer="ANGLE (NVIDIA, ... D3D11)"
-  Worker  ctx=true  vendor="Google Inc. (NVIDIA)"  renderer="ANGLE (NVIDIA, ... D3D11)"
-  判定：成立 —— 不建 context 也伪装住了
-
---- 崩溃 ---  render-process-gone：无
-结论：Worker 注入已生效（exit 0）
+成立：profiles.list() 载荷里没有种子，preview 与落盘指纹逐字段相等，且只读
 ```
 
-三态判定是刻意分开的：**没建出 context = 未测到**，不是通过、也不是不成立。混成两态的话，「探针环境建不出 GL」会被读成「伪装失效」，然后有人去改一个没坏的东西。
-
-#### 顺带发现：一条一直在撒谎的「注入失败」
-
-`CdpBridge.evaluate` 把 CDP 的 **RemoteObject**（`{type, value, description}`）原样当 `value` 返回。于是 worker 自检里的 `Number(check.value)` 得到 `NaN`、`String(check.value)` 得到 `"[object Object]"`，**每一次**都判「自检不通过」：
-
-```
-[inject-issue] {"target":"worker","reason":"注入失败：worker 自检不通过：读到 [object Object]，期望 12"}
-```
-
-而同一时刻 20 项主世界/Worker 读数**全等**。修法是拆包（`returnByValue: true` 下调用方要的必然是值），并在自检处先钉类型 —— 将来契约再变，报的是「回读值不是数字」，而不是一个看起来像「伪装没生效」的数值不符。
-
-修完 `issues = []`。
+三个断言一起成立才算过：「不泄漏」「功能还在」「preview 是只读的（不能借它写指纹）」—— 少任何一个都能被绕过。
 
 ---
 
-## 2. 闸门与执行器的语义分歧（结构层修法）
+## 2. 五条 🟡
 
-这个 bug 的形状值得单独记：**两边各自拼串，而抑制规则看的是「命中词紧邻的右文」**。
+### 2.1 `mask.list` 有读者了 —— ✅
 
-```
-loop.ts      semantic = [name, thought].join(' ')          ← name 出现 1 次
-actions.ts   extra    = [name, approval.extra].join(' ')   ← name 出现 2 次
-```
+环境卡片每行一个状态点，颜色由 **`judgeMask`** 决定（与拦 L2 同一张表）。**红线**：界面红而门禁放行（或反过来）比没有这个点更坏 —— 用户会按界面去关掉机制。
 
-name 拼两次之后，第一个 name 的右文从 `"s"` 变成 `"Checkout s s"`，相邻关系被打断，抑制失效 → **闸门判 L1（不弹框）、执行器判 L2（抛错）** → 动作被拦，而用户从头到尾没被问过。实测 98 个用例里 50 个误拦、0 个真绕过：它不会放行危险动作，但会让支付按钮彻底点不动。
-
-本轮发现的不止两处：
-
-| 位置 | 旧写法 | 问题 |
-|---|---|---|
-| `loop.ts:190` | `[target?.name, thought].join(' ')` | name ×1（对） |
-| `actions.ts:224` | `[target?.name, approval.extra].join(' ')` | name ×2（错） |
-| **`scripts.ts:353`** | `[target?.name, note, selector].join(' ')` 再交给执行器 | name ×2（错，**第三轮没发现**） |
-
-还有第二处分歧：元素查找。执行器 `findElement` **trim 了**，闸门那两处没 trim。模型吐出 `" e7"` 时闸门查不到元素 → 语义里没有元素名 → 判 L1 → 不弹框；执行器 trim 后查到了 → 判 L2 → 抛错。同一类后果，另一条成因。
-
-**修法**：`@shared/protocol.ts` 提供两个函数，成为唯一入口：
-
-```ts
-export function findElement(snapshot, id)            // 编号先 trim 再比
-export function actionSemantic(action, snapshot, note)  // 元素名自己取，note 只放自述
-```
-
-`Approval.extra` 同时改名 `note`。字段名本身说明「这里只放备注，元素名不许拼进来」—— 因为本地 HTTP API 手里只有 `action.id`，一旦允许调用方拼，那条路径就会「看起来接了闸门、实际扫不到任何语义」。
-
-新增结构断言：除 `protocol.ts` 外，任何文件手工拼 `name + note` 即失败，**且带反向自检**（正则抓不到旧写法，这条断言本身就判失败 —— 否则它是一个恒真空断言）。
-
----
-
-## 3. 本轮实测读数（`ad1e18e`，工作区干净）
+`verify:mask-ui` 的判据不是「有个点」，而是：
 
 ```
-npm run typecheck            node ✅  web ✅
-npm run test:gate            155 tests / 154 pass / 0 fail / 1 skip
-npm run verify:injection     主世界 25/25  ·  worker 脚本级 24/24
-npm run verify:worker        exit 0（GL 4/4 对上配置，崩溃 0，[inject-issue] 0）
-npm run verify:gate          全部通过（含 3 条伪装闸门用例）
-npm run verify:consent       全部通过（三条旁路已封）
-npm run verify:anticheat     20/20 通过（AC-14 PASS，build.dirty=false）
-npm run verify:seed-at-rest  exit 0（反向验证 7/7）
+成立：判定表 10 行的色调逐行一致，载荷截断与空值约定成立，IPC 上没有表外组合
 ```
 
-AC-14 的明细（两轮，宿主 Windows）：
+「IPC 上没有表外组合」这一条是防「界面自己造了一个状态」—— 那张表必须能被逐格核对。
+
+### 2.2 AC-14 非 en-US 轮次 —— ✅
+
+原条件是「profile 语言与宿主默认渲染不同」。宿主是 `en-GD`，所以 `en-US` profile 也能满足 —— **这就是无鉴别力的来源**：en-US 下「locale 正确实现」与「写死 en-US」读数完全相同。
+
+改成「**非 `en-*`** 且与宿主渲染不同」，不满足就**记为未测量（exit 3）**，不是通过。
+
+读数（三轮，`435b0cd`）：
 
 | 轮次 | profile | mismatch | unmeasured | 分组 |
 |---|---|---|---|---|
-| 1 | macos | 0 | 0 | A 13/13 · B 5/5 · **C 2/2** |
-| 2 | windows | 0 | 0 | A 13/13 · B 5/5 · **C 2/2** |
+| 1 | macos / en-US | 0 | 0 | A 13/13 · B 5/5 · C 2/2 |
+| 2 | windows / en-US | 0 | 0 | A 13/13 · B 5/5 · C 2/2 |
+| **3** | **macos / ja-JP** | **0** | **0** | A 13/13 · B 5/5 · C 2/2 |
 
-`crossOs = true`。C 组就是 OffscreenCanvas 的 vendor/renderer 两项 —— 第三轮明确「禁止动 C 组」的那一组，现在是绿的，而且是靠真读数绿的。
+`crossOs = true`。`localeRound.usedProfileLang = "ja-JP"`，`judged = true`。
 
-**唯一 skip**：「注入脚本不得改写 `Function.prototype.toString`」。这是真实债务，不是本轮遗留的疏忽：改成 `Proxy` 会消除最便宜的一条 tell（`toString` 抛错时栈里多出 `at toString` 一帧），但也会把这条换成「`fn.name` 与 `toString` 内名字矛盾」—— 后者被检查得更频繁。skip 的 reason 里写清了取消条件，属于**已知并接受的代价**。
+#### 顺带修掉一个退出码漏洞
+
+原来只有「locale 前置条件不满足」会 exit 3。**单条 AC 记 `unmeasured` 时 exit 仍是 0** —— 表格里写「未测量」，CI 是绿的。现在：任意 gate 判据未测量 → **exit 3**，并打印「有 N 条该判的判据没测到」。
+
+这条的反向验证很直接：删掉 AC-23 里读 `rtcReceiver` 的那一行 → 它变 `unmeasured`，改前 exit 0，改后 **exit 3**。
+
+### 2.3 `describeAction` 三份 → 一份 —— ✅
+
+三份的差别不只是措辞：渲染层那份把英文 `direction` 直接拼进中文（「向**down**滚动 300」），press 的默认键一处写 `'Enter'` 一处写 `'（未指定）'`。这类分叉**不会让任何测试变红**，只会让界面和确认窗口对同一个动作说两种话。
+
+现在 `describeAction` 只有一份（`shared/protocol.ts`，`snapshot` 可选）。审计那份改名为 `describeAuditTarget` —— 它的输出参与哈希、措辞冻结，本来就不是同一件事，**同名才是问题**。
+
+结构断言：`describeAction` 只允许一个 `export function`，且**带反向自检**（正则抓不到旧写法时，这条断言自己判失败 —— 否则它是一个恒真空断言）。
+
+### 2.4 `listInjectionIssues` 零读者 —— ✅ 本轮翻出来的旧缺陷
+
+主进程把「`shared_worker` 顶层没覆盖」「`service_worker` 顶层覆盖不了」这些事实攒在内存里，stderr 也打了，**但没有任何界面能读到**。于是报告里那句「已记录」只在终端成立 —— 用户和排障的人都看不见。
+
+现在：`CH.injection.list` → preload → 环境抽屉「影子」tab 里的「本次会话的注入问题」（按 `profileId` 过滤，最近 5 条，空态明说「没记录 ≠ 伪装完整」）。
+
+**两条通道刻意不合并**：`mask.list` 是「此刻状态」（会被后来的测量覆盖），`injection.list` 是「过程中发生过什么」（追加、不覆盖）。合并之后「现在好了」会把「刚才坏过」抹掉。
+
+门禁是两条，分别盯两条路：
+
+| gate | 判据 | 反向验证 |
+|---|---|---|
+| `ledger` | stderr 里两条 `[inject-issue]` 都在 | — |
+| `ledger-ipc` | 同一条台账 **经 IPC 读得到** | handler 换成 `() => []` → 前 4 条仍绿、这条红，4/5，**exit 1** |
+| 结构断言 | `bridge().injection.list()` 在抽屉里有调用 | 改成 `injection.listX()` → 173 pass / **1 fail**，红的正是这条 |
+
+只查 stderr 是不够的 —— 那正是「零读者」这个缺陷的形态。
+
+### 2.5 `#22 4.4`「以未伪装身份继续」—— ✅ 按计划做成**环境级配置**，不是按钮
+
+计划建议「不修」，但如果业务必须要，只能做成**显式的环境级配置**。本轮按后者做了 —— 因为「全部都做」这句话包含这一条。
+
+| 要求（计划 §2.4） | 实现 |
+|---|---|
+| 配置项 `Profile.allowUnmaskedL2`，默认 false | ✅ **必填布尔**（不是可选 —— 可选布尔会让每个读点自己回答「没这个字段算什么」，漏问一次就是默认豁免） |
+| 开启需**输入环境名**确认（不是点确定） | ✅ `setExemption(id, enabled, confirmName)`，严格比对 |
+| 审计写「授权=环境级豁免」且与用户点允许**分列** | ✅ `audit.ts` 单独一列：「授权=环境级豁免（allowUnmaskedL2，环境 X），被豁免的前提：…」 |
+| `maskState === 'ok'` 时**自动收回** | ✅ `onMaskState` 里 `record.state === 'ok'` → `revokeExemption` + 写审计 + 推 `profileState` |
+| 报告与界面都标注「已豁免伪装闸门」 | ✅ 卡片上单独一个 `mask-dot exempt`（第四种语义色 `--violet`，绿/黄/红已分别被占用） |
+
+#### 两个设计决定值得单独记
+
+**① 豁免不写进 `judgeMask`。** 判定表分成 `judgeMask`（纯状态）+ `decideMaskGate(record, exempt)`（加一层配置覆盖）。混在一起之后，「十格判定表逐格成立」这条断言就没法再逐格核对了 —— 表里会多出「豁免」这个维度，而它是**配置**不是**状态**。
+
+**② 豁免不能覆盖 `missing`。** 那时连哪个环境都不知道，豁免无从归属。单测里专门有一条：
+
+```
+豁免覆盖了状态失败，但结论里必须留得下「被豁免过」的痕迹
+```
+
+#### 读数（`verify:mask-exemption`，8/8）
+
+```
+create-default-off   false   update-cannot-set     false
+create-cannot-set    false   wrong-name-rejected   {threw: true, value: false}
+enable               true    clone-resets          false
+auto-revoke          maskState=ok → false
+audit-revoke         count=1（"伪装已回到 ok，环境级豁免（allowUnmaskedL2）已自…"）
+```
+
+`update()` 和 `create()` **都写不进这个字段** —— 这是刻意的：如果它能被 `update()` 保存，那它就能被一个裸 JSON patch 绕过，而它控制的是一道安全闸。
 
 ---
 
-## 4. 反向验证清单（每条新门禁都打断过）
+## 3. `Function.prototype.toString` —— 用矩阵否掉了 Proxy，改成「已知代价」
+
+计划 §3.1 的判断是「照字面改 Proxy 会更糟」。本轮把它变成了**读数**（`tools/probe-tostring.mjs`，5 条检测手法 × 3 种实现）。
+
+结论：三种实现**都有 tell**，问题不是「哪个干净」而是「哪条最不常被踩到」。
+
+| 实现 | 主要 tell | 踩到需要什么 |
+|---|---|---|
+| 赋值改写（现状） | `try { Function.prototype.toString.call(1) } catch (e) { e.stack }` 里多一帧 `at toString` | **主动踩异常路径** |
+| `Proxy` 包装 | `fn.name` 与 `toString` 内名字矛盾（`function () { [native code] }` 丢名字） | **一行正则，不需要任何前提** |
+| 不 patch | `toString` 输出里没有 hook 痕迹，但 hook 本身可被 `'prototype' in fn` 之类发现 | — |
+
+所以 **不改**。这条 skip 从「真实债务」改判为「**已知并接受的代价**」，reason 里写清了取消条件。报告里不再把它算作欠账 —— 继续挂着会让人以为「这里还有活没干」。
+
+---
+
+## 4. 本轮实测读数（`435b0cd`，工作区干净）
+
+```
+npm run typecheck             node ✅  web ✅
+npm run test:gate             176 tests / 175 pass / 0 fail / 1 skip
+npm run verify:seed-at-rest   exit 0（反向验证 7/7；真实目录 19 文件 / 10 敏感字段 → 通过）
+npm run verify:seed-ipc       成立（载荷无种子 · preview 与落盘逐字段相等 · 且只读）
+npm run verify:mask-ui        成立（判定表 10 行色调逐行一致 · 截断与空值约定 · IPC 无表外组合）
+npm run verify:mask-exemption 8/8 成立
+npm run verify:injection      25/25 成立
+npm run verify:worker         exit 0（GL 4/4 对上配置，崩溃 0，[inject-issue] 0）
+npm run verify:shared-worker  5/5 成立
+npm run verify:anticheat      21/21 通过（AC-14 三轮 0 mismatch，crossOs=true，AC-23 measured=true）
+```
+
+`verify:all` 现在是 10 段：`typecheck → build → test:gate → seed-at-rest → seed-ipc → mask-ui → mask-exemption → injection → worker → shared-worker → anticheat`。
+
+**唯一 skip**：`Function.prototype.toString`（§3，已知代价）。
+**AC-12**（两个环境必须互不相同）标 `skip`，需要 `--nightly`（两次启动）—— 它在 `verify:anticheat:nightly` 里跑，不在 `verify:all` 里。这是**明确的门禁分工**，不是漏测。
+
+---
+
+## 5. 反向验证清单（每条新门禁都打断过）
 
 | 门禁 | 打断方式 | 读数 |
 |---|---|---|
-| `actionSemantic` 唯一性 | 把旧写法塞回 `loop.ts` | `not ok 2` |
-| `Approval` 不得有 `level` | 加 `level?: string` | `not ok 1`：「Approval 不得包含 level」 |
-| `matched` 有界 | 去掉 `clipOut` | `not ok 31`：「matched 没被截：长度 5006」 |
-| `suppressed` 有界 | 同上（入栈处） | 同一条 |
-| 截输出不截输入 | — | 正向断言：尾部 4000 字后的「删除全部订单」仍判 L2 |
-| seed 密封 | `--self-test` 4 个红用例 | A1/A2/C1/C2 全红 |
-| GL 三态 | — | 没 context 时判「未测到」，非通过 |
+| `ledger-ipc` | handler 换成 `() => []` | 前 4 条仍绿、这条红，4/5，**exit 1** |
+| `injection.list` 有读者 | 抽屉里改成 `injection.listX()` | 173 pass / **1 fail**，红的正是这条 |
+| `dev-only 诊断通道` 在门禁里生效 | 源码 mtime 拨新（产物变旧） | **not ok 166**，174 pass / 1 fail；改前这里是 174 pass / **2 skip** |
+| AC-23（worker 无 WebRTC） | 把 `o.rtcPeer` 改成 `"function"` | AC-23 **FAIL**，20/21，**exit 1** |
+| AC-23 的未测量分支 | 删掉读 `o.rtcReceiver` 那一行 | AC-23 **未测量**，**exit 3**（改前这里是 exit 0） |
+| `shared` gate | 去掉 `targetCreated` 发现 | shared 读到 32（宿主），**2/4，exit 1** |
+| `swc` gate | 跳过 service_worker 注入 | swc 读到 32（宿主），**2/4，exit 1** |
+| 豁免不覆盖 `missing` | 让 `decideMaskGate` 允许豁免 `missing` | `mask-gate.test` 红 |
+| 门禁侧真读豁免 | 门禁侧豁免恒 `false` | `probe-gate` **FAIL / exit 1** |
+| 环境名校验 | 去掉名字比对 | 4/8（`wrong-name-rejected` 红） |
+| 自动收回 | 去掉 `revokeExemption` 调用 | 7/8（`auto-revoke` 红） |
 
-「截输出不截输入」这条是防**修法本身**变成旁路：把 `extra` 截到 2000 字再判定，模型只要先写 4000 个无害字符就能把危险词挤出视野。判定必须看全文，只有往外说的话需要有界。
-
----
-
-## 5. 未修复清单（均不阻断本轮 Go）
-
-### 🟠 高
-
-1. **`service_worker` / `shared_worker` 不可注入** —— 暂停期间任何命令都不返回，必须先 resume，而那时顶层已跑完。这是**架构限制**，不是没做完。`shared_worker` 更彻底：`Target.setAutoAttach` 根本不覆盖它。
-2. **WebRTC 候选过滤只在 frame 里执行** —— `new Worker(blob)` 一次就能比出来。AC-10/AC-17 覆盖的只是主世界。
-3. **`seed` 仍跨 IPC 到渲染层** —— P0-3 只封了落盘，`profiles.list()` 仍带 seed。落盘加密 + IPC 明文 = 只挡住了一种威胁。
-
-### 🟡 中
-
-4. **`Function.prototype.toString` 仍是赋值改写** —— 见 §3 的 skip 说明。
-5. **`listMaskStates` / `listInjectionIssues` 零读者** —— 自检报告现在会显示**当前环境**的台账（severity 由 `judgeMask` 决定，与拦 L2 同一张判定表），但「所有窗口的伪装状态」没有列表界面。
-6. **AC-14 需要在非 `en-US` profile 上再跑一轮** —— en-US 下「locale 正确实现」与「写死 en-US」读数完全相同，该维度无鉴别力。
-7. **`describeAction` 有三份** —— `actions.ts`（带快照，人读文案）、`protocol.ts`（审计前缀 `{target, marker}`）、`AgentPanel.tsx`（渲染层兜底）。三者用途不同，但渲染层那份是同一段用户文案的再实现，属于 `ACTION_LABEL` 三份副本同一类风险。
-8. **`#22 4.4`「以未伪装身份继续」的单次会话授权** —— 没有 UI 入口，**刻意没做**：一个只在伪装失败时才出现的按钮，等于教用户关掉机制。
+「门禁侧真读豁免」这条要特别说：**单测绿 + 门禁侧恒 false** 这个组合是可以通过 8 条里的 7 条的 —— 因为 `verify:mask-exemption` 验的是**配置能不能存**，不是**门禁认不认**。两个方向必须各有一条。
 
 ---
 
-## 6. 假绿分类学（补第 8 类）
+## 6. 假绿分类学（补第 9、10 类）
 
-第三轮归纳了 7 类「测量本身是假的」。本轮补一类，而且是唯一一条**反向**的：
+前八类见上一版。本轮补两类，都是**这一轮自己踩到的**：
 
 | # | 形态 | 本轮实例 |
 |---|---|---|
-| 1 | 恒真断言 | 结构断言的正则抓不到旧写法 → 空数组「通过」 |
-| 2 | 零检查报通过 | `0/0 通过` |
-| 3 | 判据与被测实现共用前提 | AC-13 期望值用同一公式现算 |
-| 4 | 判据与宿主真值重合 | Windows profile 在 Windows 宿主上跑 |
-| 5 | 样本被抄进词表 | 正向样本原样写进 `VOCAB` |
-| 6 | 空对 | 只断言「设置项是 L1」，词表删空依然全绿 |
-| 7 | 读数过期 | 同一文件被三人读到三个状态 |
-| **8** | **假失败（假红）** | **worker 自检因 RemoteObject 未拆包而恒失败，注入明明是成功的** |
+| **9** | **零读者** | `listInjectionIssues()` 攒了一堆事实、stderr 也打了，**没有任何界面能读到**。「已记录」只在终端成立 |
+| **10** | **门禁用了宽松模式** | `verify:all` 调 `npm run test`（开发模式）而不是 `test:gate`（门禁模式），于是那条三态断言**每次都判「产物过期」→ skip**。断言是对的、skip 的理由也是对的，错的是**门禁段选错了命令** |
 
-第 8 类的危害和假绿不同：假绿骗过门禁，**假红骗过所有人** —— 它让一条真实告警变成背景噪音。而且它有一个特别坏的副作用：为了让这条红消失，人会去「修」一个没坏的东西。
+第 10 类的隐蔽之处：它**在报告里看起来像「有一条覆盖」**。而且它的作者早就预见到了 —— 那条断言的注释里写着：
 
-因此本轮定下一条口径：**任何一条长期为红的断言，必须能说出「它为什么该红、修好之后读数会变成什么」。说不出来就先降级成「未测量」（exit 3），不要留在门禁里当装饰。**
+> 一条**永远 skip** 的断言在门禁里等于不存在，而它在报告里看起来像「有一条覆盖」。所以门禁模式下把「未测量」判成失败。
 
----
+门禁段自己踩了这条。**这说明「写对了断言」和「在门禁里真的跑」是两件事，必须分开验。**
 
-## 7. 协作规范（逐条有代价）
+第 9 类的教训：**「产出了」和「有人消费」是两件事。** 一个 API 有实现、有调用点、有测试，仍然可能零读者。所以结构断言要钉的是「有读者」，不是「有通道」：
 
-1. **读数有有效期，且红读数比绿读数更短命** —— 报缺陷必须带 `mtime` 或 `git diff` 片段。
-2. **破坏性操作的确认阈值必须高于结论的确认阈值** —— 能证明是自己的才能删；证明不了就改名或移走。
-3. **禁止 `git clean -fdx` / `checkout -- .` / 整树 `stash`**。
-4. **注释只能声明它真正保证的东西** —— 指向门禁时必须能说出「哪条 AC 覆盖它」。本轮翻开关时同步改了 `probe-worker.cjs` 的结语和 AC-14 的失败文案：开关一变，那两句就开始说谎。
-5. **凡是能被机械检查的同源性，都不要靠评审纪律** —— 本轮把「三处都记得只拼一次」换成了「拼两次写不出来」。
-6. **提交前先冻结工作树** —— 绿读数在没有 commit 的情况下没有归属。本轮所有数字都出自 `ad1e18e` 的干净构建。
-7. **验收脚本必须在版本控制里** —— 第三轮的 P0-2 证据在 `probe-tmp/`，而那个目录是 gitignore 的。本轮把它提升成 `tools/verify-worker-inject.mjs` + `npm run verify:worker`，并加进 `verify:all`。
+```ts
+assert.match(drawer, /bridge\(\)\.injection\.list\(\)/, '抽屉没调 injection.list()：又变回零读者')
+```
 
 ---
 
-## 8. 下一步（按顺序）
+## 7. 协作规范（本轮新增 4 条）
 
-1. `Function.prototype.toString` 改 `Proxy` 包装 → 取消 §3 那条 skip，同时看 AC-11 读数能否从 `has-own-frame` 变 `clean`
-2. `service_worker` / `shared_worker` 注入：只有 `attachToTarget` + 顶层执行完再注入这一条路，先做可行性验证再动手
-3. `seed` 跨 IPC：`profiles.list()` 的返回类型去掉 seed，需要 seed 的路径显式调
-4. WebRTC 过滤下沉到 worker（依赖第 2 条）
-5. AC-14 在非 en-US profile 上复跑
-6. `describeAction` 三份收敛
+1. **读数必须能回答「谁引起的」** —— `out.attachedToTarget` 是**活数组**，手动 `Target.attachToTarget` 也会往里追加一条。B2 探针第一版差点把「我自己的调用回声」读成「`setAutoAttach` 覆盖了它」，据此去改一段**正确**的注释。修法：attach 前后各拍一张快照（`beforeManualAttach`），每条事件带到达时刻 `t`，每个检查点带 `mark`。
+2. **时序不能靠 `sleep` 猜** —— 固定 `sleep(2500)` 之后读到 `undefined`，把「还没到」写成了「没来」。改成 `waitFor()` 轮询到 8s，并记录**等了多久**（`sharedSessionWaitMs = -1` 表示超时）。猜短了就是把「晚到」变成「没来」。
+3. **一条长期为红的断言，要么能说出它为什么该红，要么降级成「未测量」** —— 上一轮定的口径，本轮落地成代码：任意 gate 判据未测量 → **exit 3**（此前只有 locale 前置条件会 exit 3）。
+4. **豁免类配置永远不写进判定表** —— 判定表必须继续逐格可核对。配置覆盖另起一层（`decideMaskGate(record, exempt)`），且**不能覆盖 `missing`**（那时连哪个环境都不知道，豁免无从归属）。
+
+沿用并再次验证的：**注释只能声明它真正保证的东西**。本轮改了三处文案，因为读数变了：
+
+- `windows.ts` 里 `shared_worker` 的注释：从「根本不会走到这里」改成「自动附着不覆盖它」，并明说**别拿 `attachedToTarget` 里出现过它当证据**（那是回声）。
+- 记账文案：`shared_worker` 记「已注入 + 这是竞态 + 实测 3/3 赶上」，**不写**「顶层已覆盖」也**不写**「顶层必漏」。
+- `session.ts` 威胁模型：删掉「Worker 里的新 `RTCPeerConnection`」。
+
+---
+
+## 8. 还剩什么（这些是**边界**，不是欠账）
+
+| 项 | 性质 | 为什么不算欠账 |
+|---|---|---|
+| `service_worker` 顶层脚本不可覆盖 | **结构性** | 暂停态下任何命令都不返回，resume 时顶层已执行完。这条路径上不存在「更努力一点就能覆盖」的余地。已写成断言与文案，不再尝试 |
+| `shared_worker` 顶层是竞态 | **无保证** | 实测 3/3 赶上，但它是竞态。所以顶层**只作读数不作判据**；判据是「延迟消息读到的值」 |
+| `Function.prototype.toString` 的 tell | **已知代价** | §3 的矩阵：三种实现都有 tell，选了「需要主动踩异常路径才能看到」的那条 |
+| AC-12 需要 `--nightly` | **门禁分工** | 两次启动，放在 `verify:anticheat:nightly` |
+| 环境级豁免开着而环境一直 degraded | **设计意图** | 豁免就是为了「降级状态下也要能跑」。收回有两条路：修好自动收回、手动关。审计每次都记 |
+
+**没有任何一条被标成「下轮再做」。**
+
+---
+
+## 9. 一句话总结
+
+- 三条 🟠 里，**两条修完了**（seed、service/shared worker），**一条被读数否掉了**（WebRTC 在 worker 里不存在，改成一条会自己变红的断言）。
+- 五条 🟡 全部处置：四条修复，一条（4.4）按计划做成**环境级配置**而不是失败弹窗里的按钮。
+- 本轮真正的收获不是那 8 条，而是**两个旧缺陷**：一个零读者的台账，和一个用开发模式跑单测的门禁段。**它们都在报告里看起来是绿的。**

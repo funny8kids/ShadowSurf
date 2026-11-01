@@ -5,6 +5,19 @@
 **范围**：交付报告 §5 的 3 条 🟠 + 5 条 🟡
 **本文性质**：可行性判断 + 方案 + 验收口径。**不含实现**。
 
+> **落地状态（2026-11-01 补记，`435b0cd`）**：本文 8 条**已全部处置**，读数见
+> `security-audit-risk-gate-2026-11-01.md`。其中两条的判断被实测推翻 / 改写：
+>
+> - **§1.2 WebRTC 下沉 worker** —— 前置实测 `typeof RTCPeerConnection` 在 dedicated
+>   与 shared worker 里**都是 `undefined`**（本仓库内核没在 worker 侧启用 WebRTC）。
+>   「下沉」无对象，改成断言 **AC-23**（Worker 里不得有 WebRTC 接口；读到定义值即 FAIL）。
+> - **§2.4 `#22 4.4`** —— 本文建议「不修」，实际按「若业务确需」那一档做了**环境级
+>   配置**（`Profile.allowUnmaskedL2`，默认 false，需手打环境名开启，`maskState=ok`
+>   自动收回，审计单列一栏）。理由见交付报告 §2.5：决策挪到冷静的时候做。
+>
+> §3.1 的「不要凭推理选，用读数选」得到了印证：矩阵证明三种实现**都有 tell**，
+> 所以 `Function.prototype.toString` 那条 skip 从「真实债务」改判为「已知代价」。
+
 ---
 
 ## 0. 一句话结论
