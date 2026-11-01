@@ -268,6 +268,7 @@ export class WindowManager {
     if (!profile) throw new Error(`环境不存在：${profileId}`)
 
     const windowId = `win_${shortId()}`
+    const icon = resolveIcon()
     const win = new BrowserWindow({
       width: 1280,
       height: 820,
@@ -276,6 +277,7 @@ export class WindowManager {
       frame: false,
       titleBarStyle: 'hidden',
       backgroundColor: '#F6F5F2',
+      ...(icon ? { icon } : {}),
       show: false,
       webPreferences: {
         preload: resolvePreload(),
@@ -1641,6 +1643,19 @@ function messageOf(err: unknown): string {
 function resolvePreload(): string | undefined {
   for (const name of ['index.js', 'index.mjs']) {
     const candidate = join(__dirname, `../preload/${name}`)
+    if (existsSync(candidate)) return candidate
+  }
+  return undefined
+}
+
+/**
+ * 窗口图标。构建产物在 out/main，图标源文件在仓库根的 build/（由 tools/gen-icons.mjs 生成）。
+ * 仓库目前没有打包配置，所以打包后的相对层级没被验证过 —— 这里按候选列表探，
+ * 探不到就返回 undefined 交给系统默认图标。不抛错：图标缺失不该拦住窗口创建。
+ */
+function resolveIcon(): string | undefined {
+  for (const rel of ['../../build/icon.png', '../../../build/icon.png']) {
+    const candidate = join(__dirname, rel)
     if (existsSync(candidate)) return candidate
   }
   return undefined
