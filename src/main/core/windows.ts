@@ -103,6 +103,17 @@ const WORKER_INJECTION_ENABLED = true
  */
 const IFRAME_INJECTION_ENABLED = true
 
+/**
+ * service_worker 注入的求值超时。
+ *
+ * 为什么必须短：这条路径本身就是一个竞态 —— 放行之后顶层立刻跑完，
+ * 能抢的只有「第一个事件处理器执行之前」那一小段。默认 15s 的超时在这里
+ * 没有意义：真挂住了，15s 后注入也已经太晚，白白把这条路径拖成 15s。
+ * 2s 是「肯定已经太晚」的量级，用它当上限，既不会误伤正常的几毫秒，
+ * 也不会让一次卡死拖住后面的 target。
+ */
+const SERVICE_WORKER_EVAL_TIMEOUT = 2_000
+
 export interface TabHandle {
   windowId: string
   tabId: string
@@ -240,6 +251,17 @@ export class WindowManager {
    * WeakMap 无法枚举。条目随 webContents 销毁清理（见 watchMaskSignal）。
    */
   private readonly maskStates = new Map<number, MaskStateRecord>()
+  /**
+   * 已经手动附着过的 shared_worker targetId。
+   *
+   * `Target.setAutoAttach` 不覆盖 shared_worker，只能从 `targetCreated` 里发现再
+   * `attachToTarget`。同一个 target 的 `targetCreated` 可能来不止一次，而注入脚本
+   * **不幂等**（`_maskOne` 会把已经包过的函数再包一层），重复注入会把函数身份
+   * 越包越歪。所以在这里挡一道。
+   *
+   * 只增不减：targetId 是 Chromium 侧的一次性标识，worker 销毁后不会复用。
+   */
+  private readonly swAttached = new Set<string>()
   private readonly opts: WindowManagerOptions
 
   constructor(opts: WindowManagerOptions) {
@@ -710,7 +732,7 @@ export class WindowManager {
   }
 
   /**
-   * 打开子 target 自动附着（Worker / OOPIF）。
+   * 打开子 target 自动附着（Worker / OOPIF），并额外发现 shared_worker。
    *
    * 为什么需要：`Page.addScriptToEvaluateOnNewDocument` 只作用于 frame，
    * Worker 里 `navigator.hardwareConcurrency` 仍是宿主值 —— 主世界报 12、Worker 报 32，
@@ -720,6 +742,15 @@ export class WindowManager {
    * 注入才能落在「页面脚本读值之前」。代价是每条路径都必须放行，见
    * `onChildTargetAttached` 的 finally —— 漏一条，页面侧 API 会永久悬着
    * （实测 `serviceWorker.register()` 在 SW target 被挂住时永不 resolve）。
+   *
+   * ── shared_worker 为什么还要单独发现一遍 ──
+   * `Target.setAutoAttach` **不覆盖 shared_worker**。读数见
+   * `artifacts/probe-shared-worker.json`：手动 `attachToTarget` 之前的
+   * `attachedToTarget` 里只有 `worker`；shared_worker 那条要等我们主动 attach
+   * 才会出现（是回声，不是投递）。所以这里补一条 `Target.setDiscoverTargets`，
+   * 从 `targetCreated` 里认出它，再手动 attach。
+   * 代价：多一次发现订阅；收益：shared_worker 从「完全不可达」变成「可事后注入」。
+   * 但**顶层仍然覆盖不了**（它没被暂停），这一点在注入时如实记账，不写成「已覆盖」。
    */
   private async attachChildTargets(
     bridge: CdpBridge,
@@ -730,24 +761,80 @@ export class WindowManager {
     bridge.on('Target.attachedToTarget', (params) => {
       void this.onChildTargetAttached(bridge, wc, profile, params)
     })
+    // shared_worker 只能靠发现 + 手动 attach，见上面的说明
+    bridge.on('Target.targetCreated', (params) => {
+      void this.onTargetCreated(bridge, wc, profile, params)
+    })
     await bridge.setAutoAttach({ autoAttach: true, waitForDebuggerOnStart: true, flatten: true })
+    try {
+      await bridge.send('Target.setDiscoverTargets', { discover: true })
+    } catch (err) {
+      // 发现订阅开不起来只影响 shared_worker 这一条路径，不能因此让页面起不来。
+      // 但必须说出来 —— 否则「shared_worker 已支持」就成了一句没有前提的话。
+      this.reportInjectionIssue(
+        wc,
+        profile,
+        'shared_worker',
+        '',
+        `Target.setDiscoverTargets 失败，shared_worker 将完全不被覆盖：${messageOf(err)}`
+      )
+    }
+  }
+
+  /**
+   * 发现了一个 target。目前只有 shared_worker 需要在这里处理。
+   *
+   * 去重靠 `swAttached`：`targetCreated` 对同一个 target 可能来不止一次
+   * （发现订阅重开、页面复用同一个 worker 脚本），重复 `attachToTarget` 会拿到
+   * 同一 session，但会重复注入一遍 —— 注入脚本不是幂等的（`_maskOne` 会把自己
+   * 再包一层），所以必须挡在这里。
+   */
+  private async onTargetCreated(
+    bridge: CdpBridge,
+    wc: Electron.WebContents,
+    profile: StoredProfile,
+    params: CdpParams
+  ): Promise<void> {
+    const info = (params['targetInfo'] ?? {}) as { type?: unknown; targetId?: unknown }
+    if (info.type !== 'shared_worker') return
+    const targetId = typeof info.targetId === 'string' ? info.targetId : ''
+    if (!targetId) return
+    if (this.swAttached.has(targetId)) return
+    this.swAttached.add(targetId)
+    try {
+      // flatten:true 才能拿到可直接下命令的 session；非 flatten 要再走
+      // Target.sendMessageToTarget，多一层且与本文件其余部分不一致。
+      await bridge.send('Target.attachToTarget', { targetId, flatten: true })
+    } catch (err) {
+      this.reportInjectionIssue(
+        wc,
+        profile,
+        'shared_worker',
+        '',
+        `shared_worker 附着失败（该 worker 读到的是宿主值）：${messageOf(err)}`
+      )
+    }
   }
 
   /**
    * 一个子 target 附着上来了。按 `targetInfo.type` 分流。
    *
-   * 分流依据全部来自实测（Electron 45.2.1，2026-10-31）。worker 与 iframe 两条分支的
-   * **结果**由 AC-14 / AC-21 在 `npm run verify:anticheat` 里守住；但域可用性、暂停期
-   * 超时这类**协议层行为没有自动门禁**，改这一层要重新手工实测：
+   * 分流依据全部来自实测（Electron 45.2.1）。worker / iframe 两条分支的**结果**
+   * 由 AC-14 / AC-21 在 `npm run verify:anticheat` 里守住；shared_worker 与
+   * service_worker 的**覆盖边界**由 `npm run verify:shared-worker` 守住。
+   * 域可用性、暂停期超时这类**协议层行为仍然没有自动门禁**，改这一层要重新手工实测：
    *   - worker        → 有 Runtime 域、**没有 Page 域** → Runtime.evaluate
    *   - iframe(OOPIF) → 有 Page 域；但 target 刚建时 Runtime.evaluate 报
    *                     "Cannot find default execution context"（文档还没建）
    *                     → Page.addScriptToEvaluateOnNewDocument
    *   - page          → 已由页面级 addScript 覆盖，重注会让噪声叠加，直接跳过
-   *   - service_worker→ 暂停期间**任何命令都不返回**（实测连续 3 次 6s 超时），
-   *                     resume 之后才能注入，而那时顶层与 install 已经跑完。
-   *                     顶层不可覆盖 = 没有意义，故记为未覆盖并立刻放行，
-   *                     不放行会挂住 register() 15 秒。
+   *   - service_worker→ 暂停期间**任何命令都不返回**（实测连续 3 次 6s 超时）。
+   *                     所以只能「先放行、再抢在第一个事件之前注入」：
+   *                     顶层覆盖不了（放行时顶层已经跑完），
+   *                     install/activate/fetch/message 事件处理器有机会覆盖 —— 这是**竞态**，
+   *                     不是保证，所以每次都要把实际耗时记下来，不写成「已覆盖」。
+   *   - shared_worker → `Target.setAutoAttach` 不覆盖它，靠 `onTargetCreated` 手动
+   *                     attach 后走到这里；它**没被暂停**，因此同样是事后注入。
    */
   private async onChildTargetAttached(
     bridge: CdpBridge,
@@ -762,6 +849,33 @@ export class WindowManager {
     // 第二个参数代表「谁发的」，在这里恰好是根 session 而不是子 target。
     const sessionId = typeof params['sessionId'] === 'string' ? params['sessionId'] : ''
     if (!sessionId) return
+
+    /* 放行（`Runtime.runIfWaitingForDebugger`）只在**真的被挂住**时才需要。
+     *
+     * `waitingForDebugger` 是 CDP 给的权威字段，不用它会踩两个坑：
+     *   1. 对没暂停的 target 发这条命令，Electron 会回错误，于是记下一条
+     *      「放行失败（该 target 会一直挂住）」—— 一条纯噪声的假警报。
+     *      shared_worker 走手动 attach 时正是这种状态（实测 waitingForDebugger=false）。
+     *   2. service_worker 那条路要**自己先放行**再注入，不能等 finally，
+     *      所以需要一个「已经放过」的标记，避免重复发。
+     * 两个坑都靠这一个 `released` 标记 + `paused` 判断收口。 */
+    const paused = params['waitingForDebugger'] === true
+    let released = false
+    const release = async (): Promise<void> => {
+      if (released || !paused) return
+      released = true
+      try {
+        await bridge.send('Runtime.runIfWaitingForDebugger', {}, sessionId)
+      } catch (err) {
+        this.reportInjectionIssue(
+          wc,
+          profile,
+          type,
+          sessionId,
+          `放行失败（该 target 会一直挂住）：${messageOf(err)}`
+        )
+      }
+    }
 
     try {
       if (type === 'page') {
@@ -796,72 +910,175 @@ export class WindowManager {
         await this.injectIframeTarget(bridge, profile, sessionId)
         return
       }
-      // service_worker / shared_worker / 其他：明确记为未覆盖，不假装支持。
-      // shared_worker 更进一步：它根本不会走到这里 —— `Target.setAutoAttach` 不覆盖它，
-      // 要额外走 `Target.attachToTarget` 才拿得到 session，本项目暂未实现。
-      // 读数：`artifacts/probe-shared-worker.json`（2026-11-01，Electron 45.2.1）。
-      //   - 手动 attach **之前**的 attachedToTarget 里只有 worker；shared_worker 那条
-      //     在 attachToTarget 发出后 1ms 才出现 —— 它是手动 attach 的回声，不是自动投递。
-      //     所以**别拿 attachedToTarget 里出现过 shared_worker 当「已被覆盖」的证据**：
-      //     那个数组是活的，谁引起的得看时刻。
-      //   - 手动 attach 拿到的 session 是**可用**的（Runtime.evaluate 正常回值），
-      //     也就是说将来做 shared_worker 只能做「事后注入」：顶层与 onconnect 已经跑完，
-      //     补不回「首次读 navigator」那一刻。要做就得按这个前提设计，不能假装能拦住顶层。
+      if (type === 'service_worker') {
+        // 顺序不能反：暂停态下 evaluate 不返回（实测 3 次 6s 超时），
+        // 必须先放行。放行之后顶层立刻跑完 —— 这是**已知且不可挽回**的损失，
+        // 能抢的只有「第一个事件处理器执行之前」这一小段。
+        const t0 = Date.now()
+        await release()
+        await this.injectServiceWorkerTarget(bridge, wc, profile, sessionId, Date.now() - t0)
+        return
+      }
+      if (type === 'shared_worker') {
+        // 走到这里说明 `onTargetCreated` 手动 attach 成功了（echo）。
+        // 它没被暂停，所以不需要 release —— 也就是只能事后注入。
+        await this.injectSharedWorkerTarget(bridge, wc, profile, sessionId)
+        return
+      }
       this.reportInjectionIssue(wc, profile, type, sessionId, `target 类型 ${type} 未覆盖，该环境仍是宿主值`)
     } catch (err) {
       // 注入失败：页面侧不跟着降级（否则连主世界都伪装不了），
       // 但事实必须带出去，否则就是「Worker 静默未伪装却报成功」
       this.reportInjectionIssue(wc, profile, type, sessionId, `注入失败：${messageOf(err)}`)
     } finally {
-      // 无论成功、失败还是提前 return，都必须放行。
+      // 无论成功、失败还是提前 return，都要放行 —— 否则页面侧 API 会永久悬着。
       // 用 finally 而不是 catch 之后补发：`return` 走的是 finally，不是 catch。
-      try {
-        await bridge.send('Runtime.runIfWaitingForDebugger', {}, sessionId)
-      } catch (err) {
-        this.reportInjectionIssue(
-          wc,
-          profile,
-          type,
-          sessionId,
-          `放行失败（该 target 会一直挂住）：${messageOf(err)}`
-        )
-      }
+      await release()
     }
   }
 
-  /** Worker：只能 Runtime.evaluate，且必须显式检查 exceptionDetails */
+  /**
+   * Worker：只能 Runtime.evaluate，且必须显式检查 exceptionDetails。
+   *
+   * 三种 worker（dedicated / shared / service）共用这段注入+自检，差别只在
+   * **时机**和**能覆盖到哪一层**。所以这里只做「注进去 + 回读证明它真的生效」，
+   * 时机与覆盖边界的记账交给各自的调用方。
+   */
   private async injectWorkerTarget(
     bridge: CdpBridge,
     profile: StoredProfile,
-    sessionId: string
+    sessionId: string,
+    timeoutMs?: number
   ): Promise<void> {
+    await this.applyWorkerScript(bridge, profile, sessionId, timeoutMs)
+  }
+
+  /**
+   * 注入 worker 脚本并回读一个真实值。失败抛错，由调用方决定记成什么。
+   *
+   * 为什么要回读：注入脚本自己可能整段被 try/catch 吞掉（现有 page 版就是这样），
+   * 所以不能以「evaluate 没报错」为准。而「没报错」和「没跑」在外部完全同形。
+   */
+  private async applyWorkerScript(
+    bridge: CdpBridge,
+    profile: StoredProfile,
+    sessionId: string,
+    timeoutMs?: number
+  ): Promise<number> {
     const source = buildInjectionScript(profile, 'worker')
-    const outcome = await bridge.evaluate(source, sessionId)
+    const outcome = await bridge.evaluate(source, sessionId, timeoutMs)
     if (!outcome.ok) {
       // 这一步是本次修复最容易假阳性的地方：Runtime.evaluate 在脚本抛错时
       // **不 reject**，而是 resolve 带 exceptionDetails。不显式检查就会把
       // 「脚本一行没跑」记成「注入成功」。
-      throw new Error(`worker 注入脚本抛错：${outcome.error ?? '未知'}`)
+      throw new Error(`注入脚本抛错：${outcome.error ?? '未知'}`)
     }
 
-    // 自检：注入脚本自己可能整段被 try/catch 吞掉（现有 page 版就是这样），
-    // 所以不能以「evaluate 没报错」为准，必须回读一个真实值。
-    const check = await bridge.evaluate('navigator.hardwareConcurrency', sessionId)
-    if (!check.ok) throw new Error(`worker 自检读值失败：${check.error ?? '未知'}`)
+    const check = await bridge.evaluate('navigator.hardwareConcurrency', sessionId, timeoutMs)
+    if (!check.ok) throw new Error(`自检读值失败：${check.error ?? '未知'}`)
     // 类型必须先钉住。早先这里写 `Number(check.value)`，而 check.value 曾经是
     // CDP 的 RemoteObject 而不是数字 —— `Number({})` = NaN，于是自检**每次都失败**，
     // 注入成功也记成「注入失败」。现在 evaluate 已经拆包，但这里仍然先判类型：
     // 将来若 evaluate 的契约再变，这条会给出「回读值不是数字」这个明确原因，
     // 而不是一个看起来像「伪装没生效」的数值不符。
     if (typeof check.value !== 'number') {
-      throw new Error(
-        `worker 自检回读值不是数字（拿到 ${typeof check.value}）：evaluate 契约可能变了`
-      )
+      throw new Error(`自检回读值不是数字（拿到 ${typeof check.value}）：evaluate 契约可能变了`)
     }
     const expected = profile.fingerprint.hardware.cpuCores
     if (check.value !== expected) {
-      throw new Error(`worker 自检不通过：读到 ${String(check.value)}，期望 ${expected}`)
+      throw new Error(`自检不通过：读到 ${String(check.value)}，期望 ${expected}`)
     }
+    return check.value
+  }
+
+  /**
+   * service_worker：先放行、再抢在第一个事件之前注入。
+   *
+   * 两条保证必须分开说，否则「已覆盖」会被读成全绿：
+   *   顶层脚本          → **不覆盖**。暂停态下任何命令都不返回，resume 的那一刻
+   *                       顶层就执行完了。实测顶层读到宿主值（3/3）。
+   *   install/activate/
+   *   fetch/message     → **覆盖**。事件是放行之后才投递的，注入只要赶在第一个事件
+   *                       之前就生效。实测注入在 resume 后 2–5ms 完成，
+   *                       install 时刻读到的是伪装值（3/3）。
+   *
+   * 第二条虽然是实测稳定的，但结构上仍是竞态（依赖注入往返比事件投递快），
+   * 所以这里把实际耗时写进台账 —— 它是这条路径唯一有鉴别力的读数。
+   */
+  private async injectServiceWorkerTarget(
+    bridge: CdpBridge,
+    wc: Electron.WebContents,
+    profile: StoredProfile,
+    sessionId: string,
+    resumeMs: number
+  ): Promise<void> {
+    const t0 = Date.now()
+    let read: number
+    try {
+      read = await this.applyWorkerScript(bridge, profile, sessionId, SERVICE_WORKER_EVAL_TIMEOUT)
+    } catch (err) {
+      this.reportInjectionIssue(
+        wc,
+        profile,
+        'service_worker',
+        sessionId,
+        `service_worker 注入失败（该 worker 全程读到宿主值）：${messageOf(err)}；` +
+          `resume 用了 ${resumeMs}ms`
+      )
+      return
+    }
+    this.reportInjectionIssue(
+      wc,
+      profile,
+      'service_worker',
+      sessionId,
+      `service_worker 已注入（回读 ${read}，resume→注入完成 ${Date.now() - t0}ms）。` +
+        '**顶层脚本覆盖不了** —— 暂停态下任何命令都不返回，resume 的那一刻顶层就执行完了' +
+        '（实测顶层读到宿主值）。install/activate/fetch/message 处理器内为伪装值：' +
+        '实测注入在 resume 后 2–5ms 完成，稳定抢在 install 之前'
+    )
+  }
+
+  /**
+   * shared_worker：没被暂停，靠「发现 → attach → 注入」抢在脚本执行之前。
+   *
+   * 它不在 `waitForDebuggerOnStart` 的覆盖范围内（`Target.setAutoAttach` 根本不覆盖
+   * shared_worker，见 `onTargetCreated`），所以拿到 session 时**理论上**脚本可能已经
+   * 跑完。但实测（3/3）注入仍然赶在顶层脚本之前 —— 因为 target 在脚本 fetch 之前
+   * 就建出来了，attach + 注入的往返比一次网络取脚本快。
+   *
+   * 「理论上可能跑完」和「实测每次都赶上」是两件事，所以这里既不写「顶层已覆盖」
+   * （那是把竞态当保证），也不写「顶层必漏」（那是把没测过的话当事实）。
+   * 台账里写的是：已注入 + 这是竞态 + 实测结果。
+   */
+  private async injectSharedWorkerTarget(
+    bridge: CdpBridge,
+    wc: Electron.WebContents,
+    profile: StoredProfile,
+    sessionId: string
+  ): Promise<void> {
+    let read: number
+    try {
+      read = await this.applyWorkerScript(bridge, profile, sessionId)
+    } catch (err) {
+      this.reportInjectionIssue(
+        wc,
+        profile,
+        'shared_worker',
+        sessionId,
+        `shared_worker 注入失败（该 worker 全程读到宿主值）：${messageOf(err)}`
+      )
+      return
+    }
+    this.reportInjectionIssue(
+      wc,
+      profile,
+      'shared_worker',
+      sessionId,
+      `shared_worker 已注入（回读 ${read}）。它**没被暂停**（setAutoAttach 不覆盖它，靠 targetCreated + ` +
+        'attachToTarget 才拿到 session），所以「注入赶不赶得上顶层脚本」取决于 attach 与脚本 fetch 的时序 —— ' +
+        '实测 3/3 赶上了（顶层读到的也是伪装值），但这是竞态，不是保证：脚本一旦先跑完，顶层那一次读就是宿主值'
+    )
   }
 
   /** OOPIF：有 Page 域，用 addScriptToEvaluateOnNewDocument；此时还没有执行上下文 */

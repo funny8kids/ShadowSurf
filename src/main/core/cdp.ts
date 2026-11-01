@@ -163,13 +163,17 @@ export class CdpBridge {
    * 直接 `await send('Runtime.evaluate', …)` 然后当成成功，会把「注入脚本一行没跑」
    * 记成「注入成功」——这正是本仓库反复出现的假阳性类型。这里统一转成 ok=false。
    */
-  async evaluate(expression: string, sessionId?: string): Promise<EvalOutcome> {
+  async evaluate(expression: string, sessionId?: string, timeoutMs?: number): Promise<EvalOutcome> {
     let raw: { result?: unknown; exceptionDetails?: { text?: string; exception?: { description?: string } } }
     try {
       raw = await this.send(
         'Runtime.evaluate',
         { expression, returnByValue: true, awaitPromise: true },
-        sessionId
+        sessionId,
+        // 不传就沿用 send 的默认值。service_worker 那条路要短超时：
+        // 它的目标可能刚 resume、上下文还没建，命令会挂住；按 15s 等会让
+        // 整个事件期注入的竞态彻底输掉（本来就是要赶在 install 之前）。
+        timeoutMs ?? DEFAULT_TIMEOUT
       )
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
