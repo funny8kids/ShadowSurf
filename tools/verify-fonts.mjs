@@ -57,6 +57,24 @@ const r = await app.evaluate(async ({ BrowserWindow }) => {
       var w = ctx.measureText('mmmmmmmmmmlli').width;
       return Math.abs(w - base) > 0.5;
     };
+    // 第三条通道：DOM 布局宽度。它走排版，**不经过 measureText** ——
+    // 所以 measureText 包得再干净，这条路照样能量出宿主字体。
+    var layout = function (fam) {
+      var span = document.createElement('span');
+      span.style.position = 'absolute';
+      span.style.left = '-9999px';
+      span.style.top = '0';
+      span.style.fontSize = '72px';
+      span.style.whiteSpace = 'nowrap';
+      span.style.fontFamily = REF;
+      span.textContent = 'mmmmmmmmmmlli';
+      document.body.appendChild(span);
+      var base = span.offsetWidth;
+      span.style.fontFamily = '"' + fam + '", ' + REF;
+      var w = span.offsetWidth;
+      document.body.removeChild(span);
+      return Math.abs(w - base) > 0.5;
+    };
     var c2d = document.createElement('canvas').getContext('2d');
     var off = (typeof OffscreenCanvas === 'function') ? new OffscreenCanvas(1, 1).getContext('2d') : null;
     var out = { hasOffscreenCtx: !!off, rows: [] };
@@ -64,7 +82,8 @@ const r = await app.evaluate(async ({ BrowserWindow }) => {
       out.rows.push({
         font: FONTS[i],
         canvas2d: measure(c2d, FONTS[i]),
-        offscreen: off ? measure(off, FONTS[i]) : null
+        offscreen: off ? measure(off, FONTS[i]) : null,
+        layout: layout(FONTS[i])
       });
     }
     out.diff = out.rows.filter(function (r) { return r.offscreen !== null && r.canvas2d !== r.offscreen });
@@ -73,9 +92,9 @@ const r = await app.evaluate(async ({ BrowserWindow }) => {
   try { return await wc.executeJavaScript(script) } catch (e) { return { error: String((e && e.message) || e) } }
 })
 
-console.log('\n字体                  Canvas2D    OffscreenCanvas')
+console.log('\n字体                  Canvas2D    OffscreenCanvas  DOM 布局')
 for (const row of (r.rows || [])) {
-  console.log('  ' + String(row.font).padEnd(20) + String(row.canvas2d).padEnd(12) + String(row.offscreen))
+  console.log('  ' + String(row.font).padEnd(20) + String(row.canvas2d).padEnd(12) + String(row.offscreen).padEnd(14) + String(row.layout))
 }
 console.log('\n两条路答案不同的字体：' + JSON.stringify((r.diff || []).map((x) => x.font)))
 if (r.error) console.log('错误：' + r.error)
@@ -126,6 +145,21 @@ if (!rows.length) {
   bad += 1
   console.log('  不成立 没读到任何字体读数（未测量，不是通过）')
 }
+
+/* ── 第三条通道：DOM 布局，**不判**，只写读数 ──
+ *
+ * 它走排版引擎，不经过 `measureText` —— 上面两条包得再干净，这条路照样能量出宿主字体
+ * （实测四个 Windows 字体在 c2d/offscreen 都是 false，只有 layout 是 true）。
+ *
+ * 为什么不升成门禁：修它要动**引擎级字体配置**（按环境换 fallback 字体表），
+ * Electron 没有按 partition 暴露这个能力。一条注定红的断言只会变成背景噪音 ——
+ * 和本轮 §6 第 10 类同一个道理。所以这里是读数，且必须每次都打出来：
+ * 「我们只挡住了两条通道」这句话，不能只写在注释里。 */
+const layoutLeaks = rows.filter((x) => HOST_ONLY.includes(x.font) && x.layout === true)
+console.log('\n[第三条通道] DOM 布局宽度（不判，读数）')
+console.log('  宿主字体在布局通道上仍读得到：' + (layoutLeaks.length ? JSON.stringify(layoutLeaks.map((x) => x.font)) : '无'))
+console.log('  → 这条要修得动引擎级字体 fallback 配置；包 offsetWidth 是更大的面，且自带 tell。')
+console.log('    所以 creepjs 的 `platform hints` 仍会报宿主字体 —— 这是已知边界，不是漏了 hook。')
 
 try { await app.close() } catch (e) {}
 console.log(bad > 0 ? `\n${gates.length - bad}/${gates.length} 成立，${bad} 条不成立` : `\n全部 ${gates.length} 条成立`)

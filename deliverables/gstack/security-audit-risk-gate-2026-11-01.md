@@ -34,7 +34,7 @@
 | 唯一 skip | 「注入脚本不得改写 `Function.prototype.toString`」—— **已知代价，不是欠账**，§3 有矩阵支撑 |
 | 读数归属 | `c8d81fb`，工作区干净，`build.dirty=false` |
 | 提交数 | 12（`2d19963` → `c8d81fb`） |
-| **外部视角** | creepjs：两个环境各 **11 条 lies**；字体通道泄宿主；UA-CH 泄漏**已修**（§10） |
+| **外部视角** | creepjs：命中 **8 项**（不是「11 条 lies」——那个数字是第一版工具数错了 class）；UA-CH 与两条字体通道**已修**，DOM 布局通道**未修**（§10） |
 
 ---
 
@@ -248,7 +248,7 @@ npm run verify:uach           7/7 成立（四种上下文 × platform/platformV
 npm run verify:anticheat      21/21 通过（AC-14 三轮 0 mismatch，crossOs=true，AC-23 measured=true）
 ```
 
-`verify:all` 现在是 11 段：`typecheck → build → test:gate → seed-at-rest → seed-ipc → mask-ui → mask-exemption → injection → worker → shared-worker → uach → anticheat`。
+`verify:all` 现在是 13 段：`typecheck → build → test:gate → seed-at-rest → seed-ipc → mask-ui → mask-exemption → injection → worker → shared-worker → fonts → uach → anticheat`。
 
 **唯一 skip**：`Function.prototype.toString`（§3，已知代价）。
 **AC-12**（两个环境必须互不相同）标 `skip`，需要 `--nightly`（两次启动）—— 它在 `verify:anticheat:nightly` 里跑，不在 `verify:all` 里。这是**明确的门禁分工**，不是漏测。
@@ -377,7 +377,7 @@ JS 层伪造 `userAgentData` 会在实例上留 own property，那是更便宜�
 其中 `uaData` 这一项之所以绿，靠的是 CDP 的会话级副作用，
 **不是** worker 注入生效 —— 它管不到 shared / sw。
 
-### 10.2 字体：两条测量通道给出两个答案 —— **未修**
+### 10.2 字体：两条测量通道给出两个答案 —— **已修**
 
 ```
 字体                  Canvas2D    OffscreenCanvas
@@ -385,41 +385,89 @@ JS 层伪造 `userAgentData` 会在实例上留 own property，那是更便宜�
   Segoe UI Emoji      false       true
   Cambria Math        false       true
   Ink Free            false       true
-  Helvetica Neue      false       false     ← 真 macOS 一定有，这里量不出来
 ```
 
-- **`OffscreenCanvasRenderingContext2D.prototype.measureText` 没有 hook** ——
-  只挂了 `CanvasRenderingContext2D` 的。用 OffscreenCanvas 量一次字体，
-  就拿到宿主的字体表。creepjs 的 `platform hints: Arial,"Microsoft YaHei UI"`
-  就是这么读出来的（两个环境都报同一串 = 读的是宿主）。
-- **字体白名单只做减法不做加法** —— macOS 环境里 `Helvetica Neue` 量不出来。
-  这是架构问题（不能凭空造字体文件），不是漏了个 hook。
+`CanvasRenderingContext2D.prototype.measureText` 包好了，但
+`new OffscreenCanvas(1,1).getContext("2d")` 拿到的是
+**`OffscreenCanvasRenderingContext2D`** —— 另一个原型，一行都不受上面影响。
+用 OffscreenCanvas 量一次就拿到宿主的字体表。creepjs 的
+`platform hints: Arial,"Microsoft YaHei UI"` 就是这么读出来的
+（两个环境报**同一串**，因为读的是宿主）。
 
-复跑：`npm run probe:fonts`。**没有升成 gate**：读数目前是红的，
-一条注定红的断言只会变成背景噪音。修好之后再升。
+**修法**：不复制白名单 / 回退 / 宽度偏移那套逻辑（复制就是第三份，三份迟早分叉）。
+只把 OffscreenCanvas 的 `font` 搬到已经包好的 2D 通道上量，判定交给那一份实现。
+一次都不新建 context —— worker 里建 OffscreenCanvas 曾在暂停态把渲染进程搞崩。
 
-### 10.3 两个环境的 `FP ID` 完全相同 —— 待查，不下结论
+修复后：两条通道答案一致（`两条路答案不同的字体：[]`），四个宿主字体全部读不到。
+
+**但是**：复跑 creepjs，`platform hints: Arial,"Microsoft YaHei UI"` **没变**。
+顺着查下去发现字体有**三条**测量通道，不是两条：
 
 ```
-Windows 11  FP ID: d448d98c02e5e50f52e91eeb6f972764af4e93919c59be55a4672c64b3ab2154
-macOS 15    FP ID: d448d98c02e5e50f52e91eeb6f972764af4e93919c59be55a4672c64b3ab2154
+字体                  Canvas2D    OffscreenCanvas   DOM 布局
+  Microsoft YaHei UI  false       false             **true**
+  Segoe UI Emoji      false       false             **true**
+  Cambria Math        false       false             **true**
+  Ink Free            false       false             **true**
 ```
 
-各分项 hash 全部不同（Timezone / Intl / WebGL / Canvas / Audio / Fonts 都不一样），
-唯独 FP ID 相同。**这个组合本身需要一个解释**，而现在有两个可能：
+第三条走**排版引擎**（`span.offsetWidth`），不经过 `measureText` ——
+上面两条包得再干净，这条路照样能量出宿主字体。
 
-1. creepjs 把 FP ID 存在 origin 的 localStorage 里，两个环境共用了同一个 storage
-   partition —— 那就是**环境隔离失效**，比指纹问题严重得多；
-2. FP ID 由某个两边都相同的子集算出 —— 那是个信息量问题，不是隔离问题。
+**这条不修，也不升成门禁**：修它要动引擎级字体 fallback 配置，Electron 没有按
+partition 暴露这个能力；包 `offsetWidth` 是更大的面，且自带 tell（hook 了布局属性
+比字体泄漏更容易被判定）。所以 `verify:fonts` 里它是**读数**，且每次都必须打出来 ——
+「我们只挡住了两条通道」这句话不能只写在注释里。
 
-在拿到「两个环境的 `localStorage` 是不是同一个」这个读数之前，不下结论。
+门禁 `npm run verify:fonts`（2 条，已进 `verify:all`）：① 两条可拦截的通道必须给同一个答案
+② 宿主专属字体在这两条上必须读不到。**刻意不判「macOS 字体必须读得到」** ——
+那需要真的字体文件，判了就是一条永远红的断言。
 
-### 10.4 因此，本报告的结论要分两层读
+### 10.3 两个环境的 `FP ID` 相同 —— **不是共用存储，是 creepjs 的粗粒度标识**
+
+```
+Windows 11  FP ID: d448d98c…b2154   Fuzzy: d64a7990…
+macOS 15    FP ID: d448d98c…b2154   Fuzzy: 41da5990…   ← Fuzzy 不同
+localStorage：A=[]  B=[]            ← 两边都空
+```
+
+三条读数合起来说明：**不是共用存储**（两边 localStorage 都是空的，且
+`session.ts` 按 `persist:ss_<profileId>` 一环境一个 partition），
+而是 creepjs 的 `FP ID` 本身粒度粗 —— 它不随指纹变化。真正有鉴别力的是 `Fuzzy`，
+两个环境在那里是不同的。
+
+所以这条从「环境隔离是否失效」降级为「creepjs 的一个字段不分环境」，
+**不构成隔离缺陷**。
+
+### 10.4 creepjs 到底命中了什么（`npm run audit:creepjs`）
+
+第一版工具数的是 `[class*="lie"]` 的元素，而 `lies hash` 是**每个分段自己的 class 名**，
+正好 11 段 —— **「11 条 lies」这个数字从头到尾是假的**：它数的是分段数，不是 lie 数。
+这类错误的形状：**选择器命中的是标签，不是事实。**
+
+改成「打开每个 details 面板，收集所有 `key: true`」之后，命中项是这 8 个：
+
+| key | 含义 | 判断 |
+|---|---|---|
+| `hasToStringProxy` | `Function.prototype.toString` 被改写过 | **真 tell**，正是 §3 那条「已知代价」—— 现在有外部读数证明它真的被检测到 |
+| `noWebShare` | `navigator.share` 不存在 | **真 tell**：Electron 没这个 API |
+| `noContentIndex` | `navigator.contentIndex` 不存在 | 同上 |
+| `noContactsManager` | `navigator.contacts` 不存在 | 同上 |
+| `noDownlinkMax` | `navigator.connection.downlinkMax` 不存在 | 同上 |
+| `webDriverIsOn` | `navigator.webdriver === true` | **未定位**：我们自己的四上下文探针在主世界读到 `false`、三个 worker 里没有这个属性（`[Exposed=Window]`，这是对的）。说明 creepjs 读的是我们没覆盖的某个 realm |
+| `prefersLightColor` | 浅色主题偏好 | 低权重，真实用户也大量如此 |
+| `antialias` | WebGL 上下文参数 | 低权重 |
+
+前五条是可动的：四条缺 API 属于「Electron 比 Chrome 少了几个接口」，
+可以在注入里补形状；`hasToStringProxy` 是 §3 的已知代价，现在它从「理论风险」
+变成了「被真实检测方命中」。
+
+### 10.5 因此，本报告的结论要分两层读
 
 | 层面 | 结论 | 依据 |
 |---|---|---|
-| **内部一致性** | 🟢 Go | 11 段门禁全绿，21 项 AC，四条上下文 × 两个时刻都有读数 |
-| **对外可判定性** | 🟡 **未达标** | creepjs 对两个环境各判 **11 条 lies**；字体通道泄宿主；§10.3 未解释 |
+| **内部一致性** | 🟢 Go | 13 段门禁全绿，21 项 AC，四条上下文 × 两个时刻都有读数 |
+| **对外可判定性** | 🟡 **有改善，仍未达标** | UA-CH 与两条字体通道已修；但字体第三条通道（DOM 布局）仍泄宿主，creepjs 另命中 5 条真 tell（4 个缺 API + toString） |
 
 自建探针结构性看不到「跨维度矛盾」—— 它只比「我采的那几项」。
 creepjs 比的是「这些值放在一起合不合理」。**这两件事只有后者决定能不能过检测。**

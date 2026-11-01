@@ -42,7 +42,8 @@
     "verify:uach": "node tools/verify-uach.mjs",
     "preverify:uach": "electron-vite build",
     "verify:fonts": "node tools/verify-fonts.mjs",
-    "preverify:fonts": "electron-vite build"
+    "preverify:fonts": "electron-vite build",
+    "audit:creepjs": "node tools/audit-creepjs.mjs --full"
   },
   "dependencies": {
     "react": "^19.3.1",
