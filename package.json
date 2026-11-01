@@ -33,7 +33,8 @@
     "preverify:seed-ipc": "electron-vite build",
     "verify:mask-ui": "node --experimental-strip-types tools/verify-mask-ui.mjs",
     "preverify:mask-ui": "electron-vite build",
-    "probe:tostring": "node tools/run-electron.mjs tools/probe-tostring.mjs"
+    "probe:tostring": "node tools/run-electron.mjs tools/probe-tostring.mjs",
+    "probe:shared-worker": "node tools/run-electron.mjs tools/probe-shared-worker.mjs"
   },
   "dependencies": {
     "react": "^19.3.1",

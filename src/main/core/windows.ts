@@ -797,9 +797,16 @@ export class WindowManager {
         return
       }
       // service_worker / shared_worker / 其他：明确记为未覆盖，不假装支持。
-      // shared_worker 更进一步：它根本不会走到这里 —— 实测 Target.setAutoAttach
-      // 不覆盖它（Target.getTargets 里 attached:false），需要额外走
-      // Target.attachToTarget 才能拿到 session，本项目暂未实现。
+      // shared_worker 更进一步：它根本不会走到这里 —— `Target.setAutoAttach` 不覆盖它，
+      // 要额外走 `Target.attachToTarget` 才拿得到 session，本项目暂未实现。
+      // 读数：`artifacts/probe-shared-worker.json`（2026-11-01，Electron 45.2.1）。
+      //   - 手动 attach **之前**的 attachedToTarget 里只有 worker；shared_worker 那条
+      //     在 attachToTarget 发出后 1ms 才出现 —— 它是手动 attach 的回声，不是自动投递。
+      //     所以**别拿 attachedToTarget 里出现过 shared_worker 当「已被覆盖」的证据**：
+      //     那个数组是活的，谁引起的得看时刻。
+      //   - 手动 attach 拿到的 session 是**可用**的（Runtime.evaluate 正常回值），
+      //     也就是说将来做 shared_worker 只能做「事后注入」：顶层与 onconnect 已经跑完，
+      //     补不回「首次读 navigator」那一刻。要做就得按这个前提设计，不能假装能拦住顶层。
       this.reportInjectionIssue(wc, profile, type, sessionId, `target 类型 ${type} 未覆盖，该环境仍是宿主值`)
     } catch (err) {
       // 注入失败：页面侧不跟着降级（否则连主世界都伪装不了），
