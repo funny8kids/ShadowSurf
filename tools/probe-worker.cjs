@@ -449,11 +449,12 @@ app.whenReady().then(async () => {
   //
   // 本探针**先 resume 再注入**（原因见文件头），所以它证明的是
   // 「worker 变体脚本在真实 DedicatedWorker 里装得上、读得对」，
-  // **不证明** `windows.ts` 那条链路能把它装上去 —— 而链路才是
-  // `WORKER_INJECTION_ENABLED = false` 的原因。
-  // 一行「全部成立」会被读成「worker 注入可用」，那是发合格证。
+  // **不证明** `windows.ts` 那条链路能把它装上去 —— 那条链路由
+  // `npm run verify:worker`（tools/verify-worker-inject.mjs）单独验：
+  // 它让 worker 自己建 OffscreenCanvas GL 上下文并读 37445/37446。
+  // 两件事必须分开说，一行「全部成立」会被读成「worker 注入可用」，那是发合格证。
   console.log(
-    `\nworker 脚本级 ${rows} 条全部成立（注入链路未验证，见 windows.ts 的 WORKER_INJECTION_ENABLED）`
+    `\nworker 脚本级 ${rows} 条全部成立（注入链路另见 npm run verify:worker）`
   )
   app.exit(0)
 })
