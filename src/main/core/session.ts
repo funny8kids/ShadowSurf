@@ -52,9 +52,14 @@ export async function applyProfileToSession(ses: Session, profile: SessionProfil
  * WebRTC 的 UDP **不走 HTTP 代理**，这是真实 IP 最主要的泄漏面。
  *
  * 只在页面 JS 里丢 srflx 候选是补丁级别的修法：ICE 收集本身仍在直连，
- * 任何绕过我们那层包装的路径（Worker、iframe 里的新 RTCPeerConnection、
+ * 任何绕过我们那层包装的路径（iframe 里的新 RTCPeerConnection、
  * 或者我们没覆盖到的 API）都能拿到真实公网地址。
  * 必须在 Chromium 侧把「非代理 UDP」整个关掉，这才是根上的修法。
+ *
+ * 早先这句里还列了「Worker」。那是错的：`RTCPeerConnection` / `RTCRtpSender` /
+ * `RTCRtpReceiver` 在 Worker 里都是 `undefined`（规范上是 `[Exposed=Window]`），
+ * 实测见 `artifacts/probe-shared-worker.json`。把不存在的泄漏面写进威胁模型，
+ * 会让真正的那几条（iframe、未覆盖 API）看起来比实际少。这条事实由 AC-23 守住。
  *
  * 没有代理时不动（`real` 是用户明确要真实 WebRTC 的选项）。
  */

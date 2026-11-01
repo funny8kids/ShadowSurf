@@ -446,6 +446,14 @@ export type FingerprintProfile = StoredProfile
  * 已被 `tests/structure.test.ts` 的「dev-only 诊断通道不得出现在构建产物里」挡下。
  * 现在改成抛错（`Runtime.evaluate` 会放进 `exceptionDetails`，页面删不掉），
  * 外加主进程 resume 后读实际值跟 profile 比对 —— 两条都不需要页面配合。
+ *
+ * 为什么这里**没有** WebRTC 那一段（别「补全」它）：
+ * `RTCPeerConnection` / `RTCRtpSender` / `RTCRtpReceiver` 在 Worker 里都是
+ * `undefined` —— 规范上是 `[Exposed=Window]`，实测见
+ * `artifacts/probe-shared-worker.json`。在一个本来没有这个接口的上下文里
+ * 凭空造一个出来，比不注入更容易被判定：属性**存在性**是比属性值更硬的指纹。
+ * 这条事实由 `verify:anticheat` 的 AC-23 守着 —— 哪天内核真的把它开进 Worker，
+ * AC-23 会红，那时才该在这里加候选过滤，而不是现在先写一段死代码。
  */
 function buildWorkerScript(fp: FingerprintConfig, seed: string): string {
   const cfg = injectionConfig(fp, seed)

@@ -23,9 +23,13 @@
  * ─────────────────────────────────────────────────────────────────────
  * 门禁 vs 探针
  * ─────────────────────────────────────────────────────────────────────
- * gate=true   失败 → 退出码 1，接进 PR 门禁（AC-01~10、AC-13~21）
+ * gate=true   失败 → 退出码 1，接进 PR 门禁（AC-01~10、AC-13~23）
  * gate=false  只记录读数，永远不判红（AC-11 Electron 探测面、AC-12 跨环境）
  * 基线没拿到就断死，只会让门禁一上来就红，然后就没人看了 —— 所以先采数。
+ *
+ * 未测量（unmeasured）→ 退出码 3。**任意一条** gate 判据没测到都算，
+ * 不只是 locale 前置条件。早先单条 AC 记 unmeasured 时退出码仍是 0，
+ * 表格写着「未测量：AC-xx」而 CI 是绿的 —— 那是「少测一项 = 全测了都过」的另一种写法。
  *
  * ─────────────────────────────────────────────────────────────────────
  * AC-14 / AC-21 是「别的 world」的两条，别再把它们降回 probe
@@ -538,6 +542,13 @@ async function pageProbe() {
         'o.memory=typeof navigator.deviceMemory==="number"?navigator.deviceMemory:null;' +
         'o.languages=navigator.languages?Array.prototype.slice.call(navigator.languages):null;' +
         'o.language=T(function(){return navigator.language});' +
+        // WebRTC 接口在 Worker 里**本来就不该存在**（规范上是 [Exposed=Window]）。
+        // 采这三项不是为了比伪装，是为了让 AC-23 能盯住「内核哪天把它开进 Worker」——
+        // 那一刻 worker 就成了新的候选泄漏面，而主世界的过滤够不着它。
+        // 用 typeof 而不是 `in` / 取值：接口不存在时取值会抛，typeof 直接给字符串。
+        'o.rtcPeer=typeof RTCPeerConnection;' +
+        'o.rtcSender=typeof RTCRtpSender;' +
+        'o.rtcReceiver=typeof RTCRtpReceiver;' +
         // Intl 六个构造器分开采：包装清单漏一个，只会露这一个
         'o.intlDTF=L(Intl.DateTimeFormat);' +
         'o.intlNF=L(Intl.NumberFormat);' +
@@ -3003,6 +3014,54 @@ function judge(fp, d, runs, ctx = {}) {
             : '')
   )
 }
+
+/* 23 —— Worker 里到底有没有 WebRTC
+ *
+ * B3 的原计划是「把 WebRTC 候选过滤下沉到 worker」。这个计划的前提是
+ * worker 里存在 `RTCPeerConnection`。实测（`artifacts/probe-shared-worker.json`，
+ * Electron 45.2.1 / Chromium 156）：dedicated 与 shared worker 里
+ * `RTCPeerConnection` / `RTCRtpSender` / `RTCRtpReceiver` **三个都是 undefined**，
+ * 页面自报的读数与 CDP 侧一致。规范上这三个接口是 `[Exposed=Window]`，
+ * worker 里本来就没有 —— 所以「下沉」没有对象可下沉。
+ *
+ * 但这句话不能只写在注释里。注释会过期，断言不会：
+ *   - 哪天内核把接口开进 worker（或者我们换了内核），这里立刻红，
+ *     红的含义很明确 —— 候选过滤必须跟着下沉，否则 worker 是一条新泄漏面，
+ *     而 AC-17 只覆盖主世界，它挡不住。
+ *   - 反过来，只要这条是绿的，就**不要**往 worker 注入里塞 WebRTC 代码：
+ *     在本来没有这个接口的上下文里造一个出来，比不注入更容易被判定。
+ *
+ * 三态：worker 探针没拿到读数 → unmeasured（不是通过，留在分母里）。
+ */
+{
+  const w = d.worker || {}
+  const F = ['rtcPeer', 'rtcSender', 'rtcReceiver']
+  const read = {}
+  for (const k of F) read[k] = w[k] === undefined ? null : w[k]
+  // 三项都必须是字符串才算测到。缺字段 / 超时 / 报错都归「没测到」，
+  // 不能因为 `undefined !== 'undefined'` 恰好不成立就记成通过 —— 那正是本仓库最常见的假绿。
+  const measured = w.error === undefined && w.timeout !== true && F.every((k) => typeof w[k] === 'string')
+  const defined = F.filter((k) => typeof w[k] === 'string' && w[k] !== 'undefined')
+  add(
+    'AC-23',
+    'Worker 里不得有 WebRTC 接口（有就必须把候选过滤下沉）',
+    'RTCPeerConnection / RTCRtpSender / RTCRtpReceiver 三个都读到 undefined',
+    { ...read, measured, error: w.error === undefined ? null : w.error },
+    measured ? defined.length === 0 : null,
+    !measured
+      ? 'Worker 探针没拿到读数（' +
+        (w.error !== undefined ? String(w.error) : w.timeout === true ? '超时' : '字段缺失') +
+        '），本条未测量 —— 不是通过'
+      : defined.length === 0
+        ? '三个接口在 Worker 里都不存在，与 [Exposed=Window] 一致；worker 注入里也不该出现 WebRTC 代码'
+        : defined.join(', ') +
+          ' 在 Worker 里存在了（读到 ' +
+          defined.map((k) => String(w[k])).join(', ') +
+          '）。WebRTC 规范里这些是 [Exposed=Window]，出现说明内核变了 —— ' +
+          '此时 buildWorkerScript 必须补上候选过滤，否则 worker 成为新的候选泄漏面；AC-17 只覆盖主世界，挡不住这条。',
+    { unmeasured: !measured, group: 'P0 子目标注入' }
+  )
+}
 }
 
 /* ────────────────────────────── 主流程 ────────────────────────────── */
@@ -3336,7 +3395,25 @@ try {
     )
   }
   exitCode =
-    failed.length > 0 ? 1 : judged.length === 0 || preconditionUnmet.length > 0 ? 3 : 0
+    failed.length > 0
+      ? 1
+      : judged.length === 0 || unmeasuredList.length > 0 || preconditionUnmet.length > 0
+        ? 3
+        : 0
+  /* 未测量必须影响退出码，不能只影响那一行文字。
+   *
+   * 早先只有「locale 前置条件」会触发 3，单条 AC 记 unmeasured 时退出码仍是 0 ——
+   * 表格里写着「未测量：AC-23」，CI 却是绿的。这正是本仓库反复踩的
+   * 「少测一项 = 全测了都过」的另一种写法：分母诚实地加了一，退出码没有。
+   * 现在只要有任意一条 gate 判据没测到，就按 3 收工。 */
+  if (unmeasuredList.length > 0 && failed.length === 0) {
+    console.error(
+      '\n读数已产出，但有 ' +
+        String(unmeasuredList.length) +
+        ' 条该判的判据没测到 —— 本次记「未测量」（exit 3），不是通过：'
+    )
+    for (const r of unmeasuredList) console.error('  · ' + r.id + ' ' + r.name)
+  }
   if (preconditionUnmet.length > 0 && exitCode === 3) {
     console.error('\n读数已产出，但前置条件不成立 —— 本次记「未测量」（exit 3），不是通过：')
     for (const p of preconditionUnmet) console.error('  · ' + p)
