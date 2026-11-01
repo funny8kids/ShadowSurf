@@ -565,8 +565,16 @@ test('迁移后 seed 完全不变（迁移只加信封，不碰内容）', () =>
       before.map((p) => p.id),
       '迁移改动了 id —— 那等于所有环境指向了不存在的历史'
     )
-    // 字段级也核一遍，避免「数组看着对但对象被重建成新对象」
-    assert.deepEqual(after, before)
+    // 字段级也核一遍，避免「数组看着对但对象被重建成新对象」。
+    //
+    // 唯一的例外是 `allowUnmaskedL2`：它是后加的字段，老盘文件里没有，
+    // 读盘入口统一补 `false`（见 `validateProfiles`）。**除了它，任何字段都不许变** ——
+    // 所以这里把它显式写进期望值，而不是把比较放宽成「只比 id 和 seed」。
+    // 放宽之后，下一次「迁移顺手改了某个字段」就没人拦得住了。
+    assert.deepEqual(
+      after,
+      before.map((p) => ({ ...p, allowUnmaskedL2: false }))
+    )
   } finally {
     box.cleanup()
   }

@@ -23,7 +23,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { judgeMask, MASK_DECISION_TABLE } from '../src/main/core/mask-gate.ts'
+import { decideMaskGate, judgeMask, MASK_DECISION_TABLE } from '../src/main/core/mask-gate.ts'
 import { MASK_TONE_LABEL, maskToneOf, pickWorstMaskRow } from '../src/shared/mask-ui.ts'
 import type { MaskSource, MaskState, MaskStateRecord } from '../src/shared/types.ts'
 
@@ -185,4 +185,72 @@ test('同一环境多窗口时取最坏的一条', () => {
   assert.equal(pickWorstMaskRow([warnRow, blockRow, okRow])?.state, 'rolled-back')
   assert.equal(pickWorstMaskRow([okRow])?.state, 'ok')
   assert.equal(pickWorstMaskRow([]), null, '空数组必须返回 null，不能编一条出来')
+})
+
+/* ────────────────────────── 环境级豁免（allowUnmaskedL2）────────────────────────── */
+
+/**
+ * 豁免是**独立一层**，不能改 `judgeMask`。
+ *
+ * 为什么必须分开：`judgeMask` 回答「此刻的伪装状态允许不允许」，它必须只看状态 ——
+ * 否则同一个函数对同一份记录会给出两种答案，判定表也就没法再逐格核对。
+ * 所以 `decideMaskGate(record, exempt)` 在它的结论上再盖一层，并且：
+ *   · 不豁免时，结论必须与 `judgeMask` **逐格相同**（这一条钉住「没加宽」）
+ *   · 豁免时，原本 allow 的格子 `exempted` 必须是 false（没拦就没有「被豁免」这回事）
+ *   · 豁免时，原本拒绝的格子变成 allow，且带上 profileId 与原始理由
+ */
+test('不豁免时 decideMaskGate 与 judgeMask 逐格相同', () => {
+  for (const row of MASK_DECISION_TABLE) {
+    const record =
+      row.input === 'missing'
+        ? null
+        : rec(
+            row.input,
+            row.input === 'degraded'
+              ? [{ attr: 'canvas', reason: '注入失败', source: row.source as MaskSource }]
+              : []
+          )
+    const a = judgeMask(record)
+    const b = decideMaskGate(record, false)
+    assert.equal(b.allow, a.allow, `${row.input} × ${row.source}：不豁免却改动了结论`)
+    if (!a.allow && !b.allow) {
+      assert.equal(b.kind, a.kind, `${row.input} × ${row.source}：kind 不一致`)
+      assert.equal(b.reason, a.reason, `${row.input} × ${row.source}：理由不一致`)
+    }
+  }
+})
+
+test('豁免只覆盖「测了但不完整」—— missing 永远豁免不了', () => {
+  // record 为 null = 查不到这个窗口的状态（窗口已销毁 / 这条路径没有发起窗口）。
+  // 那时连是哪个环境都不知道，豁免无从归属；若放行，被销毁的窗口和没有 sender 的
+  // 路径都会变成「默认放行」—— 而那正是最该拒绝的两种。
+  const v = decideMaskGate(null, true)
+  assert.equal(v.allow, false, 'missing 被豁免放行了 —— 这是最危险的一种放宽')
+  assert.equal(v.kind, 'missing')
+})
+
+test('豁免覆盖了状态失败，但结论里必须留得下「被豁免过」的痕迹', () => {
+  for (const state of ['unknown', 'rolled-back', 'degraded'] as const) {
+    const record = rec(
+      state,
+      state === 'degraded' ? [{ attr: 'canvas', reason: '注入失败', source: 'page' }] : []
+    )
+    const v = decideMaskGate(record, true)
+    assert.equal(v.allow, true, `${state} + 豁免 应该放行`)
+    if (v.allow) {
+      assert.equal(v.exempted, true, `${state}：放行了却没有标记 exempted —— 审计会以为它伪装好了`)
+      if (v.exempted) {
+        assert.equal(v.profileId, 'prf_test', 'exempted 必须带 profileId，否则审计写不清是哪个环境被豁免')
+        assert.ok(v.reason.length > 0, 'exempted 必须带原始拒绝理由，否则事后不知道豁免掉了什么')
+      }
+    }
+  }
+})
+
+test('伪装已经 ok 时，「豁免」是个空概念，不能标成 exempted', () => {
+  const v = decideMaskGate(rec('ok'), true)
+  assert.equal(v.allow, true)
+  if (v.allow) {
+    assert.equal(v.exempted, false, '状态本来就是 ok，却标成「被豁免」—— 会让人以为伪装没生效')
+  }
 })

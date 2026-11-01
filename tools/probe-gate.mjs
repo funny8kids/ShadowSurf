@@ -246,6 +246,87 @@ function buildCases(mods) {
       }
     },
     {
+      /* 环境级豁免（`Profile.allowUnmaskedL2`）：状态没测到时，豁免可以把这一道前提
+         去掉 —— 但**只去掉伪装那一道**。票据仍然要消费，所以这里能走到假 CDP。
+         这条用例存在的意义：证明「豁免」不是「绕过闸门」，只是换掉了其中一个前提。 */
+      name: 'L2 + 伪装未测量 + 环境级豁免 + 有效 ticket → 放行（走到执行）',
+      want: 'passed',
+      run: async () => {
+        actions.setMaskStateLookup(() => ({
+          webContentsId: 1,
+          profileId: 'prf_probe',
+          state: 'unknown',
+          failed: [],
+          at: Date.now()
+        }))
+        actions.setMaskExemptionLookup(() => true)
+        try {
+          return await run({ ticket: await mint(consent, payClick), origin })
+        } finally {
+          actions.setMaskExemptionLookup(() => false)
+          actions.setMaskStateLookup(() => ({
+            webContentsId: 1,
+            profileId: 'prf_probe',
+            state: 'ok',
+            failed: [],
+            at: Date.now()
+          }))
+        }
+      }
+    },
+    {
+      /* 豁免**不能**覆盖「查不到状态」。
+         窗口已销毁 / 这条路径没有发起窗口时，连是哪个环境都不知道，豁免无从归属。
+         若这一格放行，被销毁的窗口和没有 sender 的路径都会变成「默认放行」——
+         而那正是最该拒绝的两种。 */
+      name: 'L2 + 伪装状态查不到 + 环境级豁免 → 仍然拦下',
+      want: 'mask-blocked',
+      run: async () => {
+        actions.setMaskStateLookup(() => null)
+        actions.setMaskExemptionLookup(() => true)
+        try {
+          return await run({ ticket: await mint(consent, payClick), origin })
+        } finally {
+          actions.setMaskExemptionLookup(() => false)
+          actions.setMaskStateLookup(() => ({
+            webContentsId: 1,
+            profileId: 'prf_probe',
+            state: 'ok',
+            failed: [],
+            at: Date.now()
+          }))
+        }
+      }
+    },
+    {
+      /* 默认值必须是安全方向：没有注入豁免查询（或查不到环境）时，一律当未豁免。
+         这条钉住「忘了注入」不会变成「默认放行」。 */
+      name: 'L2 + 伪装未测量 + 未注入豁免查询 → 拦下（默认不豁免）',
+      want: 'mask-blocked',
+      run: async () => {
+        actions.setMaskStateLookup(() => ({
+          webContentsId: 1,
+          profileId: 'prf_probe',
+          state: 'unknown',
+          failed: [],
+          at: Date.now()
+        }))
+        actions.setMaskExemptionLookup(null)
+        try {
+          return await run({ ticket: await mint(consent, payClick), origin })
+        } finally {
+          actions.setMaskExemptionLookup(() => false)
+          actions.setMaskStateLookup(() => ({
+            webContentsId: 1,
+            profileId: 'prf_probe',
+            state: 'ok',
+            failed: [],
+            at: Date.now()
+          }))
+        }
+      }
+    },
+    {
       name: 'L2 + 无 ticket → 拦下',
       want: 'blocked',
       run: () => run({ origin })

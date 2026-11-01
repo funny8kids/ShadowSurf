@@ -783,6 +783,43 @@
   box-shadow: 0 0 0 3px var(--red-2);
 }
 
+/* 已豁免伪装闸门。
+   紫色而不是红/黄/绿：那三色已经分别表示「伪装好了 / 降级 / 被拦」，
+   豁免是**第四种**事实 —— 闸门被配置成不拦了。借用其中任何一种都会误导：
+   用绿会让人以为伪装好了，用红会让人以为动作被拦着。 */
+.mask-dot.exempt {
+  color: var(--violet);
+}
+
+.mask-dot.exempt i {
+  background: var(--violet);
+  box-shadow: 0 0 0 3px var(--violet-2);
+}
+
+/* 豁免确认行：输入框 + 确认按钮并排，输入框占满剩余宽度 */
+.exempt-confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.exempt-confirm input {
+  flex: 1;
+  min-width: 0;
+}
+
+.exempt-confirm button {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* 抽屉里的 `.val` 加 warn 用琥珀色：与状态点的 warn 同色系，
+   让人一眼把「这条不是正常值」和卡片上的点对应起来 */
+.field .val.warn {
+  color: var(--amber);
+}
+
 .env-more {
   margin-left: auto;
   color: var(--ink-4);

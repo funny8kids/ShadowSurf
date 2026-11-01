@@ -386,7 +386,11 @@ export class ProfileStore {
       note: '',
       createdAt: now,
       updatedAt: now,
-      lastUsedAt: null
+      lastUsedAt: null,
+      // 新建一律 false。这个开关的开启是一条**独立**路径（setExemption），
+      // 不走 create / update —— 否则一句 create({allowUnmaskedL2:true}) 就绕过了
+      // 「手打环境名确认」那道闸，而它正是这个开关唯一的人为约束。
+      allowUnmaskedL2: false
     }
 
     this.store.update((draft) => {
@@ -465,6 +469,65 @@ export class ProfileStore {
   }
 
   /**
+   * 开关「伪装闸门豁免」。**这是唯一能改这个字段的入口。**
+   *
+   * ── 为什么单独一条路径，不放进 `update()` 的字段表 ──
+   * `update()` 的入参是 `Partial<Profile>`，渲染层被 XSS 之后发过来的是裸 JSON。
+   * 把 `allowUnmaskedL2` 加进那张表，等于让一句
+   * `update(id, { allowUnmaskedL2: true })` 就能关掉闸门 —— 而「手打环境名」
+   * 正是这个开关唯一的人为约束。约束放在 UI 上不算约束，UI 是可以被绕过的。
+   *
+   * ── 为什么关闭不需要确认 ──
+   * 收紧永远是安全方向。要求确认只会让人不愿意关。
+   *
+   * ── 为什么用环境名而不是密码 / 二次弹窗 ──
+   * 目标不是防住有权限的人，是让这件事**不能顺手做**：打字要花几秒，
+   * 这几秒里人会想「我为什么在开这个」。弹窗点「确定」不需要想。
+   */
+  setExemption(id: string, enabled: boolean, confirmName: string): Profile {
+    const existing = this.getStored(id)
+    if (existing === null) throw new Error('环境不存在：' + id)
+
+    if (enabled) {
+      // 严格相等，不做大小写折叠、不忽略空格差异 —— 「差不多对」正是
+      // 这类确认要被设计成不能「差不多」的原因。
+      if (String(confirmName ?? '').trim() !== existing.name) {
+        throw new Error(
+          '开启伪装闸门豁免需要输入环境名「' + existing.name + '」确认，输入的不一致，已拒绝'
+        )
+      }
+    }
+
+    const next: StoredProfile = {
+      ...existing,
+      allowUnmaskedL2: enabled === true,
+      updatedAt: Date.now()
+    }
+    this.store.update((draft) => {
+      const i = draft.findIndex((p) => p.id === id)
+      if (i >= 0) draft[i] = next
+    })
+    return toPublicProfile(deepCopy(next))
+  }
+
+  /**
+   * 伪装修好时自动收回豁免。
+   *
+   * 返回是否真的收回了一条 —— 调用方要据此写审计，所以不能返回 void：
+   * 「收回了」和「本来就没开」在审计里是两件不同的事。
+   */
+  revokeExemption(id: string): boolean {
+    const existing = this.getStored(id)
+    if (existing === null || existing.allowUnmaskedL2 !== true) return false
+    const next: StoredProfile = { ...existing, allowUnmaskedL2: false, updatedAt: Date.now() }
+    this.store.update((draft) => {
+      const i = draft.findIndex((p) => p.id === id)
+      if (i >= 0) draft[i] = next
+    })
+    return true
+  }
+
+  /**
    * 用**指定的 seed 与指定的指纹**建一个环境。**只给迁移包导入用，不挂任何 IPC 通道。**
    *
    * ── 为什么不把 `seed` 加进 `CreateProfileInput` ──
@@ -521,7 +584,10 @@ export class ProfileStore {
       note: '',
       createdAt: now,
       updatedAt: now,
-      lastUsedAt: null
+      lastUsedAt: null,
+      // 导入也不继承豁免：迁移包里带着一个「已关掉闸门」的环境，
+      // 对收下它的人来说是看不见的风险 —— 他不知道自己在跑一个豁免环境。
+      allowUnmaskedL2: false
     }
 
     this.store.update((draft) => {
@@ -595,7 +661,11 @@ export class ProfileStore {
       createdAt: now,
       updatedAt: now,
       lastUsedAt: null,
-      tags: src.tags.slice()
+      tags: src.tags.slice(),
+      // `...src` 会把豁免一起复制过来，所以必须显式覆盖。
+      // 复制一个「已关掉闸门」的环境，等于让用户在没有对副本做过任何确认的情况下
+      // 多了一个豁免环境 —— 而那个开关的全部意义就是「每次开启都要人确认」。
+      allowUnmaskedL2: false
     }
 
     this.store.update((draft) => {

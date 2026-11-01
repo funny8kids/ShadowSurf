@@ -846,6 +846,47 @@ test('mask.list 必须有渲染层调用方', () => {
   assert.match(app, /onMaskState\(/, 'App.tsx 没订阅伪装状态推送，点会停在首屏那一刻')
 })
 
+/**
+ * 环境级豁免（`allowUnmaskedL2`）的三处接线，缺一处就有一条路是哑的：
+ *   1. 界面标注 —— 计划要求「界面必须显式标注该环境已豁免」，没有标注的豁免
+ *      等于悄悄关掉了一道安全闸；
+ *   2. 门禁读配置 —— 没接线的话这个字段只是躺在盘上，闸门照旧全拦（假红）
+ *      或者更糟：接了默认 true（假绿）；
+ *   3. 自动收回 —— 伪装修好之后还留着豁免，就是留了个没人再看的洞。
+ *
+ * 行为侧由 `verify:mask-exemption`（8 条）与 `tools/probe-gate.mjs`（3 条）守，
+ * 这里只钉「接线在不在」。
+ */
+test('环境级豁免的三处接线必须在位', () => {
+  const card = stripComments(read('src/renderer/components/ProfileCard.tsx'))
+  assert.match(
+    card,
+    /allowUnmaskedL2/,
+    'ProfileCard 没标「已豁免」—— 用户看不出这个环境关掉了一道闸'
+  )
+
+  const boot = stripComments(read('src/main/index.ts'))
+  assert.match(
+    boot,
+    /setMaskExemptionLookup\(/,
+    'index.ts 没注入豁免查询：门禁永远读不到配置，豁免开了也没用'
+  )
+  assert.match(
+    boot,
+    /revokeExemption\(/,
+    'index.ts 没接自动收回：伪装修好之后豁免会一直开着'
+  )
+
+  // 抽屉里的开关必须走独立 IPC，不能混进 `update()` 的保存流程 ——
+  // 混进去就会出现「界面开着、主进程还关着」的中间态，而它控制的是一道安全闸。
+  const drawer = stripComments(read('src/renderer/components/FingerprintDrawer.tsx'))
+  assert.match(
+    drawer,
+    /profiles\.setExemption\(/,
+    '抽屉没有走 profiles.setExemption：要么没接，要么接成了 update（可被裸 JSON 绕过）'
+  )
+})
+
 /* ────────────── 动作文案：全仓只允许一份 ────────────── */
 
 /**

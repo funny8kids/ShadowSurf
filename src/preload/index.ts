@@ -63,7 +63,11 @@ const api: ShadowSurfAPI = {
     stop: (id) => invoke(CH.profiles.stop, id),
     regenerate: (id) => invoke(CH.profiles.regenerate, id),
     // 只传 platform：种子的其他用途必须走 update({ fingerprint })，那是可审计路径
-    preview: (id, patch) => invoke(CH.profiles.preview, id, patch)
+    preview: (id, patch) => invoke(CH.profiles.preview, id, patch),
+    // 伪装闸门豁免：唯一入口。开启时 confirmName 必须与环境名完全相等，
+    // 校验在主进程做（`store/profiles.ts: setExemption`）—— 界面上的校验只是提示
+    setExemption: (id, enabled, confirmName) =>
+      invoke(CH.profiles.setExemption, id, enabled, confirmName)
   },
 
   window: {

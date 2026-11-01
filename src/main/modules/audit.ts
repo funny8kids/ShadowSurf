@@ -151,6 +151,20 @@ export function auditGate(stores: Stores, event: GateEvent): void {
         ? '本次执行已获授权（票据消费成功）'
         : '本次执行未获授权（无有效票据），动作已拦下'
   const from = `发起=${ORIGIN_LABEL[event.origin] ?? event.origin}`
+  /* 环境级豁免单独一列。
+   *
+   * 为什么不能并进 `authority`：那条写的是「票据有没有被消费」，它回答的是
+   * 「谁同意了这个动作」。豁免回答的是另一个问题 ——「伪装闸门对这个环境被关掉了」。
+   * 合成一句之后，事后读审计只能看到「已获授权」，看不出这次放行绕过了闸门；
+   * 而两者同时成立（用户点了允许 + 环境被豁免）恰恰是最需要被看见的组合。
+   *
+   * 措辞里带 `allowUnmaskedL2` 这个字段名，是为了让人能直接在源码/配置里
+   * 找到它在哪、怎么关 —— 审计文本的第一读者是三个月后来查这件事的人。 */
+  const exempt =
+    event.maskExemption === undefined
+      ? ''
+      : `；授权=环境级豁免（allowUnmaskedL2，环境 ${event.maskExemption.profileId}）` +
+        `，被豁免的前提：${event.maskExemption.reason}`
 
   appendAudit(
     stores,
@@ -159,7 +173,7 @@ export function auditGate(stores: Stores, event: GateEvent): void {
     // 记录还在写，但已经不再受保护了。
     GATE_ACTION_PREFIX + (event.level === 'L2' ? '不可逆' : '可回退'),
     target,
-    `${authority}；${from}；${event.reason}${matched ? `；命中「${matched}」` : ''}${marker}`
+    `${authority}；${from}${exempt}；${event.reason}${matched ? `；命中「${matched}」` : ''}${marker}`
   )
 }
 

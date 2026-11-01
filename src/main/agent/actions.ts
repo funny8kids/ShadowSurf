@@ -22,7 +22,7 @@ import type { CdpBridge } from '@main/core/cdp'
 import { runInAgentWorld } from '@main/agent/snapshot'
 import { assessRisk } from '@main/agent/risk'
 import { consumeTicket, digestAction } from '@main/agent/consent'
-import { judgeMask } from '@main/core/mask-gate'
+import { decideMaskGate } from '@main/core/mask-gate'
 
 /**
  * 伪装状态查询函数，由组合根注入（`index.ts`）。
@@ -39,6 +39,24 @@ let maskLookup: MaskStateLookup | null = null
 
 export function setMaskStateLookup(fn: MaskStateLookup | null): void {
   maskLookup = fn
+}
+
+/**
+ * 「这个环境是否被显式豁免了伪装闸门」—— 同样由组合根注入。
+ *
+ * 为什么单开一条查询而不是把标志塞进 `MaskStateRecord`：那个记录描述的是
+ * **此刻测到了什么**，豁免是**配置**。混在一起之后，一条状态记录就不再是
+ * 「测量结果」而变成「测量结果 + 配置」，而 `judgeMask` 的整张判定表
+ * 都建立在前者之上。
+ *
+ * 查不到（没有注入 / 环境不存在）一律当**未豁免**：默认值必须是安全方向。
+ */
+export type MaskExemptionLookup = (profileId: string) => boolean
+
+let exemptionLookup: MaskExemptionLookup | null = null
+
+export function setMaskExemptionLookup(fn: MaskExemptionLookup | null): void {
+  exemptionLookup = fn
 }
 
 /**
@@ -106,6 +124,14 @@ export interface GateEvent {
   /** 命中的不可逆语义词 */
   matched?: string
   reason: string
+  /**
+   * 本次 L2 是在「环境级豁免」下放行的（`Profile.allowUnmaskedL2`）。
+   *
+   * 单独一列，**不并进 `approvedBy`**：那两个是不同的事实，而且必须能被分别检索。
+   * 并进去的话，审计里只会看到「已获授权」，看不出这次放行其实绕过了伪装闸门 ——
+   * 而「闸门被绕过」正是事后追责时最该一眼看到的那件事。
+   */
+  maskExemption?: { profileId: string; reason: string }
 }
 
 /**
@@ -236,9 +262,20 @@ export async function executeAction(
   //
   // 查不到就拒绝（`judgeMask(null)`）：窗口已销毁 / 这条路径没有发起窗口 /
   // 组合根忘了注入 —— 三种情况都不是「伪装成功」，按拒绝处理。
+  //
+  // ── 环境级豁免（allowUnmaskedL2）插在哪一层 ──
+  // 插在 `judgeMask` **之后**，不改它：状态判定必须永远只看状态。
+  // 豁免只覆盖「测了但不完整」这几种，`missing` 覆盖不了（那时连是哪个环境都不知道，
+  // 豁免无从归属）—— 这条边界写在 `decideMaskGate` 里，并有单测逐条钉住。
+  //
+  // 豁免了也**不等于不用确认**：L2 仍然要用户在系统原生窗口上点允许、票仍然要消费。
+  // 它只去掉「伪装是否完整」这一个前提。审计里两者是两列，见 `auditGate`。
+  let gateExemption: { profileId: string; reason: string } | null = null
   if (verdict.level === 'L2') {
     const record = maskLookup === null ? null : maskLookup(approval.senderId)
-    const mask = judgeMask(record)
+    const exempt =
+      record !== null && exemptionLookup !== null ? exemptionLookup(record.profileId) === true : false
+    const mask = decideMaskGate(record, exempt)
     if (!mask.allow) {
       // 被拦下的动作要留痕，理由用伪装那条而不是风险那条 ——
       // 否则审计里会写「未获授权（无有效票据）」，而真实原因是「没伪装住」，
@@ -256,6 +293,12 @@ export async function executeAction(
         // 审计写不进去也不改变结论：这次就是不执行。
       }
       throw new MaskIncompleteError(mask.reason, mask.kind, mask.state)
+    }
+    if (mask.exempted) {
+      // 记下来，让后面那条「已获授权」的记录旁边多一列事实：
+      // 这个环境被豁免了伪装闸门，放行不是因为它伪装好了。
+      // 不带这一列的话，事后读审计只会看到「已获授权」，看不出闸门被绕过。
+      gateExemption = { profileId: mask.profileId, reason: mask.reason }
     }
   }
 
@@ -288,7 +331,8 @@ export async function executeAction(
       origin: approval.origin,
       action,
       matched: verdict.matched,
-      reason: verdict.reason
+      reason: verdict.reason,
+      maskExemption: gateExemption ?? undefined
     })
   } catch (err) {
     gateLogged = false

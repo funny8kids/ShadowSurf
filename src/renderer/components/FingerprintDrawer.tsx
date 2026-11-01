@@ -61,9 +61,26 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
   const [draft, setDraft] = useState<Profile | null>(null)
   const [busy, setBusy] = useState(false)
 
+  /* 伪装闸门豁免的三个状态。
+   *
+   * 为什么不走 `draft` + 保存按钮：这个开关是**立即生效**的配置，走保存流程会出现
+   * 「界面上开着、主进程里还关着」的中间态 —— 而它控制的是一道安全闸，
+   * 中间态必须不存在。所以单独一条 IPC（`profiles.setExemption`），
+   * 成功之后用主进程返回的 Profile 覆盖本地状态，不信自己的乐观更新。
+   *
+   * `pendingExempt` = 「用户想开，但还没打环境名」。开启必须有这一步：
+   * 点一下就能关掉闸门的开关，等于没有开关。 */
+  const [exemptOn, setExemptOn] = useState(false)
+  const [pendingExempt, setPendingExempt] = useState(false)
+  const [exemptName, setExemptName] = useState('')
+  const [exemptBusy, setExemptBusy] = useState(false)
+
   useEffect(() => {
     setDraft(profile ? cloneProfile(profile) : null)
     setTab('fingerprint')
+    setExemptOn(profile?.allowUnmaskedL2 === true)
+    setPendingExempt(false)
+    setExemptName('')
   }, [profile])
 
   const report = useMemo(() => {
@@ -114,6 +131,43 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
     } finally {
       setBusy(false)
     }
+  }
+
+  /**
+   * 开关伪装闸门豁免。开启必须带环境名，校验在主进程（这里只是把它送过去）。
+   *
+   * 失败时不做乐观更新：`exemptOn` 只在主进程返回之后才变。
+   * 这个开关控制的是「伪装不完整时能不能执行不可逆动作」，界面显示成开、
+   * 实际没开（或反过来）都属于「界面与门禁不一致」—— 那是这一轮反复修的那类缺陷。
+   */
+  async function applyExemption(enabled: boolean, confirmName: string): Promise<void> {
+    if (!draft) return
+    setExemptBusy(true)
+    try {
+      const next = await bridge().profiles.setExemption(draft.id, enabled, confirmName)
+      setExemptOn(next.allowUnmaskedL2 === true)
+      setPendingExempt(false)
+      setExemptName('')
+      onSaved(next)
+      toast.push(
+        next.allowUnmaskedL2 ? '已开启伪装闸门豁免，已记入审计' : '已关闭伪装闸门豁免',
+        next.allowUnmaskedL2 ? 'info' : 'ok'
+      )
+    } catch (err) {
+      toast.push(errorMessage(err), 'err')
+    } finally {
+      setExemptBusy(false)
+    }
+  }
+
+  function toggleExemption(on: boolean): void {
+    if (on) {
+      // 只进入「待确认」，不写任何东西。名字对上之前主进程那边始终是 false。
+      setPendingExempt(true)
+      setExemptName('')
+      return
+    }
+    void applyExemption(false, '')
   }
 
   async function regenerate(): Promise<void> {
@@ -851,6 +905,55 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                 <Field label="风险动作">
                   <div className="val">L2 动作一律弹窗确认，不可跳过</div>
                 </Field>
+              </div>
+
+              {/* 伪装闸门豁免 —— 环境级配置，**不放在失败弹窗里**。
+                  放弹窗里等于告诉用户「这里有个开关」，而伪装失败的正确处置是
+                  修环境（重开窗口 / 换 profile），不是「我知道有风险，继续」。 */}
+              <div className="fieldset">
+                <div className="fs-head">
+                  <h4>伪装闸门</h4>
+                </div>
+                <Field
+                  label="L2 豁免"
+                  action={
+                    <Toggle
+                      checked={exemptOn}
+                      label="伪装闸门豁免"
+                      disabled={exemptBusy}
+                      onChange={toggleExemption}
+                    />
+                  }
+                >
+                  <div className={`val${exemptOn ? ' warn' : ''}`}>
+                    {exemptOn ? '已豁免：伪装不完整时仍可执行 L2' : '关闭（默认）'}
+                  </div>
+                </Field>
+                {pendingExempt ? (
+                  <Field label="确认">
+                    <div className="exempt-confirm">
+                      <input
+                        className="val"
+                        value={exemptName}
+                        placeholder={`输入环境名「${draft.name}」以确认`}
+                        onChange={(e) => setExemptName(e.target.value)}
+                      />
+                      <Button
+                        variant="ghost"
+                        disabled={exemptBusy || exemptName.trim() !== draft.name}
+                        onClick={() => void applyExemption(true, exemptName)}
+                      >
+                        确认开启
+                      </Button>
+                    </div>
+                  </Field>
+                ) : null}
+                <div className="note">
+                  开启后，「伪装是否完整」不再拦这个环境的不可逆动作 ——
+                  但 L2 仍然要你在系统窗口点允许，两者在审计里是分开的两列。
+                  伪装修好（状态回到 ok）时会自动收回，这条收回也会记审计。
+                  {pendingExempt ? ' 需要输入环境名确认：这个开关不该能顺手打开。' : ''}
+                </div>
               </div>
 
               <div className="fieldset">

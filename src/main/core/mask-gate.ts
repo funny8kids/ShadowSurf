@@ -132,6 +132,45 @@ export const MASK_DECISION_TABLE: ReadonlyArray<{
 ]
 
 /**
+ * 判定表的结论 + 「环境级豁免」这一层。
+ *
+ * ── 为什么豁免不写进 `judgeMask` ──
+ * `judgeMask` 回答的是「此刻的伪装状态允许不允许」。把豁免塞进去，等于让同一个函数
+ * 对同一份记录给出两种答案，而调用方分不清自己拿到的是哪一种 —— 判定表也就没法
+ * 再逐格核对了。所以分两层：
+ *   `judgeMask`        纯状态判定，永远不因为配置而变
+ *   `decideMaskGate`   在它的结论上加一层「这个环境被显式豁免了」的覆盖
+ *
+ * ── 豁免**不能**覆盖 `missing` ──
+ * `missing` = 查不到这个窗口的状态（窗口已销毁 / 这条路径没有发起窗口）。
+ * 那时连「是哪个环境」都不知道，豁免无从归属。若放行，一个被销毁的窗口、
+ * 一条没有 sender 的路径都会变成「默认放行」—— 而它们恰恰是最该拒绝的两种。
+ * 所以豁免只在「测过了，但不完整」时有意义。
+ */
+export type MaskGateDecision =
+  | { allow: true; exempted: false }
+  | { allow: true; exempted: true; profileId: string; reason: string }
+  | {
+      allow: false
+      state: MaskStateRecord['state'] | 'missing'
+      kind: MaskBlockKind
+      reason: string
+    }
+
+export function decideMaskGate(
+  record: MaskStateRecord | null,
+  exempt: boolean
+): MaskGateDecision {
+  const verdict = judgeMask(record)
+  if (verdict.allow) return { allow: true, exempted: false }
+  // record 为 null 时豁免无效：没有 profileId 可归属，见上面的说明。
+  if (exempt && record !== null) {
+    return { allow: true, exempted: true, profileId: record.profileId, reason: verdict.reason }
+  }
+  return { allow: false, state: verdict.state, kind: verdict.kind, reason: verdict.reason }
+}
+
+/**
  * 把一条实时状态压成界面要的行。
  *
  * 存在的意义是**别让渲染层自己判**：`allow` / `kind` / `reason` 三个字段

@@ -13,7 +13,7 @@ import { masterKey } from '@main/core/fingerprint'
 import { WindowManager, guardShellNavigation } from '@main/core/windows'
 import { ProfileRuntime } from '@main/core/profiles'
 import { registerHandlers } from '@main/ipc/handlers'
-import { setMaskStateLookup } from '@main/agent/actions'
+import { setMaskStateLookup, setMaskExemptionLookup } from '@main/agent/actions'
 import { maskRowOf } from '@main/core/mask-gate'
 import { appendAudit } from '@main/modules/audit'
 
@@ -185,6 +185,34 @@ app.whenReady().then(() => {
       // 而那些恰恰是界面最该显示的 —— 拦在审计前面就等于「界面只在坏事时更新」。
       pushMaskRows()
 
+      /* ── 伪装修好了就自动收回豁免 ──
+       *
+       * `allowUnmaskedL2` 是给「修不好但必须跑」的流水线用的，不是常开开关。
+       * 一旦这个环境的伪装回到 `ok`，继续保留豁免就只是留了一个没人再看的安全洞。
+       *
+       * 收回要留痕：`revokeExemption` 返回「是否真的收回了一条」，
+       * 所以「收回了」和「本来就没开」不会混成同一件事。
+       * 这条审计进的是 GATE 前缀 —— 它记录的是「一个安全开关被关掉了」，
+       * 属于事后要能查到的那类。 */
+      if (record.state === 'ok') {
+        try {
+          if (stores.profiles.revokeExemption(record.profileId)) {
+            appendAudit(
+              stores,
+              GATE_ACTION_PREFIX + '伪装',
+              `环境 ${record.profileId}`,
+              `伪装已回到 ok，环境级豁免（allowUnmaskedL2）已自动收回；` +
+                `此后不可逆动作重新要求伪装完整`
+            )
+            for (const win of BrowserWindow.getAllWindows()) {
+              if (!win.isDestroyed()) win.webContents.send(CH.push.profileState, stores.profiles.list())
+            }
+          }
+        } catch (err) {
+          console.error('[boot] 收回伪装豁免失败 profile=' + record.profileId, err)
+        }
+      }
+
       // ── 审计只记「值得事后追责」的那两类 ──
       //
       // 闸门前缀的记录**永不淘汰**（`AUDIT_RETAIN`），所以这里每写一条就是永久占一行。
@@ -231,6 +259,16 @@ app.whenReady().then(() => {
   // 数组的「空」既可能是没窗口，也可能是编号传错，调用方分不出来，
   // 而分不出来就会把「缺失」当成「没问题」。
   setMaskStateLookup((webContentsId) => wm?.maskStateOf(webContentsId) ?? null)
+
+  /* 「这个环境是否被豁免了伪装闸门」。
+   *
+   * 读的是**盘上的配置**（`Profile.allowUnmaskedL2`），不是状态记录 —— 豁免是配置。
+   * 查不到环境一律当未豁免：`?.` 之后的 `=== true` 让 undefined / null 都落到 false，
+   * 默认值必须是安全方向。
+   *
+   * 为什么按 profileId 而不是 webContentsId：豁免是环境的属性，
+   * 同一个环境开两个窗口应该一致；按窗口查会把「配置」写成「每个窗口一份」。 */
+  setMaskExemptionLookup((profileId) => stores.profiles.get(profileId)?.allowUnmaskedL2 === true)
 
   consoleWindow = createConsoleWindow()
 

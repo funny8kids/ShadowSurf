@@ -352,7 +352,18 @@ export function validateProfiles(
       )
     }
 
-    out.push(item as unknown as StoredProfile)
+    /* 老盘文件里没有 `allowUnmaskedL2`（这一版才加的字段）。
+     *
+     * 在这里补 `false` 而不是把它声明成可选：可选布尔会让每个读点都要自己
+     * 回答「没这个字段算什么」，而漏问一次就是「默认豁免」—— 一个默认开着的
+     * 安全开关比没有这个开关更坏。归一化只做一次，做在**唯一的读盘入口**上。
+     *
+     * 只认字面 `true`：`'false'` / `1` / `{}` 一律当 false。落盘文件是可手改的，
+     * 而「真值判断」在这里必须比 TS 更严。 */
+    out.push({
+      ...(item as unknown as StoredProfile),
+      allowUnmaskedL2: item['allowUnmaskedL2'] === true
+    })
   }
 
   return out

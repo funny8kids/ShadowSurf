@@ -168,6 +168,33 @@ export function registerHandlers(ctx: HandlerContext): void {
     pushProfiles()
   })
 
+  /**
+   * 伪装闸门豁免的开关。**唯一**入口。
+   *
+   * 三个入参都过一遍运行时检查，不信渲染层：
+   *   `id`           必须是字符串，否则 `getStored` 拿到 undefined 只会报「环境不存在」，
+   *                  而真实原因是入参形状错了 —— 那种错误信息会把人带到错的方向。
+   *   `enabled`      必须是布尔。`'true'` / `1` 一律拒绝，不做「宽容解析」：
+   *                  这个开关的方向是「关掉一道安全闸」，宽容解析在这里没有正当理由。
+   *   `confirmName`  只在开启时校验，由 `setExemption` 比对环境名。
+   *
+   * 失败时抛错而不是返回 `{ok:false}`：这是一个**被拒绝的写操作**，
+   * 调用方必须看到它失败，而不是拿到一个「操作完成」的返回值再自己检查。
+   */
+  handle(CH.profiles.setExemption, (_e, id, enabled, confirmName) => {
+    if (typeof id !== 'string' || id === '') throw new Error('环境 id 必须是字符串')
+    if (typeof enabled !== 'boolean') {
+      throw new Error('enabled 必须是布尔值（收到 ' + typeof enabled + '），不做宽容解析')
+    }
+    const profile = stores.profiles.setExemption(
+      id,
+      enabled,
+      typeof confirmName === 'string' ? confirmName : ''
+    )
+    pushProfiles()
+    return profile
+  })
+
   handle(CH.profiles.clone, (_e, id, opts) => {
     const profile = stores.profiles.clone(id as string, opts as CloneOptions)
     pushProfiles()

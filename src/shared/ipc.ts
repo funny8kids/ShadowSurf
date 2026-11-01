@@ -48,7 +48,8 @@ export const CH = {
     launch: 'ss:profiles:launch',
     stop: 'ss:profiles:stop',
     regenerate: 'ss:profiles:regenerate',
-    preview: 'ss:profiles:preview'
+    preview: 'ss:profiles:preview',
+    setExemption: 'ss:profiles:set-exemption'
   },
   window: {
     open: 'ss:window:open',
@@ -195,6 +196,17 @@ export interface ProfilesAPI {
    * 不是同一个值：预览是模板默认值，保存后是扰动值。这条一起修了。
    */
   preview(id: string, patch: { platform?: OSKind }): Promise<FingerprintConfig>
+  /**
+   * 开关「伪装闸门豁免」（`Profile.allowUnmaskedL2`）。**唯一**能改这个字段的通道。
+   *
+   * 为什么不是 `update(id, { allowUnmaskedL2 })`：`update` 的入参是
+   * `Partial<Profile>`，被 XSS 的渲染层可以直接发裸 JSON。而这个开关的全部人为约束
+   * 就是「开启时必须手打环境名」—— 约束只放在界面上等于没有约束。
+   *
+   * `confirmName` 只在开启时需要，且必须与环境名**完全相等**（不做大小写折叠）。
+   * 关闭不需要确认：收紧永远是安全方向。
+   */
+  setExemption(id: string, enabled: boolean, confirmName: string): Promise<Profile>
 }
 
 export interface WindowAPI {

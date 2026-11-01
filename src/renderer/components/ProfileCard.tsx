@@ -123,6 +123,22 @@ export function ProfileCard({
             {maskShort !== '' ? <em>{maskShort}</em> : null}
           </span>
         ) : null}
+        {/*
+          已豁免伪装闸门。**与状态点分开画**：状态点说的是「此刻测到了什么」，
+          这个标记说的是「这个环境被配置成绕过闸门」。
+          合成一个点会让人以为「伪装好了」，而事实正好相反 —— 它是伪装没修好、
+          但用户显式放行的状态。计划里要求「界面必须显式标注该环境已豁免」。
+        */}
+        {profile.allowUnmaskedL2 ? (
+          <span
+            className="mask-dot exempt"
+            title="该环境已豁免伪装闸门（allowUnmaskedL2）：伪装不完整时仍可执行不可逆动作；伪装修好后自动收回"
+            aria-label="已豁免伪装闸门"
+          >
+            <i />
+            <em>已豁免</em>
+          </span>
+        ) : null}
         <button
           type="button"
           className="env-more"
