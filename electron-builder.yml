@@ -1,0 +1,66 @@
+# electron-builder 配置 —— Windows x64 安装包
+#
+# 只做 Windows x64：本机是 Windows，能真正跑起来验证；跨平台目标（mac dmg /
+# linux deb）在这台机器上打不出可信的产物，写了也只是「配置存在」而已。
+#
+# 关键取舍：
+#   · files 显式只收 out/ 与 build/icon.png。react / react-dom 已经被 vite
+#     打进 out/renderer 的 bundle 里，运行时不需要 node_modules —— 不排掉的话
+#     安装包会白胖 5MB 左右，而且那 5MB 是死代码。
+#   · asar 开着：源码不打散落盘。注意 __dirname 在 asar 内仍然指向
+#     app.asar/out/main，所以 out/renderer/index.html 与 out/preload/index.js
+#     的相对路径不变。
+#   · npmRebuild 关掉：本仓库没有原生模块，开着只会要求本机装 VS 构建工具。
+appId: com.violetnotes.shadowsurf
+productName: ShadowSurf
+copyright: Copyright © 2026 Violet Notes
+
+directories:
+  output: release
+  buildResources: build
+
+# 直接用 node_modules/electron/dist 这份**已解压**的发行版，不走
+# downloadElectronArtifactZip。
+#
+# 不是为了省时间，是因为默认路径在这台机器上会**静默卡死**：打完
+# 「packaging platform=win32 arch=x64」那一行之后就没有任何输出，release/ 一直是
+# 0 字节，等 3 分钟也不动 —— 它卡在下载/校验 Electron 发行包那一步，没有超时、
+# 没有报错。同一台机器 curl 拉 SHASUMS256.txt 是 3.5s 就回来的（走代理 5.3s，
+# 所以也不是代理的问题），所以卡的不是网络可达性。
+#
+# 走 electronDist 这条路时 electron-builder 会 copyDir 那份已解压目录，
+# 完全不碰网络。代价是 cleanupAfterUnpack 的 isFullCleanup 为 false，
+# resources/default_app.asar 与 version 文件不会被删掉 —— 两个都是无害残留
+# （有 app.asar 时 Electron 不会用 default_app.asar）。
+electronDist: node_modules/electron/dist
+
+files:
+  - out/**
+  - "!**/*.map"
+  - "!node_modules/**"
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  icon: build/icon.ico
+  # 未签名。Windows 会弹 SmartScreen「未知发布者」，这是没有代码签名证书时的
+  # 必然结果，不是打包出错。要消掉它得买 EV 证书，与打包流程无关。
+  artifactName: ${productName}-${version}-win-${arch}.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: ShadowSurf
+  artifactName: ${productName}-${version}-win-${arch}-setup.${ext}
+
+portable:
+  artifactName: ${productName}-${version}-win-${arch}-portable.${ext}
+
+npmRebuild: false
