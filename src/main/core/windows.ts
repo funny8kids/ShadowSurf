@@ -958,6 +958,41 @@ export class WindowManager {
     sessionId: string,
     timeoutMs?: number
   ): Promise<number> {
+    /* `navigator.userAgentData`（UA-CH）**不是** JS 注入的那一段 —— 它由 CDP 的
+     * `Network.setUserAgentOverride` 下发。而 CDP 的 override 是**按 target** 生效的：
+     * 页面那次调用只覆盖了页面本身与它派生的 dedicated worker，
+     * shared_worker / service_worker 是独立 target，拿不到。
+     *
+     * 实测（tools/probe-uach.mjs，宿主 Windows / 环境 macOS）：
+     *   主世界          platform=macOS  [15.0.0]
+     *   dedicated       platform=macOS  [15.0.0]   ← 会话级副作用，不是注入的功劳
+     *   shared_worker   platform=Windows[19.0.0]   ← 宿主真值
+     *   service_worker  platform=Windows[19.0.0]   ← 宿主真值
+     *
+     * 也就是说：B4 那句「已注入」对 cores/tz/Intl 成立，对 UA-CH **不成立**。
+     * 而「主世界说 macOS、worker 说 Windows」是**矛盾**，比「未伪装」更容易被判死 ——
+     * 检测方只要在 worker 里读一次 `navigator.userAgentData.platform` 就够了。
+     *
+     * 这里用引擎自己的机制补下发，**不新增 JS 面**：JS 层伪造 `userAgentData`
+     * 会在实例上留下 own property，那是另一个更便宜的 tell。
+     *
+     * 失败不抛：Network 域在 worker 上未必可用。补不上时读数会照旧矛盾，
+     * 由 `verify:shared-worker` 的 uach gate 报出来 —— 静默失败在这条路上不可接受，
+     * 所以那个 gate 读的是**值**，不是「命令有没有回 200」。
+     */
+    await bridge
+      .send(
+        'Network.setUserAgentOverride',
+        {
+          userAgent: profile.fingerprint.userAgent,
+          acceptLanguage: profile.fingerprint.languages.join(','),
+          platform: platformOf(profile.fingerprint.os),
+          userAgentMetadata: uaMetadata(profile.fingerprint)
+        },
+        sessionId
+      )
+      .catch(() => undefined)
+
     const source = buildInjectionScript(profile, 'worker')
     const outcome = await bridge.evaluate(source, sessionId, timeoutMs)
     if (!outcome.ok) {

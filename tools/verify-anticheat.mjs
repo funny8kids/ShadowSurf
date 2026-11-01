@@ -2154,6 +2154,22 @@ function judge(fp, d, runs, ctx = {}) {
     ['glRenderer', 'OffscreenCanvas RENDERER', 'C'],
     ['uaData', 'navigator.userAgentData', 'B']
   ]
+  /* `uaData` 这一项的**判别力有限，必须说清它管到哪**。
+   *
+   * 它比的是「主世界 vs dedicated worker」，而两者都能读到同一组 UA-CH 值，
+   * 靠的是 CDP `Network.setUserAgentOverride` 的**会话级副作用** —— 页面那次
+   * 调用会覆盖页面本身和它派生的 dedicated worker。也就是说这一项绿，
+   * 证明的是「CDP 那次调用生效了」，**不是**「worker 注入生效了」。
+   *
+   * 更要紧的是它**管不到** shared_worker / service_worker：那是独立 target，
+   * 会话级 override 到不了。实测（`npm run verify:uach`，宿主 Windows / 环境 macOS）：
+   *   主世界 platform=macOS   shared/sw platform=Windows（宿主真值）
+   * 也就是「主世界说 macOS、worker 说 Windows」这个矛盾，AC-14 一个字都看不见。
+   *
+   * 所以这两条分工固定下来，别再合并：
+   *   AC-14（本文件）       → 主世界与 dedicated worker 一致
+   *   verify:uach           → 四种上下文的 UA-CH，含 shared / service worker
+   */
   const GROUP_LABEL = {
     A: 'A 组 全局构造器（Intl 六个 locale + DTF timeZone/longTzName + Date 五项）',
     B: 'B 组 navigator 实例（cores/deviceMemory/languages/language/userAgentData + ref platform）',
