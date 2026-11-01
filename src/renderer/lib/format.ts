@@ -8,6 +8,15 @@
 import type { FingerprintConfig, Profile, ProfileStatus, TaskRecord, TaskStatus } from '@shared/types'
 import type { ActionFailure, StepStatus } from '@shared/protocol'
 
+/**
+ * 动作类型 → 中文。
+ *
+ * 定义已下沉到 `@shared/protocol`：主进程写审计的「目标」列时也要用它，
+ * 而主进程引不到渲染层。这里只做转出，不再自己写一份 —— 两份副本的下场是
+ * 改一份、另一份静默留在旧词上，症状是「同一个动作在两个页面叫不同名字」。
+ */
+export { ACTION_LABEL } from '@shared/protocol'
+
 /* ────────────────────────────── 时间 ────────────────────────────── */
 
 function pad2(n: number): string {

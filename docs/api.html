@@ -75,13 +75,25 @@
 <!-- ============ 2 ============ -->
 <h2 id="auth"><span class="n">02</span>鉴权与安全</h2>
 
-<p>每次启动生成随机 token，写入 <code>~/.shadowsurf/token</code>（权限 0600）。所有请求携带：</p>
+<p>每次启动确保存在一个 32 字节随机 token，写入应用数据目录下的 <code>local-api-token.json</code>（权限 0600，仅本用户可读）。所有请求携带：</p>
 <pre><code>Authorization: Bearer <span class="s-s">&lt;token&gt;</span></code></pre>
 
 <div class="note warn">
   <div class="lbl">回环防护</div>
   <p>服务校验 <code>Origin</code> 头，仅接受 <code>chrome-extension://</code>、<code>file://</code>、<code>http://127.0.0.1:*</code> 与无 Origin 的本地进程调用。任何网页发起的跨域请求都会被 <code>403</code> 拒绝——这是防止恶意页面通过 localhost 驱动浏览器的关键一道。</p>
   <p>同时设置 <code>Access-Control-Allow-Origin</code> 为白名单精确匹配，不使用 <code>*</code>。</p>
+</div>
+
+<div class="note warn">
+  <div class="lbl">token 不进 IPC</div>
+  <p>渲染层的 <code>ss.localApi.state()</code> 返回值里<b>没有 token 字段</b>——这是契约，不是省略。界面上的「复制令牌」由主进程直接把明文写进剪贴板，渲染层从头到尾拿不到它。</p>
+  <p>理由：渲染层是整个应用里最可能被页面内容攻破的一层。把 token 交给它，等于把「驱动浏览器」的能力交给了页面——而一个被 XSS 的渲染层原本可以自己 <code>start()</code>、自己读 token、再自己调 <code>/act</code>，全程没有任何人点过任何东西。需要 token 的外部程序应该去读那个文件。</p>
+</div>
+
+<div class="note warn">
+  <div class="lbl">L2 不可逆动作：同意只能来自系统窗口</div>
+  <p>token 能证明「你是本机进程」，不能证明「人同意过」。凡是不可逆动作（支付、提交订单、删除、退出登录……），服务端都会在机器上弹出一个<b>操作系统原生确认窗口</b>，只有那次点击能产生一张一次性凭证。</p>
+  <p><b>没有任何请求字段可以代替它。</b>不存在「免确认名单」，也不存在无人值守开关——一个能被请求体说服的同意，等于没有同意。详见 <a href="#act">执行动作</a>。</p>
 </div>
 
 <!-- ============ 3 ============ -->
@@ -96,12 +108,17 @@
 <h3>3.2 错误响应</h3>
 <pre><code>{
   <span class="s-k">"error"</span>: {
-    <span class="s-k">"code"</span>: <span class="s-s">"POLICY_DENIED"</span>,
-    <span class="s-k">"message"</span>: <span class="s-s">"动作 submit_order 属于 L2，需人工确认"</span>,
-    <span class="s-k">"details"</span>: { <span class="s-k">"task_id"</span>: <span class="s-s">"tsk_8f2a1c"</span>, <span class="s-k">"risk_level"</span>: <span class="s-s">"L2"</span> },
+    <span class="s-k">"code"</span>: <span class="s-s">"E_CONSENT_TIMEOUT"</span>,
+    <span class="s-k">"message"</span>: <span class="s-s">"这是一个不可逆动作，需要有人在应用窗口上点「允许执行」才能继续。120 秒内无人确认，已按拒绝处理。"</span>,
+    <span class="s-k">"details"</span>: { <span class="s-k">"profile_id"</span>: <span class="s-s">"prf_7c9a"</span>, <span class="s-k">"risk_level"</span>: <span class="s-s">"L2"</span> },
     <span class="s-k">"trace_id"</span>: <span class="s-s">"tr_9d31e0"</span>
   }
 }</code></pre>
+
+<div class="note info">
+  <div class="lbl">错误码有两族名字，这是债务不是笔误</div>
+  <p><code>E_*</code> 是<b>当前实现的真实取值</b>（见 <code>src/main/modules/localapi.ts</code>），调用方应该按这些值写分支；全大写下划线的（<code>POLICY_DENIED</code> 等）是<b>规划中的规范化名字</b>，还没有实现。两边统一之前，以 <code>E_*</code> 为准。</p>
+</div>
 
 <h3>3.3 分页与筛选</h3>
 <div class="tbl">
@@ -153,6 +170,7 @@
 <tr><td><span class="state run">GET</span></td><td class="mono">/v1/profiles/{id}</td><td>详情，含完整指纹配置</td></tr>
 <tr><td><span class="state warn">PATCH</span></td><td class="mono">/v1/profiles/{id}</td><td>局部更新</td></tr>
 <tr><td><span class="state err">DELETE</span></td><td class="mono">/v1/profiles/{id}</td><td>删除，<code>?force=true</code> 可删除运行中的</td></tr>
+<tr><td><span class="state ok">POST</span></td><td class="mono">/v1/profiles/{id}/act</td><td>执行一个动作（L2 需人在系统窗口上确认）</td></tr>
 <tr><td><span class="state ok">POST</span></td><td class="mono">/v1/profiles/{id}/duplicate</td><td>复制环境（新 ID、新指纹种子）</td></tr>
 <tr><td><span class="state ok">POST</span></td><td class="mono">/v1/profiles/{id}/fingerprint/regenerate</td><td>重新生成指纹，可指定保留项</td></tr>
 <tr><td><span class="state run">GET</span></td><td class="mono">/v1/profiles/{id}/consistency</td><td>一致性检查，返回分数与问题列表</td></tr>
@@ -279,6 +297,58 @@
   </div>
 </div>
 
+<div class="ep" id="act">
+  <div class="ep-head">
+    <span class="method post">POST</span>
+    <span class="ep-path">/v1/profiles/{id}/act</span>
+    <span class="ep-tag">执行动作</span>
+  </div>
+  <div class="ep-body">
+    <p>同步执行一个动作。等级由服务端按<b>当轮页面快照</b>重算：调用方既不能指定等级，也不能指定「谁授权了」。</p>
+
+    <table class="params">
+      <tr><th>字段</th><th>类型</th><th>说明</th></tr>
+      <tr><td>action<span class="req">*</span></td><td>object</td><td><code>{type, id?, text?, key?, submit?, direction?, amount?, url?, query?, summary?}</code></td></tr>
+      <tr><td>action.type<span class="req">*</span></td><td>enum</td><td><code>click</code> · <code>type</code> · <code>press</code> · <code>scroll</code> · <code>navigate</code> · <code>extract</code> · <code>done</code></td></tr>
+      <tr><td>action.id</td><td>string</td><td>元素编号，必须是当轮快照里出现过的；<code>click</code> / <code>type</code> / <code>press</code> 必填</td></tr>
+    </table>
+
+    <div class="note warn">
+      <div class="lbl">L2 动作必须有人当场确认</div>
+      <p>遇到不可逆动作（支付、提交订单、删除、退出登录……）时，服务端会在机器上弹出一个<b>操作系统原生确认窗口</b>，只有那次点击能产生一张一次性凭证。</p>
+      <p><b>请求体里没有任何字段可以代替它。</b>早先的 <code>"confirm": true</code> 已经删除，传了也不会被读 —— 一个能被请求体说服的同意，等于没有同意。</p>
+      <p>所以无人值守调用 L2 动作<b>必然失败</b>。这是设计意图，不是缺陷。</p>
+    </div>
+
+    <div class="code-title">三种失败必须分开处理</div>
+    <div class="tbl" style="margin-top:6px">
+    <table class="tight">
+      <thead><tr><th style="width:14%">状态</th><th style="width:32%">code</th><th style="width:54%">含义与处置</th></tr></thead>
+      <tbody>
+      <tr><td>409</td><td class="mono">E_CONSENT_DENIED</td><td>有人在确认窗口上点了「取消」。这是人的<b>明确决定</b>，<b>不要自动重试</b>，应该去问人。</td></tr>
+      <tr><td>409</td><td class="mono">E_CONSENT_TIMEOUT</td><td>120 秒内无人确认，按拒绝处理。人可能不在 —— 补上人再重试是有意义的。</td></tr>
+      <tr><td>409</td><td class="mono">E_APPROVAL_REQUIRED</td><td>服务端预判等级与执行器重算的等级不一致，同样只能靠人当场确认。</td></tr>
+      <tr><td>503</td><td class="mono">E_CONSENT_UNAVAILABLE</td><td>确认窗口弹不出来（无可用窗口 / 环境异常）。这<b>不是</b>「用户拒绝」，而是拿不到同意，同样没有执行；补什么请求字段都没用。</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p>这三种情况<b>动作一步都没有执行</b>。把它们折成一个 <code>409</code>，客户端只能一律重试，而「一律重试」对着一个明确拒绝的动作就是在骚扰机器前的人。</p>
+
+    <div class="code-title">请求 / 响应</div>
+<pre><code>curl -X POST http://127.0.0.1:7801/v1/profiles/prf_7c9a/act \
+  -H <span class="s-s">"Authorization: Bearer $TOKEN"</span> \
+  -H <span class="s-s">"Content-Type: application/json"</span> \
+  -d <span class="s-s">'{"action": {"type": "click", "id": "e_12"}}'</span>
+
+<span class="s-c">// 200</span>
+{ <span class="s-k">"ok"</span>: <span class="s-kw">true</span>, <span class="s-k">"data"</span>: { <span class="s-k">"ok"</span>: <span class="s-kw">true</span>, <span class="s-k">"message"</span>: <span class="s-s">"已点击「下一页」"</span>, <span class="s-k">"navigated"</span>: <span class="s-kw">true</span> } }
+
+<span class="s-c">// 409 —— 人在窗口上点了取消</span>
+{ <span class="s-k">"error"</span>: { <span class="s-k">"code"</span>: <span class="s-s">"E_CONSENT_DENIED"</span>, <span class="s-k">"message"</span>: <span class="s-s">"…本次已被本机用户明确拒绝（在确认窗口点了「取消」），请勿自动重试。"</span> } }</code></pre>
+  </div>
+</div>
+
 <!-- ============ 6 ============ -->
 <h2 id="spaces"><span class="n">06</span>空间 Spaces</h2>
 <p class="lede">Space 是 Profile 的运行实例。<code>mode=human</code> 与 <code>mode=shadow</code> 物理隔离，影子空间不抢焦点。</p>
@@ -352,7 +422,6 @@
 <tr><td><span class="state err">POST</span></td><td class="mono">/v1/tasks/{id}/cancel</td><td>取消（保留已产出）</td></tr>
 <tr><td><span class="state warn">POST</span></td><td class="mono">/v1/tasks/{id}/takeover</td><td>转人工接管，返回控制句柄</td></tr>
 <tr><td><span class="state ok">POST</span></td><td class="mono">/v1/tasks/{id}/release</td><td>释放接管，从当前步骤续跑</td></tr>
-<tr><td><span class="state ok">POST</span></td><td class="mono">/v1/tasks/{id}/confirm</td><td>确认 L2 高风险动作</td></tr>
 <tr><td><span class="state run">GET</span></td><td class="mono">/v1/tasks/{id}/steps</td><td>步骤列表，含证据引用</td></tr>
 <tr><td><span class="state run">GET</span></td><td class="mono">/v1/tasks/{id}/artifacts</td><td>产物列表（快照 / 截图 / 产出文件）</td></tr>
 <tr><td><span class="state run">GET</span></td><td class="mono">/v1/tasks/{id}/replay</td><td>回放索引（帧序列 + 动作时间轴）</td></tr>
@@ -373,7 +442,7 @@
       <tr><td>intent<span class="req">*</span></td><td>string</td><td>自然语言意图，1–2000 字符</td></tr>
       <tr><td>space_id</td><td>string</td><td>复用已有空间；不传则自动创建 shadow 空间</td></tr>
       <tr><td>budget</td><td>object</td><td><code>{max_steps, max_tokens, max_duration_ms, max_cost_cny}</code></td></tr>
-      <tr><td>policy</td><td>object</td><td><code>{allow_l1: true, l2_whitelist: ["amazon.com"], vision_fallback: true}</code></td></tr>
+      <tr><td>policy</td><td>object</td><td><code>{allow_l1: true, vision_fallback: true}</code>。没有 <code>l2_whitelist</code> —— L2 不存在「免确认名单」，见 <a href="#act">执行动作</a></td></tr>
       <tr><td>output</td><td>object</td><td><code>{format: "table"|"json"|"markdown", schema?: {...}}</code></td></tr>
       <tr><td>skill_id</td><td>string</td><td>指定技能模板，跳过规划阶段</td></tr>
     </table>
@@ -606,12 +675,19 @@
       <span class="s-k">"task_id"</span>: <span class="s-s">"tsk_5e12a9c3"</span>, <span class="s-k">"step_id"</span>: <span class="s-s">"stp_8c07"</span>,
       <span class="s-k">"action_type"</span>: <span class="s-s">"click"</span>, <span class="s-k">"target_ref"</span>: <span class="s-s">"e_91b0d4"</span>,
       <span class="s-k">"url"</span>: <span class="s-s">"https://amazon.com/dp/B0CHX3Q8YJ"</span>, <span class="s-k">"domain"</span>: <span class="s-s">"amazon.com"</span>,
-      <span class="s-k">"risk_level"</span>: <span class="s-s">"L2"</span>, <span class="s-k">"policy_decision"</span>: <span class="s-s">"confirmed_by_user"</span>,
+      <span class="s-k">"risk_level"</span>: <span class="s-s">"L2"</span>, <span class="s-k">"consent"</span>: <span class="s-s">"granted"</span>,
       <span class="s-k">"operator"</span>: <span class="s-s">"human"</span>, <span class="s-k">"screenshot_hash"</span>: <span class="s-s">"a3f9…"</span>
     }
   ],
   <span class="s-k">"meta"</span>: { <span class="s-k">"page"</span>: <span class="s-n">1</span>, <span class="s-k">"page_size"</span>: <span class="s-n">2</span>, <span class="s-k">"total"</span>: <span class="s-n">318</span> }
 }</code></pre>
+
+<div class="note warn">
+  <div class="lbl">同意与执行是两条记录，不是一个字段</div>
+  <p><code>consent</code> 只描述<b>决策点</b>发生了什么：<code>granted</code>（有人在系统原生窗口上点了「允许执行」）· <code>denied</code>（点了「取消」）· <code>timeout</code>（120 秒无人确认）· <code>unavailable</code>（窗口弹不出来）· <code>not-required</code>（L1/L0，不进闸门）。</p>
+  <p>这条记录证明<b>凭证从哪来</b>；执行时另有一条记录说明<b>凭证有没有被消费成功</b>。合成一条必然有一半是猜的。</p>
+  <p>这里曾经是一个「策略决定」字段，取值里有一项叫「用户已确认」。那个字段由调用方声明，于是「用户确认过」和「调用方说用户确认过」在审计里长得一模一样——而审计的价值恰恰是能分开这两件事。</p>
+</div>
 
 <!-- ============ 11 ============ -->
 <h2 id="ws"><span class="n">11</span>WebSocket 事件</h2>
@@ -727,15 +803,19 @@
 <tr><td>400</td><td class="mono">INVALID_ARGUMENT</td><td>参数校验失败</td><td>展示字段级错误，不重试</td></tr>
 <tr><td>401</td><td class="mono">UNAUTHORIZED</td><td>token 缺失或失效</td><td>重新读取 token 文件</td></tr>
 <tr><td>403</td><td class="mono">ORIGIN_FORBIDDEN</td><td>Origin 不在白名单</td><td>检查调用来源</td></tr>
-<tr><td>403</td><td class="mono">POLICY_DENIED</td><td>动作被策略拦截（L2 未确认）</td><td>弹出确认框，调 <code>/confirm</code></td></tr>
 <tr><td>404</td><td class="mono">NOT_FOUND</td><td>资源不存在</td><td>刷新列表</td></tr>
 <tr><td>409</td><td class="mono">SPACE_CONFLICT</td><td>同环境同 mode 已有活跃空间</td><td>复用已有 space_id</td></tr>
+<tr><td>409</td><td class="mono">E_CONSENT_DENIED</td><td>L2 动作：有人在系统确认窗口上点了「取消」</td><td><b>不要自动重试</b>，去问人</td></tr>
+<tr><td>409</td><td class="mono">E_CONSENT_TIMEOUT</td><td>L2 动作：120 秒内无人确认，按拒绝处理</td><td>人可能不在，补上人再重试</td></tr>
+<tr><td>409</td><td class="mono">E_APPROVAL_REQUIRED</td><td>L2 动作：预判等级与执行器重算的不一致</td><td>只能靠人当场确认，重试并等待窗口</td></tr>
+<tr><td>409</td><td class="mono">E_BAD_ACTION</td><td>动作类型不支持，或元素编号不在当轮快照里</td><td>重新取快照，不要凭旧编号重试</td></tr>
 <tr><td>409</td><td class="mono">PROXY_IN_USE</td><td>代理被环境引用，无法删除</td><td>先解绑</td></tr>
 <tr><td>422</td><td class="mono">PROFILE_INCONSISTENT</td><td>一致性分数 &lt; 90</td><td>引导修复或传 <code>force</code></td></tr>
 <tr><td>422</td><td class="mono">BUDGET_EXCEEDED</td><td>预算参数非法（如 max_steps &gt; 200）</td><td>收敛参数</td></tr>
 <tr><td>429</td><td class="mono">RATE_LIMITED</td><td>超限</td><td>按 <code>Retry-After</code> 退避</td></tr>
 <tr><td>500</td><td class="mono">INTERNAL</td><td>未预期异常</td><td>带 trace_id 上报</td></tr>
 <tr><td>503</td><td class="mono">BROWSER_UNAVAILABLE</td><td>CDP 连接不可用</td><td>指数退避重试，提示重启</td></tr>
+<tr><td>503</td><td class="mono">E_CONSENT_UNAVAILABLE</td><td>L2 动作：系统确认窗口弹不出来（无可用窗口 / 环境异常）</td><td>这不是「用户拒绝」；修复环境后重试</td></tr>
 <tr><td>504</td><td class="mono">CDP_COMMAND_TIMEOUT</td><td>浏览器命令超时</td><td>重试 1 次后降级</td></tr>
 <tr><td>504</td><td class="mono">MODEL_TIMEOUT</td><td>模型调用超时</td><td>自动切备用供应商</td></tr>
 </tbody>

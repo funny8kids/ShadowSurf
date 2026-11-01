@@ -395,12 +395,24 @@
 .views-wrap {
   flex: 1;
   min-height: 0;
-  position: relative;
+  /**
+   * 纵向 flex，而不是 `position: relative` + 绝对定位的 `.views`。
+   *
+   * 原先 `.views` 是 `position: absolute; inset: 0`，于是它铺满整个 wrap，和
+   * 挂在上面的任何兄弟节点**重叠**。数据健康横幅就是这么被压住的：横幅在正常流里、
+   * 视图区盖在上面，横幅出现时直接遮掉页面标题（designer 实机截图）。
+   *
+   * 绝对定位的兄弟节点之间没有「谁给谁让位」这回事 —— 想让它让位，只能退出绝对定位。
+   * 改成 flex 之后：横幅按自身高度占位，`.views` 吃剩下的高度（`flex: 1` + `min-height: 0`
+   * 保证内部滚动仍然生效）。
+   */
+  display: flex;
+  flex-direction: column;
 }
 
 .views {
-  position: absolute;
-  inset: 0;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 20px 22px 84px;
 }

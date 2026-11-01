@@ -9,6 +9,9 @@
  */
 
 import { JsonStore } from './db'
+import type { CorruptInfo } from './json-file'
+import { validateArray } from './json-file'
+import type { HealthStoreRef } from './health'
 import { evictInPlace } from './evict'
 
 export interface Entity {
@@ -34,13 +37,40 @@ export class CollectionStore<T extends Entity> {
   private readonly store: JsonStore<T[]>
   private readonly maxItems: number
   private readonly retain: ((item: T) => boolean) | undefined
+  private readonly name: string
 
   constructor(name: string, maxItems = 0, options: CollectionOptions<T> = {}) {
     // JsonStore 构造器自己会调 filePath()，这里只能传裸文件名，
     // 否则会拼成 <dataDir>\<dataDir>\xxx.json 这种双层路径
-    this.store = new JsonStore<T[]>(name, () => [])
+    //
+    // 校验只做「必须是数组」这一层：集合里存什么形状由各模块自己负责，
+    // 但文件级形状错（例如手改成 `{}`）必须在读的时候就判成损坏 ——
+    // 否则 `list()` 里那句 `.slice()` 会抛一个完全看不出根因的 TypeError。
+    this.store = new JsonStore<T[]>(name, () => [], (data, _schema, file) => validateArray<T>(data, file))
     this.maxItems = maxItems
     this.retain = options.retain
+    this.name = name
+  }
+
+  /**
+   * 非 null 表示这个集合的数据文件不可用（损坏 / 读不到）。
+   *
+   * 透出去是为了让上层能把它变成「可见」：`audit.list()` 在损坏时降级成 `[]`，
+   * 而 `verifyAudit()` 看到空列表会返回 `ok: true`「链路为空」—— 也就是说
+   * 「有人删了审计文件」在 UI 上显示为「链路完整」。消费方必须能问到这里。
+   */
+  get corruption(): CorruptInfo | null {
+    return this.store.corruption
+  }
+
+  /** 健康快照用：真实路径 / 版本 / 损坏状态 */
+  get health(): HealthStoreRef {
+    return {
+      name: this.name,
+      file: this.store.filePath,
+      schemaVersion: this.store.schemaVersion,
+      corruption: this.store.corruption
+    }
   }
 
   list(): T[] {

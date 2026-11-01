@@ -12,8 +12,8 @@
  * 归属：audit-agent
  */
 
-import { createHash } from 'node:crypto'
 import { CH } from '@shared/ipc'
+import { describeAction } from '@shared/protocol'
 import type {
   AuditEntry,
   AuditVerifyResult,
@@ -25,35 +25,14 @@ import type {
 } from '@shared/types'
 import { CollectionStore, GATE_ACTION_PREFIX, type Stores } from '@main/store'
 import { bridgeFor } from '@main/core/cdp'
+import { judgeMask } from '@main/core/mask-gate'
 import type { GateEvent } from '@main/agent/actions'
+import type { ConsentOutcome, ConsentRequest } from '@main/agent/consent'
+import { digest, verifyChain, ZERO_HASH } from './audit-chain'
+import { boundDetail, boundMatched, boundTarget } from './audit-bound'
 import type { ModuleContext } from './context'
 
-/** 链首的 prev 占位：64 个 0，长度与 sha256 的 hex 一致，校验时不必特判 */
-const ZERO_HASH = '0'.repeat(64)
-
-/** 与 store/index.ts 里 audit 的 maxItems 保持一致，用来区分「正常裁剪」与「链头被删」 */
-const AUDIT_CAP = 5000
-
 /* ────────────────────────────── 审计：写入与校验 ────────────────────────────── */
-
-/**
- * 为什么把字段拼成一个字符串再哈希，而不是对 JSON 哈希：
- * JSON 的键顺序、undefined 的处理都依赖实现，跨版本可能变；
- * 用固定的分隔符拼接，重算时只要顺序和空值归一规则一致就永远吻合。
- */
-function digest(
-  prev: string,
-  seq: number,
-  at: number,
-  actor: string,
-  action: string,
-  target: string,
-  detail: string
-): string {
-  return createHash('sha256')
-    .update([prev, seq, at, actor, action, target, detail].join('|'))
-    .digest('hex')
-}
 
 /**
  * 追加一条审计记录。供其他模块直接调用，所以参数保持扁平，
@@ -72,19 +51,63 @@ export function appendAudit(
   const prev = last ? last.hash : ZERO_HASH
   const at = Date.now()
 
+  // 收口点只有这一个：所有调用方的 target / detail 都从这里过。
+  //
+  // 为什么不是逐个插值点各截一次：`auditGate` / `auditConsent` 里已经各截过一次
+  // `matched`，但 `reason` 和 `target` 都漏了 —— 页面写的元素名内嵌在 `reason`
+  // 里，10KB 的名字照样落盘。逐个补的做法等于每加一个字段就多一个漏点，
+  // 而这次已经证明了会漏。收口点只有一个，才谈得上「不会再漏」。
+  //
+  // 注意 hash 必须用**收口后**的值：如果 hash 覆盖原文而存储的是截断版，
+  // 校验时会重算出不一致的 hash，把一次正常截断报成一次篡改。
+  //
+  // 与之配套的一条约束：**`verifyChain()` 重算时不得再施加收口。**
+  // 它用的是 `e.target` / `e.detail`，也就是盘上的存储值 —— 旧记录写入时
+  // hash 覆盖的就是它当时那份原始值，重算也用同一份，仍然自洽。
+  // 谁要是「顺手统一一下」在校验侧也调 `boundDetail`，盘上所有超过 400 字的
+  // 历史记录会集体报篡改：一条修 bug 的改动制造一整批假警报。
+  // 收口只发生在**写入时**，这是单向的。
+  const safeTarget = boundTarget(target)
+  const safeDetail = boundDetail(detail)
+
   const entry: AuditEntry = {
     id: CollectionStore.newId('aud'),
     seq,
     at,
     actor,
     action,
-    target,
-    detail,
+    target: safeTarget,
+    detail: safeDetail,
     prev,
-    hash: digest(prev, seq, at, actor, action, target ?? '', detail ?? '')
+    hash: digest(prev, seq, at, actor, action, safeTarget ?? '', safeDetail ?? '')
   }
   stores.audit.add(entry)
+  // 追加成功后立刻把尾部锚点写到 settings（**另一个文件**）。
+  //
+  // 顺序不能反：先写锚点再追加的话，崩溃会留下「锚点指向一条不存在的记录」，
+  // 那和「尾部被删」在校验时长得一模一样，只能靠文案去猜。现在这个顺序崩溃时
+  // 留下的是「锚点落后于日志」，语义明确，而且下一次追加会自动对齐。
+  //
+  // setAuditHead 内部吞掉写盘失败（见 store/settings.ts）：记录已经落盘了，
+  // 不能因为锚点写不进去就把这次追加报成失败。
+  stores.settings.setAuditHead({ seq: entry.seq, hash: entry.hash })
   return entry
+}
+
+/**
+ * 发起方在审计里怎么写。这只是「谁发起的」，不是「谁批准的」。
+ *
+ * 五个键不是冗余：`Approval.origin` 用的是 'agent'|'script'|'api'，
+ * `ConsentRequest.origin` 用的是 'loop'|'script'|'localapi'（同一件事的两种叫法）。
+ * 与其在两处各写一份映射、然后某天改一边忘另一边，不如一张表同时认这两种写法 ——
+ * 落进审计的永远是同一句人话。
+ */
+const ORIGIN_LABEL: Record<string, string> = {
+  agent: '智能体循环',
+  loop: '智能体循环',
+  script: '脚本回放',
+  api: '本地 API',
+  localapi: '本地 API'
 }
 
 /**
@@ -94,17 +117,40 @@ export function appendAudit(
  * 在本地 API 里判、在脚本回放里判，三处各自决定要不要记审计 ——
  * 结果只有脚本那条记了，agent 跑 40 步一个字节都不留。
  * 现在判定下沉到执行器，留痕也一起下沉，三处共用这一个落点。
+ *
+ * `approvedBy` 的语义变了一次，这一列必须跟着改：
+ * 以前它记的是「调用方声明的授权来源」，于是 `授权=api` 和 `授权=user` 都可能是
+ * 调用方自己写上去的，事后读审计根本分不清「有人点过」和「有人自称点过」。
+ * 现在它由凭证是否被消费推导，只有两种取值，且 `user` 严格等价于
+ * 「有人在系统原生窗口上点了允许」。发起方单独一列，两者不再混在一起。
  */
 export function auditGate(stores: Stores, event: GateEvent): void {
   const action = event.action
-  const target = [action.type, action.id ? `#${action.id}` : '', action.url ?? '']
-    .filter((v) => v.length > 0)
-    .join(' ')
+  const { target, marker } = describeAction(action)
 
-  // matched 是从元素可读名里正则匹配出来的，元素名由页面决定 ——
-  // 页面可以写一个 10KB 的名字把审计撑爆，所以这里必须截断。
-  const matched = event.matched ? event.matched.slice(0, 24) : ''
-  const who = event.approvedBy === 'none' ? '未授权' : `授权=${event.approvedBy}`
+  // matched 是从判定语义串里正则匹配出来的，而那段串由 `[元素名, thought]` 拼成：
+  // 元素名被 `nameOf()` 截到 90（页面那半有界），`thought` 是模型写的、无长度限制。
+  // 所以能撑爆审计的是**模型**，不是页面 —— 这一点原先写反了。
+  // 截断必须可见：`paypal` + 5000 空格 + `checkout` 能命中 `paypal\s*checkout`，
+  // 实测 matched.length = 5014。静默截成 24 个字，读审计的人会以为命中的就是这些。
+  const matched = boundMatched(event.matched)
+
+  // 这一列只陈述**执行点看到的事实**，不替同意来源作证。
+  //
+  // 原先它写「授权=用户在系统确认窗口点了允许」，而这个函数根本不知道票有没有被
+  // 消费过 —— 它拿到的只是一个推导出来的布尔值。一条断言了没发生的事的审计记录，
+  // 比没有记录更坏：事后追责会照着它得出错误结论。
+  // 「用户点了允许」这件事由 requestConsent 自己写一条，两条记录各证一半。
+  //
+  // L1 单独一种说法：L1 根本不进闸门、不需要授权，写「未授权」会让用户以为
+  // 「有个操作没经过我同意就执行了」—— 那是在制造恐慌，不是在记录事实。
+  const authority =
+    event.level !== 'L2'
+      ? '不需要授权（可回退动作，不进闸门）'
+      : event.approvedBy === 'user'
+        ? '本次执行已获授权（票据消费成功）'
+        : '本次执行未获授权（无有效票据），动作已拦下'
+  const from = `发起=${ORIGIN_LABEL[event.origin] ?? event.origin}`
 
   appendAudit(
     stores,
@@ -113,7 +159,41 @@ export function auditGate(stores: Stores, event: GateEvent): void {
     // 记录还在写，但已经不再受保护了。
     GATE_ACTION_PREFIX + (event.level === 'L2' ? '不可逆' : '可回退'),
     target,
-    `${who}；${event.reason}${matched ? `；命中「${matched}」` : ''}`
+    `${authority}；${from}；${event.reason}${matched ? `；命中「${matched}」` : ''}${marker}`
+  )
+}
+
+/** 同意来源在审计里的写法 */
+const CONSENT_TEXT: Record<ConsentOutcome['kind'], string> = {
+  granted: '用户在系统确认窗口点了「允许执行」，已发出一张一次性凭证',
+  denied: '用户在系统确认窗口点了「取消」',
+  timeout: '系统确认窗口 120 秒内无人确认，按拒绝处理',
+  unavailable: '系统确认窗口无法弹出（无可用窗口/环境异常），按拒绝处理'
+}
+
+/**
+ * 把一次**同意询问**的结果写进审计链。
+ *
+ * 与 `auditGate` 的分工：这个函数证明「凭证从哪来」，`auditGate` 证明
+ * 「执行器校验过凭证」。合成一条必然有一半是猜的。
+ *
+ * 挂载点在 `consent.ts` 的 `requestConsent` 里 —— loop / script / localapi 三条
+ * 路径唯一的汇聚点，所以「拒签不写审计」这种漏记不可能发生。
+ * 前缀必须是 `GATE_ACTION_PREFIX`：`store/index.ts` 的 `AUDIT_RETAIN` 只保留
+ * 这个前缀，写别的会在 5000 条上限时被当成普通记录淘汰掉 ——
+ * 而「谁拒了一次支付」正是最不该被淘汰的那种记录。
+ */
+export function auditConsent(stores: Stores, outcome: ConsentOutcome, req: ConsentRequest): void {
+  const action = req.action
+  const { target, marker } = describeAction(action)
+  const matched = boundMatched(req.matched)
+
+  appendAudit(
+    stores,
+    GATE_ACTION_PREFIX + '同意',
+    target,
+    `同意来源=${CONSENT_TEXT[outcome.kind]}；发起=${ORIGIN_LABEL[req.origin] ?? req.origin}；` +
+      `${req.reason}${matched ? `；命中「${matched}」` : ''}${marker}`
   )
 }
 
@@ -123,70 +203,61 @@ export function listAudit(stores: Stores, limit = 200): AuditEntry[] {
   return stores.audit.list().reverse().slice(0, cap)
 }
 
+/**
+ * 审计链校验。
+ *
+ * 最重要的一条不是「怎么验」，而是**先确认读得到**。
+ *
+ * 原先这里第一行就是 `stores.audit.list()`，然后 `if (all.length === 0) return { ok: true }`。
+ * 而 `list()` 在文件损坏时是**降级返回空数组**的（见 store/json-file.ts 的 quarantine）——
+ * 于是「有人删了/写坏了审计文件」在界面上显示为「链路为空」，`ok: true`，绿灯。
+ * 这不是文案问题：它把一次可能的证据销毁报成了「一切正常」。
+ *
+ * 现在的顺序是「读 → 问 corruption → 再谈链」，注意这三步的次序不能换：
+ * `corruption` 是上一次读失败留下的**判定**，不先读一次它恒为 null，
+ * 于是「先查 corruption」在冷进程里等于没查（IPC 不保证面板一定先 list 再 verify）。
+ *
+ * 并且 `unreadable` 是「不知道」，不是「链断了」—— 两者在界面上必须区分开。
+ *
+ * 校验内核在 `./audit-chain.ts`：那边零依赖，能被 Node 单测。
+ */
 export function verifyAudit(stores: Stores): AuditVerifyResult {
+  // 先读一次，再问「读到了吗」。
+  //
+  // `corruption` 是**上一次读失败**留下的判定，没读过就恒为 null —— 先查它，
+  // 在一个还没读过审计文件的进程里永远查不到（IPC 调用顺序不保证面板一定先
+  // list 再 verify）。顺序反了，一个损坏的审计文件会被报成「链路为空」= 通过。
   const all = stores.audit.list()
-  if (all.length === 0) {
-    return { ok: true, total: 0, message: '还没有审计记录，链路为空' }
-  }
-
-  // 存储有 5000 条上限，超出会从头丢最旧的。此时首条的 prev 指向已被裁掉的记录，
-  // 若仍要求它等于全 0 就会在每次超限后误报断链，所以以首条自身作为锚点。
-  // 但只有在「条数已顶到上限」时截断才合理；否则首条 seq 不为 1 就是有人删了链头。
-  const truncated = all[0].seq > 1 && all.length >= AUDIT_CAP
-  if (all[0].seq > 1 && !truncated) {
+  const corruption = stores.audit.corruption
+  if (corruption !== null) {
+    // 文案按 kind 分支：`io` 是「读不到」（文件被占用/没权限），数据本身可能完好；
+    // 其余是「文件已损坏」。说反了会把人引去做错误的补救动作。
+    //
+    // 刻意不提「从备份恢复」：现在没有任何面向用户的备份/恢复机制，
+    // 写那句话等于让用户去找一个不存在的东西。
+    const why =
+      corruption.kind === 'io'
+        ? '审计文件读不到（文件被占用或没有权限）'
+        : '审计文件已损坏'
     return {
-      ok: false,
-      total: all.length,
-      brokenAt: all[0].seq,
-      message: `链首缺失：第 1 条记录已不存在（当前最早为第 ${all[0].seq} 条），链被截断或删除`
+      consistent: false,
+      total: 0,
+      kind: 'unreadable',
+      message: `${why}，无法判断链路是否完整：${corruption.file}`
     }
   }
-  let expectedPrev = truncated ? all[0].prev : ZERO_HASH
-  const startSeq = all[0].seq
 
-  for (let i = 0; i < all.length; i += 1) {
-    const e = all[i]
-    const where = `第 ${e.seq} 条`
-
-    if (e.seq !== startSeq + i) {
-      return {
-        ok: false,
-        total: all.length,
-        brokenAt: e.seq,
-        message: `${where}记录的序号不连续，中间有记录被删除`
-      }
-    }
-    if (e.prev !== expectedPrev) {
-      return {
-        ok: false,
-        total: all.length,
-        brokenAt: e.seq,
-        message: `${where}记录的 prev 与上一条哈希不符，前序内容被改动或删除`
-      }
-    }
-
-    const recomputed = digest(e.prev, e.seq, e.at, e.actor, e.action, e.target ?? '', e.detail ?? '')
-    if (recomputed !== e.hash) {
-      return {
-        ok: false,
-        total: all.length,
-        brokenAt: e.seq,
-        message: `${where}记录的内容与哈希对不上，记录已被篡改`
-      }
-    }
-    expectedPrev = e.hash
+  // 链内校验 + 链外锚点比对都在 `./audit-chain.ts` 里 —— 那个文件零依赖，
+  // 能被 Node 直接单测（这里 import 了 electron，测不了）。
+  // 这一层只做三件事：读盘、把锚点递进去、把内核要求建立的锚点落盘。
+  const verdict = verifyChain(all, stores.settings.getAuditHead())
+  if (verdict.adoptHead !== undefined) {
+    // unanchored：升级上来的旧数据，或 settings.json 被删。内核不落盘（它必须是纯函数），
+    // 所以这里补一次写。**这一轮仍然返回不通过** —— 锚点只对以后的校验有效。
+    stores.settings.setAuditHead(verdict.adoptHead)
   }
-
-  return {
-    ok: true,
-    total: all.length,
-    // 「链路完整」这个说法必须去掉：digest 是无密钥 sha256，拿到算法就能把整条链
-    // 从任意一条开始重算，算出完全自洽的 hash 与 prev。这里能挡的只有
-    // 「改了内容但没重算」，挡不住任何有意的攻击者 —— 那是主动可伪造，不是边角漏检。
-    message: truncated
-      ? `摘要无密钥，可被整体重算；尾部删除不可检测；共 ${all.length} 条（头部 ${startSeq - 1} 条已按上限裁剪）`
-      : `摘要无密钥，可被整体重算；尾部删除不可检测；共 ${all.length} 条`
-  }
+  const { adoptHead: _adopt, ...result } = verdict
+  return result
 }
 
 /* ────────────────────────────── 自检：页面探针 ────────────────────────────── */
@@ -794,6 +865,9 @@ async function runSelfCheck(ctx: ModuleContext, profileId: string): Promise<Cons
       returnByValue: true,
       userGesture: false
     },
+    // 第三参现在是 sessionId（CDP 原生顺序），超时挪到第四参。
+    // 这里不传 sessionId：审计探针跑在主世界（根 session）。
+    undefined,
     20_000
   )
 
@@ -807,6 +881,49 @@ async function runSelfCheck(ctx: ModuleContext, profileId: string): Promise<Cons
   }
 
   const items = compare(probe, fp)
+
+  /* ── 运行时注入台账：必须进报告，且阈值必须与门禁同一个 ──
+   *
+   * 探针比的是「读数和配置一致吗」，它比不出「注入根本没跑」这件事的**原因**：
+   * 一个属性都没装上时，读数会和配置大面积不符（分数很低），但用户看到的只是
+   * 「一致性 43 分」，不知道该去修词表还是去修注入。
+   *
+   * 更关键的是**阈值不能各写一份**：界面说红、门禁放行（或反过来）比没有这条更坏 ——
+   * 用户会按界面去关掉整个机制。所以这里直接调 `judgeMask`，与 `actions.ts`
+   * 拦 L2 用的是同一个函数、同一张判定表。
+   *
+   * 三档的语义：
+   *   pass = 状态 ok，全部属性装上
+   *   warn = 门禁放行、但有子目标缺口（例如 Worker 降级）—— 不可逆动作仍可执行，
+   *          用户需要知道「这个环境对 Worker 是漏的」
+   *   fail = 门禁会拒绝 —— 不可逆动作此刻做不了，必须先修
+   */
+  const maskRecord = ctx.wm.maskStateOf(handle.wc.id)
+  const maskVerdict = judgeMask(maskRecord)
+  const maskDetail =
+    maskRecord === null
+      ? '查不到（窗口刚开或已关闭）'
+      : maskRecord.state === 'ok'
+        ? 'ok（全部属性装上）'
+        : `${maskRecord.state}：` +
+          maskRecord.failed.map((f) => `${f.source}/${f.attr}`).join('、')
+  items.unshift({
+    key: 'mask.ledger',
+    label: '注入台账（运行时，非落盘）',
+    expected: 'ok（页面侧全部属性装上）',
+    actual: maskDetail,
+    severity: maskVerdict.allow
+      ? maskRecord !== null && maskRecord.state === 'ok'
+        ? 'pass'
+        : 'warn'
+      : 'fail',
+    hint: maskVerdict.allow
+      ? maskVerdict.state === 'ok'
+        ? undefined
+        : '门禁仍放行不可逆动作，但该环境有子目标没伪装住（站点可用 Worker / OOPIF 探测）'
+      : `${maskVerdict.reason}。当前状态下不可逆动作会被拦下`
+  })
+
   const passed = items.filter((i) => i.severity === 'pass').length
   // 只把 pass 计入分子：warn 是「无法确证」，不算通过，分数才有区分度
   const score = items.length > 0 ? Math.round((passed / items.length) * 100) : 0

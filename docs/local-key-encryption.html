@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>本机密钥与环境可迁移性 · ShadowSurf</title>
+<link rel="stylesheet" href="assets/doc.css">
+<script src="assets/doc.js"></script>
+</head>
+<body>
+<div class="shell">
+
+<aside class="toc">
+  <div class="toc-brand">
+    <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2.5-7 3.5 14 2.5-7H21"/></svg></div>
+    <b>ShadowSurf</b>
+  </div>
+  <div class="toc-doc">本机密钥与环境可迁移性<br>草案 · 2026-11</div>
+  <nav>
+    <div class="grp">给用户</div>
+    <a href="#what">1 这件事解决什么</a>
+    <a href="#observe">2 你会看到什么</a>
+    <a href="#verify">3 三句你能自己验证的话</a>
+    <a href="#move">4 换电脑、重装系统怎么办</a>
+    <a href="#degraded">5 加密不可用的时候</a>
+    <a href="#limits">6 我们不承诺什么</a>
+    <div class="grp">给研发 / 运维</div>
+    <a href="#accept">7 验收口径（四条）</a>
+    <a href="#gate">8 门禁与复现</a>
+  </nav>
+</aside>
+
+<main>
+
+<header>
+  <div class="doc-kicker">Local Key &amp; Portability · Draft</div>
+  <h1>本机密钥 <em>与环境可迁移性</em></h1>
+  <p class="sub">你的环境指纹由一把本机密钥保护。这一页说清三件事：谁能打开你的环境、换电脑会发生什么、以及你该怎么把环境带走。</p>
+  <div class="doc-meta">
+    <div><b>读者</b>　用户（1–6 节） · 研发与运维（7–8 节）</div>
+    <div><b>状态</b>　<span class="state warn">草案</span>　随 P0-3 一同发布</div>
+    <div class="rel"><b>关联</b>
+      <a href="architecture.html">架构设计</a>
+      <a href="api.html">API 文档</a>
+    </div>
+  </div>
+</header>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:24%">本页的状态</th><th style="width:76%">说明</th></tr></thead>
+<tbody>
+<tr>
+  <td><span class="state err">未发布</span></td>
+  <td>本页描述的是 <b>P0-3 落地之后</b>的行为。当前 <code>npm run verify:seed-at-rest</code> 仍为不通过（8 处：<code>master.key</code> 无版本前缀、<code>profiles.json</code> 三个 seed 明文、迁移备份 <code>.schema0-*</code> 内同一批明文 seed、<code>local-api-token.json</code> 明文）。<b>在门禁转绿之前，本页不得对外发布</b>——文档替未实现的代码作证，比没有文档更坏。</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============ 1 ============ -->
+<h2 id="what"><span class="n">01</span>这件事解决什么</h2>
+
+<p class="lede">每个环境（Profile）的指纹不是随机生成的，而是由一把密钥推导出来的。推导规则固定：同一个环境永远得到同一套指纹，换一个环境得到完全独立的一套。</p>
+
+<p>这把密钥叫 <code>master.key</code>，存在本机的数据目录里，由操作系统按<b>当前登录的 Windows 账号 + 这台电脑</b>加密。它带来两个后果，一好一坏：</p>
+
+<ul>
+<li><b>好处</b>：别人把你的数据目录整个拷走，在他的电脑上打不开——因为他没有你这台电脑的解密能力。</li>
+<li><b>代价</b>：<b>你的电脑重装系统、或换一个 Windows 账号登录，你自己也打不开了。</b>这时所有环境的指纹会重新生成成另一套。</li>
+</ul>
+
+<p>这一页的大部分内容，都是在处理那个「代价」。</p>
+
+<!-- ============ 2 ============ -->
+<h2 id="observe"><span class="n">02</span>你会看到什么</h2>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:26%">场景</th><th style="width:34%">环境能不能打开</th><th style="width:40%">界面会告诉你什么</th></tr></thead>
+<tbody>
+<tr>
+  <td>同一台电脑、同一个 Windows 账号</td>
+  <td><span class="state ok">能</span>　指纹与上次完全一致</td>
+  <td>无提示。这是默认情况，应当「什么都没发生」</td>
+</tr>
+<tr>
+  <td>换一台电脑</td>
+  <td><span class="state err">不能</span></td>
+  <td>环境列表照常显示，点开时提示「这个环境属于另一台电脑」，并给出「用导出包恢复」的入口</td>
+</tr>
+<tr>
+  <td>同一台电脑、换一个 Windows 账号</td>
+  <td><span class="state err">不能</span></td>
+  <td>同上。系统不区分「换机」和「换账号」，两者都算「不是原来那个人」</td>
+</tr>
+<tr>
+  <td>重装系统</td>
+  <td><span class="state err">不能</span></td>
+  <td>同上。这是最容易发生的一种，务必提前导出</td>
+</tr>
+<tr>
+  <td>手动删掉 <code>master.key</code></td>
+  <td><span class="state warn">能打开，但指纹变了</span></td>
+  <td>打开时提示「环境指纹已重新生成，与历史记录不一致」。<b>不是环境消失，是变成了另一套指纹</b></td>
+</tr>
+<tr>
+  <td>用导出包在新电脑上导入</td>
+  <td><span class="state ok">能</span>　指纹与导出时一致</td>
+  <td>输入导出时设置的口令，解开后环境列表恢复</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============ 3 ============ -->
+<h2 id="verify"><span class="n">03</span>三句你能自己验证的话</h2>
+
+<p class="lede">下面的三句话是这一页的核心。如果哪一句和你看到的不一样，那就是 bug，请报给我们。</p>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:6%">#</th><th style="width:52%">你看到的</th><th style="width:42%">这意味着</th></tr></thead>
+<tbody>
+<tr>
+  <td><b>1</b></td>
+  <td>同一台电脑、同一个 Windows 账号，<b>所有环境照常打开</b>，指纹和昨天一样</td>
+  <td>加密没有影响正常使用。这是最重要的一句——加密功能最常见的线上事故不是被攻破，而是用户自己的数据打不开了</td>
+</tr>
+<tr>
+  <td><b>2</b></td>
+  <td>换电脑 / 换 Windows 账号 / 重装系统后，<b>环境打不开，并且界面明确说「这个环境属于另一台电脑」</b></td>
+  <td>不是报错、不是崩溃、不是列表变空。一个说得清的拒绝，比一个说不清的失败有用</td>
+</tr>
+<tr>
+  <td><b>3</b></td>
+  <td>删掉密钥文件后，<b>所有环境的指纹会全部换成另一套</b></td>
+  <td>注意：是「变了」，不是「消失了」。这两种后果完全不同，别当成环境报废</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<p>第 3 句值得多说一句：很多人以为删掉密钥等于「环境没了」，于是把还能用的环境也一起删掉。实际上环境还在，只是它变成了另一个身份——<b>对平台来说，这等于换了一个人</b>。所以删密钥是一个「不可撤销的身份变更」，不是一个「清理动作」。</p>
+
+<!-- ============ 4 ============ -->
+<h2 id="move"><span class="n">04</span>换电脑、重装系统怎么办</h2>
+
+<p class="lede">提前做一次导出。导出包用你自己设的口令加密，口令不存本机、不上传，忘记就无法恢复。</p>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:24%">本节的实现状态</th><th style="width:76%">说明</th></tr></thead>
+<tbody>
+<tr>
+  <td><span class="state err">未实现</span></td>
+  <td>对用户来说这条路径不存在——没有 IPC、没有界面。但要说准：<b>口令封装的核心已经写好了</b>（<code>src/main/core/portable-seed.ts</code>，scrypt N=2^15 → AES-256-GCM，已有往返、错口令、篡改三组测试），缺的只是接线。本节描述它落地后的行为，<b>与 P0-3 同批交付、同批发布</b>。在此之前，换机或重装系统会导致环境指纹全部重新生成且无法恢复——这一点必须在应用内提前告知用户，不能只写在这份文档里。</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:18%">步骤</th><th style="width:82%">做法</th></tr></thead>
+<tbody>
+<tr><td><b>导出</b></td><td>在「数据」页选择要带走的环境 → 导出 → 设置一个口令 → 得到一个环境包文件</td></tr>
+<tr><td><b>保管</b></td><td>把环境包和口令<b>分开存放</b>。放在一起等于没加密</td></tr>
+<tr><td><b>恢复</b></td><td>在新电脑上：导入 → 输入口令 → 环境列表与指纹恢复到导出时的状态（这句话成立有前提，见下一节）</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>环境包里必须装什么</h3>
+
+<p>上面那句「指纹恢复到导出时的状态」是有前提的，而这个前提<b>现在还没被任何代码保证</b>。它决定了这个包到底能不能把身份带走：</p>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:30%">内容</th><th style="width:12%">必须带</th><th style="width:58%">不带的后果</th></tr></thead>
+<tbody>
+<tr>
+  <td><code>seed</code></td>
+  <td><b>必须</b></td>
+  <td>没有它就没有身份可恢复</td>
+</tr>
+<tr>
+  <td><b>存储下来的那份 fingerprint</b>（含你手动改过的项）</td>
+  <td><b>必须</b></td>
+  <td>只带 seed，导入方就只能用 seed <b>重新算一遍</b>指纹。算出来的是不是原来那个身份，取决于两件不受你控制的事：算法版本有没有变、你当初有没有手动调过分辨率或 UA。<b>应用能打开，但它是另一个人</b>——而界面上不会有任何提示</td>
+</tr>
+<tr>
+  <td>代理、Cookie、脚本等业务数据</td>
+  <td>可选</td>
+  <td>与身份无关，属于另一个包，单独决定带不带</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<div class="note danger">
+<span class="lbl">这不是理论风险，是设计上的岔路</span>
+<p>生成指纹的函数有三个入参：系统、seed、<b>你手动改过的那些项</b>（<code>buildFingerprint(os, seed, overrides)</code>）。第三项<b>推不出来</b>——它不写在 seed 里。所以「只带 seed 的包」在导入时只有两条路：</p>
+<p>一是重算，指纹可能变；二是包里额外带上那份指纹，原样写回。没有第三条路。<b>本页按第二条写</b>，因为第一条的失败是静默的，而静默的身份变化正是这个产品最不能犯的错。</p>
+</div>
+
+<p><b>为什么不用「登录账号同步」来解决这件事：</b>那意味着密钥要经过我们的服务器，而这个产品的承诺是数据不出本机。用口令加密的导出包，是「不上传、又能带走」的唯一做法。</p>
+
+<!-- ============ 5 ============ -->
+<h2 id="degraded"><span class="n">05</span>加密不可用的时候</h2>
+
+<p>少数情况下，操作系统不提供加密能力（例如某些精简版系统、或远程会话环境）。这时程序<b>不会</b>假装一切正常：</p>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:26%">状态</th><th style="width:34%">密钥怎么存</th><th style="width:40%">界面显示</th></tr></thead>
+<tbody>
+<tr><td>正常</td><td>系统加密后存储</td><td>无提示</td></tr>
+<tr><td><span class="state err">加密不可用</span></td><td>明文存储</td><td>设置页与环境列表常驻提示：「本机加密不可用，密钥以明文存储」。<b>不会只在日志里写一行</b></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>这条规则和「指纹伪装失败时必须标红」是同一条：<b>降级必须留痕</b>。用户有权知道自己的环境此刻处于什么保护水平。</p>
+
+<!-- ============ 6 ============ -->
+<h2 id="limits"><span class="n">06</span>我们不承诺什么</h2>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:34%">不承诺</th><th style="width:66%">原因</th></tr></thead>
+<tbody>
+<tr><td>「数据绝对不会被读到」</td><td>本机加密保护的是「目录被拷走」这一种情况。如果攻击者已经能以你的账号登录这台电脑，他能做的不止读密钥</td></tr>
+<tr><td>「忘记口令还能找回」</td><td>口令不存本机也不上传，没有任何找回通道。这是设计选择，不是缺陷</td></tr>
+<tr><td>「换机后环境自动恢复」</td><td>恢复需要你手里的导出包和口令。没有它们，任何一方（包括我们）都无法重建你的环境</td></tr>
+<tr><td>「加密等于环境不可伪造」</td><td>加密保护的是<b>存储</b>。指纹是否被目标网站识破，是另一件事，见架构文档的「指纹一致性」一节</td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============ 7 ============ -->
+<h2 id="accept"><span class="n">07</span>验收口径（四条）</h2>
+
+<p class="lede">这四条缺一不可。只满足第 2 条的实现会被判「通过」而实际没修好——这是本仓库已经发生过一次的假绿。</p>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:6%">#</th><th style="width:16%">口径</th><th style="width:44%">判据</th><th style="width:34%">为什么必须有这条</th></tr></thead>
+<tbody>
+<tr>
+  <td><b>1</b></td>
+  <td><b>无残留</b></td>
+  <td>数据目录内<b>不存在任何含明文 seed 的文件</b>，包括 <code>profiles.json</code>、迁移备份 <code>.schema&lt;N&gt;-*</code>、崩溃前字节副本 <code>.corrupt-*</code>、<code>.preupgrade*</code></td>
+  <td>只加密 <code>profiles.json</code> 而备份里还躺着同一批明文 seed，等于没修。备份文件让「不可重建」这条判据自动失效——攻击者不需要重建，seed 就在那里</td>
+</tr>
+<tr>
+  <td><b>2</b></td>
+  <td><b>不可重建</b></td>
+  <td>删掉 <code>master.key</code> 并把数据目录搬到另一台机器，<code>seed</code> 不可重建</td>
+  <td>这是加密的本意。注意它是<b>安全</b>判据，不是产品判据——单独用它验收会漏掉第 1、3、4 条</td>
+</tr>
+<tr>
+  <td><b>3</b></td>
+  <td><b>合法路径可用</b></td>
+  <td>加密前后各取一次快照，<b>四个值逐字相同</b>：<code>navigator.userAgent</code>、<code>screen.width</code>×<code>screen.height</code>、<code>Intl.DateTimeFormat().resolvedOptions().timeZone</code>、<code>navigator.language</code>。任一不同即不通过——<b>应用能打开不算通过</b></td>
+  <td><b>最容易被加密改坏、且现在无人测的一条。</b>加密功能最常见的线上事故不是被攻破，是用户自己的数据打不开了。<b>「解密链路正常」不是判据</b>——它无法被观察，只能被声明</td>
+</tr>
+<tr>
+  <td><b>4</b></td>
+  <td><b>降级可见</b></td>
+  <td><code>safeStorage</code> 不可用、或任一处回退到明文时，界面必须常驻显示，不得只写 <code>console.warn</code></td>
+  <td>静默降级让用户以为自己处于保护状态。与「指纹伪装失败必须标红」是同一条规则</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<h3>口径 3 怎么验</h3>
+
+<p>「逐项一致」不是一句能直接执行的话，因为<b>不先记录就没有可比对象</b>。这条口径分三步，少一步就退化成「看起来能打开」：</p>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:6%">步</th><th style="width:34%">做什么</th><th style="width:60%">这一步为什么不能省</th></tr></thead>
+<tbody>
+<tr><td><b>1</b></td><td><b>加密之前</b>，逐个环境打开一个空白页，把上面四个值抄下来存成文件</td><td>不存基线，第 3 步就只剩「能打开」。加密最典型的失败不是打不开，是<b>打开了但身份变了</b>——而这种变化界面上不会有任何提示</td></tr>
+<tr><td><b>2</b></td><td>启用加密，完全退出应用再重开</td><td>进程内的缓存会让「没真正读盘」也显示正常。必须重开，才能证明读到的是加密后的文件</td></tr>
+<tr><td><b>3</b></td><td>逐个环境再取一次同样四个值，与基线<b>逐字比对</b></td><td>差一个字符就判不通过。这里不看「像不像」，只看「是不是同一串」</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note warn">
+<span class="lbl">基线的时效</span>
+<p>第 1 步的记录必须发生在加密动作<b>之前</b>。事后补录的基线不成立——那时候已经没人知道原值是什么，比对就变成了自己和自己比。</p>
+<p>同理，<b>已经开启加密的环境补不出这条证据</b>。这不是流程上的麻烦，是这条口径唯一有鉴别力的形式：它证明的是「变化没发生」，而不是「现在看起来没问题」。</p>
+</div>
+
+<!-- ============ 8 ============ -->
+<h2 id="gate"><span class="n">08</span>门禁与复现</h2>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:26%">命令</th><th style="width:34%">实际覆盖</th><th style="width:40%">不覆盖</th></tr></thead>
+<tbody>
+<tr>
+  <td><code>npm run verify:seed-at-rest</code></td>
+  <td>口径 1 的全部（全目录扫描，含备份与字节副本）；口径 2 的前半——明文既然不存在，删掉密钥就没有可重建的东西</td>
+  <td>口径 2 的后半（要真把目录搬到另一台机器才算验过）、口径 3、口径 4</td>
+</tr>
+<tr>
+  <td><code>npm run test</code></td>
+  <td>口令环境包的加解密往返（<code>sealSeeds</code>/<code>openSeeds</code>）；<code>enc:</code> 形态与 schema 校验规则</td>
+  <td><b>DPAPI 那条 <code>sealSeed</code>/<code>openSeed</code> 没有任何测试</b>——它在 <code>tests/</code> 里零引用，只有 <code>tools/probe-seed-seal.mjs</code> 这个手工探针；也完全不覆盖「指纹是否与加密前一致」</td>
+</tr>
+<tr>
+  <td><code>npm run verify:all</code></td>
+  <td>以上全部 + 注入与反检测门禁</td>
+  <td>同上。它<b>不会</b>因为多跑了几个套件就多覆盖一条口径</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<div class="note danger">
+<span class="lbl">门禁全绿 ≠ 四条口径都过了</span>
+<p>口径 3 和口径 4 目前<b>没有任何自动门禁</b>，只能人工按上一节的三步做、以及在降级时看界面。把它们写成「由某个命令覆盖」，会让一次全绿的运行被读成「四条都验过了」——而这正是本仓库已经吃过一次亏的那类假绿。</p>
+<p>更具体地说：<b>把明文 seed 变成 <code>enc:</code> 再变回来</b>的那两个函数（<code>src/main/store/seed-seal.ts</code>）现在一条测试都没有。它们是这条功能的正中间，两侧都有测试，中间是空的。</p>
+</div>
+
+<h3>当前读数</h3>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:15%">读数时间</th><th style="width:13%">结果</th><th style="width:72%">构成</th></tr></thead>
+<tbody>
+<tr>
+  <td>2026-11-01 01:54</td>
+  <td><b>不通过，4 处</b></td>
+  <td>扫描 19 个文件、10 处敏感字段。其中 3 条是迁移备份 <code>profiles.json.schema0-2026-10-31T16-45-54-320Z</code> 里的历史明文 seed（长度 32），第 4 条是 <code>local-api-token.json</code> 的 <code>token</code>（长度 64）</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<div class="note danger">
+<span class="lbl">口径 1 的措辞比门禁窄，这一点要先对齐</span>
+<p>口径 1 写的是「明文 <b>seed</b>」，而门禁报的是「明文<b>凭据</b>」——它把 <code>local-api-token.json</code> 的 token 也算进来了。这个差异不是猜的，工具自己的开头就写着「不得有明文的 seed / token / 密钥」（<code>tools/verify-seed-at-rest.mjs:5</code>），比口径 1 的措辞宽。两个范围不一致会有两种结局，两种都不好。</p>
+<p>一是照文档做完（清掉那 3 条 seed）门禁仍然红，于是有人去改门禁的扫描范围让它变绿——<b>那是改测试，不是修数据</b>。二是反过来，认为 token 不属于这条口径而放过它——<b>而它和 seed 泄露的后果同类</b>：拿到它就能以本机身份调用本地接口，并且它同样会在「目录被拷走」时一起被拷走。锁了前门留着后门，不叫修好。</p>
+<p>本页暂按<b>「明文凭据」</b>这个更宽的范围描述，等这一条定稿后再发布。</p>
+</div>
+
+<div class="note warn">
+<span class="lbl">这个数字会变</span>
+<p>上面的读数是某一刻的快照，不是结论。<b>红灯的过期速度比绿灯快</b>——有人正在修，你看到的时候可能已经是 0，也可能因为新写入的文件又变多。</p>
+<p>要当刻的读数，跑一次 <code>npm run verify:seed-at-rest</code>，不要引用上面的数字。</p>
+</div>
+
+<div class="doc-foot">
+  <span>ShadowSurf 本机密钥与环境可迁移性 · 草案 2026-11-01</span>
+  <span>返回：<a href="architecture.html">架构设计</a> →</span>
+</div>
+
+</main>
+</div>
+
+</body>
+</html>

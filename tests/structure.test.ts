@@ -39,30 +39,83 @@ const stripComments = (text: string): string =>
 
 /* ────────────────────────── 1. 闸门覆盖（债务） ────────────────────────── */
 
-test(
-  '每个 executeAction 调用点都必须过风险闸门',
-  {
-    skip:
-      '当前 localapi.ts:416 与 scripts.ts:313 未调用 assessRisk。' +
-      '修复方式：executeAction 增加必填参数 gate: RiskVerdict，三个调用点各自处理 L2。' +
-      '该修复落地后本用例应改为「断言 executeAction 签名含必填 gate」，或直接删除（由 TS 编译器接管）。'
-  },
-  () => {
-    const offenders: string[] = []
-    for (const file of sources()) {
-      const text = readFileSync(file, 'utf8')
-      // 只关心「调用」，跳过定义处本身
-      if (!/executeAction\s*\(/.test(text)) continue
-      if (/export\s+async\s+function\s+executeAction/.test(text)) continue
-      if (!/assessRisk/.test(text)) offenders.push(rel(file))
-    }
-    assert.deepEqual(
-      offenders,
-      [],
-      `以下文件调用了 executeAction 但完全没过闸门：${offenders.join(', ')}`
+test('executeAction 必须自己判等级，调用点不得传等级或授权结论', () => {
+  // 这条原先是个 skip（债务）：localapi / scripts 两个调用点没调 assessRisk，
+  // 闸门只活在 agent loop 里，另外两条路径整个绕过去。
+  //
+  // 修复方式最后选的不是「让调用点各自补一次 assessRisk」—— 那还是靠人记得。
+  // 现在等级由 executeAction 自己算，`Approval` 里**没有** level / approvedBy 两个字段，
+  // 所以「调用方声明几级」和「调用方声明已授权」在类型上就写不出来。
+  // 于是这条断言的形态也随之改变：不再数谁漏了 assessRisk，而是钉住那个结构。
+  const actions = stripComments(read('src/main/agent/actions.ts'))
+
+  // 1) 执行器内部必须真的算等级
+  assert.match(actions, /assessRisk\s*\(/, 'executeAction 内部必须调用 assessRisk')
+
+  // 2) Approval 类型不得重新长出「调用方说了算」的字段
+  const approval = /export type Approval = \{[\s\S]*?\n\}/.exec(actions)
+  assert.ok(approval, '找不到 Approval 类型定义')
+  const body = approval[0]
+  for (const forbidden of ['level', 'approvedBy']) {
+    assert.doesNotMatch(
+      body,
+      new RegExp(`\\b${forbidden}\\s*\\??:`),
+      `Approval 不得包含 ${forbidden}：那等于让调用方声明结论，闸门强度就变成「调用方有没有老实」`
     )
   }
-)
+
+  // 3) 调用点不得把等级塞进 Approval。
+  //    注意不能全文匹配 `level:` —— 调用点算等级是允许的（要决定弹不弹框），
+  //    `requestConsent({ level: 'L2' })` 里的那个 level 就是合法用法。
+  //    所以只看 executeAction 调用括号内那一段。
+  const offenders: string[] = []
+  for (const file of sources()) {
+    const text = stripComments(readFileSync(file, 'utf8'))
+    if (/export\s+async\s+function\s+executeAction/.test(text)) continue
+    let from = 0
+    for (;;) {
+      const at = text.indexOf('executeAction(', from)
+      if (at < 0) break
+      from = at + 1
+      const args = text.slice(at, at + 700)
+      if (/\blevel\s*:/.test(args)) offenders.push(`${rel(file)}@${String(at)}`)
+    }
+  }
+  assert.deepEqual(offenders, [], `以下调用点把等级传给了执行器：${offenders.join(', ')}`)
+})
+
+test('闸门与执行器的语义拼接只允许有一份实现', () => {
+  // 这个 bug 真实发生过：loop 拼 `name+thought`、执行器又拼了一次 `name`，
+  // 而抑制规则看的是「命中词紧邻的右文」—— 元素名出现两次就把那段右文换掉了。
+  // 结果闸门判 L1（不弹框）、执行器判 L2（抛错），动作被拦而用户从未被问过。
+  //
+  // 修法不是「三处都记得只拼一次」，而是让「拼两次」在结构上写不出来：
+  // 元素名由 `actionSemantic` 自己从快照取，调用方只能传 note。
+  // 所以这里断言的是「除了 protocol.ts，没有任何地方手拼 name+note」。
+  const offenders: string[] = []
+  for (const file of sources()) {
+    const name = rel(file)
+    if (name === 'src/shared/protocol.ts') continue
+    const text = stripComments(readFileSync(file, 'utf8'))
+    // 手拼的特征：把 target?.name / el?.name 和别的东西 join 到一起
+    const joinsName = /\.name\s*\?\?\s*''[\s\S]{0,80}?\.join\(\s*'\s'\s*\)/.test(text)
+    const pushesName = /\[\s*(?:target|el|element)\?\.name[^\]]*\]\s*\.filter/.test(text)
+    if (joinsName || pushesName) offenders.push(name)
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `以下文件在手工拼接元素名（应改用 actionSemantic）：${offenders.join(', ')}`
+  )
+
+  // 反向自检：这套正则必须真的能抓到旧写法，否则上面那个空数组毫无意义
+  const oldLoop = "const extra = [target?.name ?? '', thought].filter((v) => v.length > 0).join(' ')"
+  assert.match(
+    oldLoop,
+    /\.name\s*\?\?\s*''[\s\S]{0,80}?\.join\(\s*'\s'\s*\)/,
+    '正则抓不到旧写法 —— 这条断言会变成恒真'
+  )
+})
 
 /* ────────────────────────── 2. 反检测面（债务） ────────────────────────── */
 
@@ -120,9 +173,21 @@ test(
  * 后者由 tools/verify-anticheat.mjs 的 AC-08 在真实 Chromium 里验。
  */
 test('复用原生 prototype 时必须把 constructor 指回包装器', () => {
-  const fp = read('src/main/core/fingerprint.ts')
+  /* 先剥注释再数。
+     这条门禁原来直接在原文上数，于是**一句解释性注释就能把它弄红**：
+     有人写了「`W.prototype = Orig.prototype` 是共享同一个 prototype 对象」，
+     `reused` 从 2 变 3、`repaired` 还是 2，断言红 —— 而代码是对的。
+     下一个人遇到这种红，只会做两件事：删注释，或者改代码。两个方向都错。
+     **能被注释弄红的门禁，和能被注释弄绿的门禁一样不可信。** */
+  const fp = stripComments(read('src/main/core/fingerprint.ts'))
   const reused = [...fp.matchAll(/\b(\w+)\.prototype\s*=\s*(\w+)\.prototype/g)].length
   const repaired = [...fp.matchAll(/Object\.defineProperty\(\s*\w+\.prototype,\s*"constructor"/g)].length
+  // 解析自检：两个数都是 0 时 `repaired >= reused` 恒成立 —— 那会变成空断言
+  assert.ok(
+    reused > 0 && repaired > 0,
+    `数出 reused=${String(reused)} / repaired=${String(repaired)} —— 两侧都得非零，` +
+      '否则「修复覆盖」这条判据是恒真的。检查正则是否已失效'
+  )
   assert.ok(
     repaired >= reused,
     `有 ${reused} 处复用原生 prototype，但只有 ${repaired} 处修了 constructor —— ` +
@@ -156,7 +221,11 @@ test('每个被替换的原型方法都必须登记进伪装台账', () => {
   // 台账已从「逐个 _maskAll 调用」收敛成一张 _MASK_TABLE 表（快照与登记共用），
   // 所以这里要按表解析 —— 否则登记全在表里、断言却还在找逐个调用，会误报全红。
   const registered = new Set<string>()
-  for (const m of fp.matchAll(/_MASK_TABLE[\s\S]*?\n  L\.push\('    \];'\)/g)) {
+  // 锚点必须落在**声明处**，不能落在第一次出现处 —— 文件里 `_MASK_TABLE` 会先出现在
+  // 注释里，从注释起做非贪婪匹配会停在表格之前的某个 `L.push('    ];')`，
+  // 结果 registered 几乎是空的，然后报「全部没登记」。那不是泄漏，是解析器指错了地方。
+  // （这条断言重构后确实这么误报过一次：15 项全红，而台账其实一个字没少。）
+  for (const m of fp.matchAll(/_MASK_TABLE\s*=\s*\[[\s\S]*?L\.push\('\s*\];'\)/g)) {
     for (const s of m[0].matchAll(/"([^"]+)"/g)) registered.add(s[1])
   }
   for (const m of fp.matchAll(/_maskAll\([^,]+,\s*\[([\s\S]*?)\]/g)) {
@@ -165,7 +234,16 @@ test('每个被替换的原型方法都必须登记进伪装台账', () => {
   for (const m of fp.matchAll(/_maskAt\([^,]+,\s*"([^"]+)"/g)) registered.add(m[1])
   for (const m of fp.matchAll(/_maskOne\([^,]+,\s*"([^"]+)"/g)) registered.add(m[1])
 
+  // ── 两侧都要有「解析自检」，否则空集合会被当成「全部违规」 ──
+  // 这条曾经的不对称导致过一次误报：registered 解析出 0 项，于是 15 项全被报成「没登记」，
+  // 而真相是「我一项都没解析到」。**「没解析到」和「解析到但违规」必须区分。**
   assert.ok(replaced.size > 10, `只解析出 ${replaced.size} 个替换点，正则可能已失效`)
+  assert.ok(
+    registered.size > 20,
+    `只解析出 ${registered.size} 项台账 —— 这是解析失败，不是「全部没登记」。` +
+      '先修正则锚点（要从 `_MASK_TABLE = [` 的声明处起匹配，不能从第一次出现处起，' +
+      '文件里它第一次出现在注释里）。'
+  )
 
   const missing = [...replaced].filter((p) => !registered.has(p)).sort()
   assert.deepEqual(
@@ -175,16 +253,38 @@ test('每个被替换的原型方法都必须登记进伪装台账', () => {
   )
 })
 
-test('伪装台账 _masked / _fakeSrc / _maskOne 只能声明一次', () => {
+test('伪装台账 _masked / _fakeSrc / _maskOne 在同一段代码里只能声明一次', () => {
   // 曾经踩过：顶部新增了一份声明、底部遗留一份没删。
   // var 是函数作用域提升，底部那次赋值会把数组重置为空，
   // 于是 toString 收口只遍历到 _patched 自己，所有中途 patch 的函数仍吐真实源码 ——
   // 「看起来修好了，功能全失效」，且人工 review 看不出来。
   // 同理重复赋值 _maskOne 会让底部 2 参数版本覆盖顶部 3 参数版本、丢掉 length 校正。
+  //
+  // 判据为什么是「同一段代码里」而不是「整个文件一次」：
+  // 文件里现在有多个生成器（page / worker / iframe 各生成一份独立脚本），
+  // 每个函数里的 var 是各自的作用域，各声明一次是**正确**的。
+  // 按整文件计数会把正确实现判成红 —— 断言太严和太松是同一个成本。
+  // 真正的危险是「同一个函数里声明两次」，所以判据取「相邻两次声明之间必须有函数边界」。
   const fp = read('src/main/core/fingerprint.ts')
   for (const name of ['_masked', '_fakeSrc', '_maskOne']) {
-    const hits = [...fp.matchAll(new RegExp(`var ${name}\\b`, 'g'))].length
-    assert.ok(hits <= 1, `${name} 被声明了 ${hits} 次；重复声明会重置状态或覆盖前一个实现`)
+    // 不用正则：`` 写在模板字符串里会被解释成退格字符（U+0008），
+    // 正则变成 `var _masked<BS>`，永远匹配不到 —— 而失败信息是「完全没有声明」，
+    // 看起来像源码问题，其实是测试自己的转义错。这条断言踩过这个坑一次，
+    // 所以改成 indexOf 扫描，不给转义留余地。
+    const pos: number[] = []
+    for (let at = fp.indexOf('var ' + name); at !== -1; at = fp.indexOf('var ' + name, at + 1)) {
+      const after = fp[at + 4 + name.length]
+      if (after === undefined || !/[\w$]/.test(after)) pos.push(at)
+    }
+    assert.ok(pos.length >= 1, `${name} 完全没有声明 —— 收口机制不存在`)
+    for (let i = 1; i < pos.length; i++) {
+      const between = fp.slice(pos[i - 1], pos[i])
+      assert.ok(
+        /(?:^|\n)(?:export )?function\b/.test(between),
+        `${name} 在同一段代码里被声明了两次（第 ${i} 次与第 ${i + 1} 次之间没有函数边界）—— ` +
+          'var 是函数作用域提升，后一次赋值会重置状态或覆盖前一个实现'
+      )
+    }
   }
 })
 
@@ -247,35 +347,87 @@ test('ScriptStep 的每个字段都必须被 sanitizeSteps 搬运', () => {
   )
 })
 
-/* ────────────────────────── 6. API 契约漂移（债务） ────────────────────────── */
+/* ────────────────────────── 6. API 契约漂移 ────────────────────────── */
 
-test(
-  '本地 API 的动作类型枚举必须与 openapi 契约一致',
-  {
-    skip:
-      '当前实现 localapi.ts 的 ACTION_TYPES 是 [click,type,press,scroll,navigate,extract,done]，' +
-      '而 docs/api/openapi.yaml 的枚举是 [navigate,click,type,scroll,extract,screenshot,wait,submit]。' +
-      '实现有 press/done、契约没有；契约有 screenshot/wait/submit、实现没有。' +
-      '两边都改或择一为准后取消 skip —— 契约与实现对不上，外部 SDK 必然踩空。'
-  },
-  () => {
-    const impl = read('src/main/modules/localapi.ts')
-    const implTypes = /const ACTION_TYPES[^=]*=\s*new Set\(\[([\s\S]*?)\]\)/.exec(impl)
-    assert.ok(implTypes, '找不到 ACTION_TYPES 定义')
-    const implSet = [...implTypes[1].matchAll(/'([a-z]+)'/g)].map((m) => m[1]).sort()
+/**
+ * 这条原先带着 skip，因为两边真的对不上：
+ *
+ *   实现 localapi.ts  [click,type,press,scroll,navigate,extract,done]
+ *   契约 openapi.yaml [navigate,click,type,scroll,extract,screenshot,wait,submit]
+ *
+ * 实现有 press/done、契约没有；契约有 screenshot/wait/submit、实现没有。
+ * 契约比实现多一个类型，外部 SDK 会写出一调用就 400 的代码；少一个，则新能力
+ * 对 SDK 不可见 —— 两种都是「照着文档写必然踩空」。
+ *
+ * 取消 skip 的条件是「两边一致」，现在把三方一起对齐了：
+ *
+ *   protocol.ts 的 ActionType 联合类型  ←  唯一来源
+ *        ↓ 实现必须覆盖
+ *   localapi.ts 的 ACTION_TYPES          ←  运行时白名单
+ *        ↓ 文档必须一致
+ *   openapi.yaml 的 ActionType.enum      ←  对外契约
+ *
+ * 所以这里不只比两边，而是比三方：只比两边的话，实现和文档可以一起漂到
+ * 一个协议层根本不存在的类型上，而那条路径永远不会被走到 —— 测试全绿，
+ * 调用方全红。
+ */
+test('动作类型：协议 / 实现白名单 / openapi 契约三方必须一致', () => {
+  const protocol = read('src/shared/protocol.ts')
+  const union = /export type ActionType =([\s\S]*?)\n\n/.exec(protocol)
+  assert.ok(union, '找不到 protocol.ts 里的 ActionType 联合类型')
+  const protocolSet = [...union[1].matchAll(/'([a-z]+)'/g)].map((m) => m[1]).sort()
+  assert.ok(protocolSet.length > 0, 'ActionType 解析为空，正则可能已失效')
 
-    const spec = read('docs/api/openapi.yaml')
-    const enumMatch = /enum:\s*\[([^\]]*screenshot[^\]]*)\]/.exec(spec)
-    assert.ok(enumMatch, '找不到 openapi 里的动作枚举')
-    const specSet = enumMatch[1]
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .sort()
+  const impl = read('src/main/modules/localapi.ts')
+  const implTypes = /const ACTION_TYPES[^=]*=\s*new Set\(\[([\s\S]*?)\]\)/.exec(impl)
+  assert.ok(implTypes, '找不到 ACTION_TYPES 定义')
+  const implSet = [...implTypes[1].matchAll(/'([a-z]+)'/g)].map((m) => m[1]).sort()
 
-    assert.deepEqual(implSet, specSet, '实现与 openapi 契约的动作类型不一致')
+  // 用「从 ActionType: 到下一个 schema」截取，而不是找「含 screenshot 的那一行」：
+  // 原先的正则绑在一个即将被删掉的取值上，删掉它测试就找不到枚举了 ——
+  // 那种测试会在「修好」的那一刻变红。
+  const spec = read('docs/api/openapi.yaml')
+  const specBlock = /^    ActionType:[\s\S]*?\n    Action:/m.exec(spec)
+  assert.ok(specBlock, '找不到 openapi 里的 ActionType schema')
+  const specEnum = /enum:\s*\[([^\]]*)\]/.exec(specBlock[0])
+  assert.ok(specEnum, 'ActionType schema 里没有 enum')
+  const specSet = specEnum[1]
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .sort()
+
+  assert.deepEqual(implSet, protocolSet, 'localapi.ts 的 ACTION_TYPES 与 protocol.ts 的 ActionType 不一致')
+  assert.deepEqual(specSet, protocolSet, 'openapi.yaml 的 ActionType.enum 与 protocol.ts 的 ActionType 不一致')
+})
+
+/**
+ * 同一个漂移的另一半：`confirm` 这条旧契约不许回来。
+ *
+ * 文档里曾经有 `POST /v1/tasks/{id}/confirm` 和审计字段
+ * `policy_decision: confirmed_by_user` —— 前者让「同意」变成一个可以调用的
+ * HTTP 端点，后者让「用户确认过」变成调用方写的一句话。两样都不是笔误，
+ * 是同一个设计错误的两面：同意可以由发起方声明。
+ *
+ * 所以这条钉住的不是某个字段名，而是「文档里不能再出现一条批准通道」。
+ */
+test('文档里不得再出现「请求体/端点即可批准」的旧契约', () => {
+  const yaml = read('docs/api/openapi.yaml')
+  const html = read('docs/api.html')
+
+  assert.ok(!/\/confirm\b/.test(yaml), 'openapi.yaml 里又出现了 /confirm 端点')
+  assert.ok(!/policy_decision/.test(yaml), 'openapi.yaml 里又出现了 policy_decision 字段')
+  assert.ok(!/confirmed_by_user/.test(yaml), 'openapi.yaml 里又出现了 confirmed_by_user')
+  assert.ok(!/\/confirm\b/.test(html), 'api.html 里又出现了 /confirm 端点')
+  assert.ok(!/policy_decision|confirmed_by_user/.test(html), 'api.html 里又出现了 policy_decision / confirmed_by_user')
+
+  // 三态必须写进文档：只写 409 不写码，调用方只能一律重试，
+  // 而「一律重试」对着一个明确拒绝的动作就是在骚扰机器前的人。
+  for (const code of ['E_CONSENT_DENIED', 'E_CONSENT_TIMEOUT', 'E_CONSENT_UNAVAILABLE']) {
+    assert.ok(yaml.includes(code), `openapi.yaml 缺少同意失败的错误码 ${code}`)
+    assert.ok(html.includes(code), `api.html 缺少同意失败的错误码 ${code}`)
   }
-)
+})
 
 /* ────────────────── 7. 降级路径的输入来源（安全轴） ────────────────── */
 
@@ -464,5 +616,125 @@ test('actions.ts 里每个失败返回都必须带 failure 分类', () => {
     '这些 `ok: false` 没带 failure 分类：\n' +
       offenders.join('\n') +
       "\n改成 `{ ok: false, message: '…', failure: 'not-found' | 'exec' }`。"
+  )
+})
+
+/* ────────────── 11. dev-only 诊断通道不得漏进构建产物 ────────────── */
+
+/**
+ * 这条断言读的是**构建产物**，不是源码 —— 所以它自带一个「测的产物是不是现在的源码」
+ * 的前置判断。没有这个前置判断，它会以两种方式骗人：
+ *
+ *   1. 有人往源码里加了 `__SS_DIAG__` 但没 build → `out/` 里还是旧的、没有那个字符串
+ *      → **断言通过**。这就是「让 AC-16 红了整整一轮」的那个原因，只是换了个位置。
+ *   2. `out/` 不存在 → 如果静默 return，就是「没验」伪装成「通过」。
+ *
+ * 两种都必须走 skip，**不能走 pass** —— 过期和空是同一类：**没验，不是没问题**。
+ * （同 `7d8fd63`：零条检查不打印「通过」。那次修的是「零条命中」，这次是「零条比对」。）
+ *
+ * ── 「现在还没有、将来会有」的断言，注释必须写清三件事 ──
+ *   ① 现状：本断言当前是空的（源码里还没有这个通道）
+ *   ② 生命周期：它会在通道落地那一刻自动生效，不需要有人记得回来加
+ *   ③ 判据选择：为什么断「产物里没有」而不是「运行期没执行」——
+ *      前者证明**不存在**，后者只证明**这次没走**
+ * ① 是最重要的：**空断言只要自己承认是空的，就不是假绿。** 它和「看起来通过但没测到」
+ * 的区别，只在于有没有这一行注释。
+ *
+ * ── 给实现侧的要求（这条断言检查不了，只能靠评审） ──
+ *   · 必须用构建期常量（`define: { __SS_DEV__ }`）包住。运行期 `process.env.NODE_ENV`
+ *     判断不行：打包后 `NODE_ENV` 常常是 undefined，不只是「分支还在包里」，是**可能误开**。
+ *   · 通道内容不要放 `keys`（宿主 Intl 成员全名），用 `keysLength` 代替。
+ *     `included` / `threw` 才是诊断需要的 —— 主动挂上 `keys` 等于留了「这里有人动过」的标记。
+ */
+test('dev-only 诊断通道不得出现在构建产物里', (t) => {
+  /* ── 三态在「开发流程」和「发布门禁」下必须不同 ──
+     默认（本地 / `npm run check`）：未测量 = skip。这是对的 —— 开发中不 build 是常态，
+     为了这条断言强迫每次 `npm test` 都构建，代价远大于收益。
+     但发布门禁不能这么算：一条**永远 skip** 的断言在门禁里等于不存在，
+     而它在报告里看起来像「有一条覆盖」。所以门禁模式（`SS_REQUIRE_FRESH_BUILD=1`）
+     下把「未测量」判成失败，逼流程先 build。
+
+     这不是把 skip 改成 fail —— 是承认这两种场景对「未测量」的容忍度不一样。 */
+  const REQUIRE_FRESH = process.env['SS_REQUIRE_FRESH_BUILD'] === '1'
+  const notMeasured = (why: string): void => {
+    if (REQUIRE_FRESH) {
+      assert.fail(
+        why +
+          ' —— 门禁模式（SS_REQUIRE_FRESH_BUILD=1）下「未测量」按失败计：' +
+          '发布门禁不能拿一条永远 skip 的断言充覆盖。先 npm run build 再跑。'
+      )
+    }
+    t.skip(why)
+  }
+
+  const outPath = join(ROOT, 'out/main/index.js')
+  let out: string
+  try {
+    out = readFileSync(outPath, 'utf8')
+  } catch {
+    notMeasured('没有 out/main/index.js —— 没验，不是没问题')
+    return
+  }
+
+  // 前置：产物必须是现在的源码构建出来的。语义与 tools/check-build-fresh.mjs 保持一致
+  // （那里是整个 out/ 对 src/ 取最新 mtime）。故意内联而不 import：
+  // 这条断言的有效性不该悄悄依赖另一个脚本的当前实现。
+  const newest = (dir: string): number => {
+    let max = 0
+    for (const name of readdirSync(dir)) {
+      const full = join(dir, name)
+      try {
+        const st = statSync(full)
+        max = Math.max(max, st.isDirectory() ? newest(full) : st.mtimeMs)
+      } catch {
+        // 单个文件读不到不影响整体判断
+      }
+    }
+    return max
+  }
+  let srcAt = 0
+  let outAt = 0
+  try {
+    /* 新鲜度的比较范围收窄到「真的会进 out/main/index.js 的那几个目录」。
+       原来对整个 src/ 取最新 mtime，于是**任何人改一行 renderer 都会让这条断言变成 skip** ——
+       8 个人同时在改，实测这条几乎永远是 skip，也就是名义上覆盖、实际从未生效。
+       判据的正确边界：这条断言只读 out/main/index.js，而只有 src/main 与 src/shared
+       会进这个产物；renderer 里加 `__SS_DIAG__` 根本到不了这里，拿它判新鲜度是错配。 */
+    srcAt = Math.max(newest(join(ROOT, 'src/main')), newest(join(ROOT, 'src/shared')))
+    outAt = newest(join(ROOT, 'out'))
+  } catch {
+    notMeasured('src/ 或 out/ 不可读 —— 没验，不是没问题')
+    return
+  }
+  if (srcAt > outAt) {
+    notMeasured(
+      `产物比源码旧 ${Math.round((srcAt - outAt) / 1000)} 秒，本断言未生效。` +
+        '先 npm run build —— 否则源码里的 __SS_DIAG__ 不会出现在 out/ 里，断言会假绿。'
+    )
+    return
+  }
+
+  /* 判据：**代码里**不得出现，注释里可以出现。
+     第一版直接在原文上搜，结果被一段解释性 JSDoc 判红 —— 那段注释写的正是
+     「早先这里有 `__SS_DIAG__`，被这条断言挡下了」，而主进程产物**不压缩**，
+     注释原样进 out/main/index.js。于是：
+
+       想让它变绿，最直接的动作是删掉那段注释。
+
+     那是把「记录为什么删掉这个通道」的说明删掉，只留下代码 —— 下一轮有人想加回来
+     时看不到任何理由。**一条让注释成为违规的门禁，会主动销毁自己依赖的知识。**
+     所以先剥注释再搜：符号出现在字符串字面量或标识符位置仍然会被抓到。 */
+  const codeOnly = stripComments(out)
+  assert.equal(
+    /__SS_DIAG__/.test(codeOnly),
+    false,
+    '构建产物里出现了 __SS_DIAG__（代码位置，不是注释）。这个通道会暴露' +
+      '「哪些 Intl 构造器被接管了」，跟着生产包发出去就是一个我们自己造的指纹。' +
+      '用构建期常量把它从产物里消掉，不要靠运行期判断。'
+  )
+  // 自检：剥注释不能把整份产物剥没了，否则上面那条恒真
+  assert.ok(
+    codeOnly.length > out.length * 0.5,
+    `剥注释后只剩 ${codeOnly.length} / ${out.length} 字节 —— 剥多了，上面的断言不可信`
   )
 })

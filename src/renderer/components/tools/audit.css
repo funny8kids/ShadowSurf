@@ -90,6 +90,53 @@
   color: var(--red);
 }
 
+/* 「读不到」不是「坏了」：用琥珀而不是红色。
+   红色是一个结论（链断了），琥珀是一个状态（还没判断出来）。
+   两者用同一个颜色，界面就在替系统下一个它下不了的判断。 */
+.au-note.warn {
+  color: var(--amber);
+}
+
+/* 结论下面那半句「所以呢」。换行显示，避免和结论挤成一句长话。 */
+.au-note-sub {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink-3);
+}
+
+/* ── 范围与免责 ── */
+
+/* 这两段是常驻的，不挂在「有数据」那条路径上：
+   只在有记录时才显示的免责，等于大多数用户永远看不到——
+   他第一次打开这页时是空的，而那正是他形成印象的时刻。 */
+
+.au-scope {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ink-3);
+}
+
+.au-scope b {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.au-disclaim {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--amber);
+  background: var(--surface-2);
+  border-left: 2px solid var(--amber);
+  border-radius: var(--r-xs);
+}
+
+.au-disclaim b {
+  font-weight: 600;
+}
+
 /* ── 得分 ── */
 
 .au-score {
@@ -306,11 +353,19 @@
   color: var(--ink);
 }
 
+/* 第二行是「为什么」，比目标列长得多：写入侧现在会拼上
+   「不需要授权（可回退动作，不进闸门）；发起=…；原因；命中「…」；元素=#e7」。
+   父级 `.au-tr > span` 是 nowrap + ellipsis，但 text-overflow 对块级子元素不生效，
+   长文本会被**硬切且没有省略号** —— 读起来像句子本来就到那儿结束。
+   所以这里显式允许换行，宁可行高不齐，也不要把证据切掉一半。 */
 .au-target em {
   display: block;
   font-style: normal;
   font-size: 11.5px;
+  line-height: 1.5;
   color: var(--ink-3);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .au-hash {
@@ -355,4 +410,34 @@
   font-size: 12.5px;
   line-height: 1.75;
   color: var(--ink-3);
+  /* 中文长句在窄容器里容易把「读权限」拆成「读 / 权限」两行。
+     pretty 会把最后一行调长，避免这种孤字。 */
+  text-wrap: pretty;
+}
+
+/* 失败态与空态必须一眼分得开。
+   虚线框在两种状态下都是虚线，靠颜色和「有没有下一步动作」来区分——
+   这里额外加的是重试按钮：空态没有可点的东西，失败态有。 */
+.au-empty.bad {
+  border-color: var(--red);
+  background: var(--surface);
+}
+
+.au-empty.bad b {
+  color: var(--red);
+}
+
+/* 失败态里那句「这不等于没有记录」：它是这条状态下最重要的一句，
+   不能和上面的错误原文用同一种颜色，否则用户只读到技术信息就停了。 */
+.au-empty-hint {
+  max-width: 580px;
+  margin: 8px auto 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+
+.au-empty button {
+  margin-top: 12px;
 }

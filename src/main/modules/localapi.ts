@@ -10,21 +10,30 @@
  * 为什么用 node:http 而不是 Hono/Fastify：这个服务只有 7 个端点、零中间件需求，
  * 引入框架会让「谁能访问、怎么鉴权」被框架的默认行为接管，安全边界反而看不清。
  * 这里每一行 CORS 与鉴权都是显式的。
+ *
+ * 令牌**不再出现在 IPC 状态里**。原先 `state()` 在服务还没启动（`running:false`）时
+ * 就返回完整 token，等于渲染层零交互就能拿到它 —— 一个被 XSS 的渲染层可以自己
+ * `start()` 再自己拿 token，然后 `POST /act` 带 `"confirm":true`，全程没人点过任何东西。
+ * 现在令牌只在主进程内存里，界面要拿只能让主进程写进剪贴板，渲染层始终看不到明文。
  */
 
 import { createServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { app } from 'electron'
+import { app, clipboard } from 'electron'
 import { CH } from '@shared/ipc'
 import type { LocalApiState, Profile } from '@shared/types'
 import type { Action, ActionType } from '@shared/protocol'
 import { dataDir, getStores } from '@main/store'
+import { isSealed, openText, sealText } from '@main/store/seed-seal'
+import { migrateSecretAtRest, writeFileAtomic } from '@main/store/secret-at-rest'
 import { bridgeFor } from '@main/core/cdp'
 import { captureSnapshot } from '@main/agent/snapshot'
-import { ApprovalRequiredError, AuditUnavailableError, executeAction } from '@main/agent/actions'
+import { describeAction, ApprovalRequiredError, AuditUnavailableError, MaskIncompleteError, executeAction } from '@main/agent/actions'
+import { assessRisk } from '@main/agent/risk'
+import { requestConsent } from '@main/agent/consent'
 import { auditGate } from '@main/modules/audit'
 import type { ModuleContext } from './context'
 
@@ -62,15 +71,44 @@ let emitTimer: NodeJS.Timeout | null = null
 let state: LocalApiState = {
   running: false,
   port: DEFAULT_PORT,
-  token: '',
   startedAt: null,
   requests: 0
 }
 
 /* ────────────────────────────── 令牌 ────────────────────────────── */
 
+/**
+ * 令牌只活在这个变量里。
+ *
+ * 它**不进 `state`**：`state` 会通过 `ss:push:local-api-state` 广播给渲染层，
+ * 也会被 `ss:localApi:state` 直接返回。令牌一旦进去，渲染层就有了它，
+ * 而渲染层是整个应用里最可能被页面内容攻破的一层。
+ */
+let secret = ''
+
 function tokenPath(): string {
   return join(dataDir(), TOKEN_FILE)
+}
+
+/**
+ * 把令牌写进磁盘。**落盘形态一律是 `enc:` 密封的**。
+ *
+ * 为什么这个令牌值得和 seed 用同一套保护：seed 泄露 = 身份可推算；令牌泄露 =
+ * 本机可被远程驱动（L2 还要过原生窗口，但 L1 是直通的）。而它的权限比 seed 更高，
+ * 所以没有理由让它明文躺在同一个目录里。
+ *
+ * `mode: 0o600` 保留但**不作为控制项**：Windows 上它不生效（实测 644），
+ * 真正起作用的是 safeStorage 那层。留着是为了 POSIX 上多一道。
+ */
+function writeTokenFile(token: string): void {
+  // 原子写（tmp → rename）在 `store/secret-at-rest.ts`：那是零依赖模块，能被 Node 单测。
+  // 直接 `writeFileSync(target)` 不是原子的 —— 写到一半断电/磁盘满会留下一个**截断的
+  // 令牌文件**，而它承载的是「正在跑的脚本靠它认证」。截断之后 loadToken 读不出字符串
+  // → 重新生成 → 所有在用客户端集体 401，用户完全不知道发生了什么。
+  writeFileAtomic(
+    tokenPath(),
+    JSON.stringify({ token: sealText(token, '本地 API 令牌'), createdAt: Date.now() }, null, 2)
+  )
 }
 
 /**
@@ -80,41 +118,124 @@ function tokenPath(): string {
 function createToken(): string {
   const token = randomBytes(32).toString('hex')
   try {
-    writeFileSync(
-      tokenPath(),
-      JSON.stringify({ token, createdAt: Date.now() }, null, 2),
-      { encoding: 'utf8', mode: 0o600 }
-    )
+    writeTokenFile(token)
   } catch (err) {
     // 落盘失败仍然返回令牌：本次进程内可用，只是下次启动会换一个新的
     console.error('[localapi] 令牌写入失败', err)
   }
+  secret = token
   return token
 }
 
-/** 读磁盘上的令牌；文件不存在或形状不对都视为没有，重新生成而不是卡在启动阶段 */
+/**
+ * 读磁盘上的令牌。
+ *
+ * 三种落盘形态都要认：
+ *   1. `enc:` 密文（本版本写的）→ 解开
+ *   2. 裸 hex（旧版本写的）→ **照用，并立刻密封重写**
+ *   3. 解不开 / 形状不对 → 重新生成
+ *
+ * 第 2 条是这次升级的关键：如果对旧令牌「解不开就换新的」，所有已经在用本地 API
+ * 的脚本会在升级后集体 401，而用户完全不知道发生了什么。令牌不是身份，
+ * 换新的代价看似很低 —— 但对正在跑自动化的用户不是。
+ *
+ * 第 3 条和第 2 条的区别是「解不开」：换了机器/系统账户时旧密文确实用不了，
+ * 这时重新生成是唯一选择，和 `settings.ts` 对 apiKey 的处置一致。
+ */
 function loadToken(): string {
+  let stored: unknown
   try {
     const raw = JSON.parse(readFileSync(tokenPath(), 'utf8')) as unknown
-    if (raw !== null && typeof raw === 'object') {
-      const token = (raw as Record<string, unknown>).token
-      if (typeof token === 'string' && TOKEN_PATTERN.test(token)) return token
-    }
+    if (raw !== null && typeof raw === 'object') stored = (raw as Record<string, unknown>).token
   } catch {
     // 首次运行没有文件，属正常路径
   }
-  return createToken()
+
+  if (typeof stored !== 'string' || stored === '') return createToken()
+
+  let token = stored
+  if (isSealed(stored)) {
+    try {
+      token = openText(stored, '本地 API 令牌')
+    } catch (err) {
+      console.error(
+        '[localapi] 旧令牌解不开（通常是换了机器或系统账户），将重新生成：' +
+          (err instanceof Error ? err.message : String(err))
+      )
+      return createToken()
+    }
+  } else {
+    // 旧版明文：先照用，再就地密封。密封失败不影响本次运行（下次启动再试一次），
+    // 但**不换令牌** —— 换掉会打断正在使用它的客户端。
+    try {
+      writeTokenFile(token)
+    } catch (err) {
+      console.error('[localapi] 旧令牌密封失败（令牌本身仍可用）', err)
+    }
+  }
+
+  if (!TOKEN_PATTERN.test(token)) return createToken()
+  secret = token
+  return token
 }
 
 function ensureToken(): string {
-  if (state.token.length === 0) state.token = loadToken()
-  return state.token
+  if (secret.length === 0) return loadToken()
+  return secret
+}
+
+/**
+ * 启动时把**已经存在**的明文令牌就地密封。
+ *
+ * ── 为什么不能只靠 `loadToken()` ──
+ *
+ * `ensureToken()` 只有两个调用点：启用本地 API 服务（`startService`）、
+ * 以及「复制令牌」按钮。也就是说**从不使用这项功能的用户，明文令牌会一直躺在盘上**。
+ * 而门禁（`tools/verify-seed-at-rest.mjs`）扫的是磁盘状态，不是「用起来之后的状态」——
+ * 一个只有用起来才会修好的迁移，对绝大多数用户等于没修。这和 `sealLegacyBackups`
+ * 在启动时跑是同一个理由。
+ *
+ * ── 逻辑在 `store/secret-at-rest.ts`，这里只负责接线 ──
+ *
+ * 「读 → 判断 → 密封 → 原子写」那一整套在零依赖模块里，因为 `node --test` 加载不了
+ * 这个文件（静态 import 了 electron）。留在本地就只能「读代码证明它对」，那不是验证。
+ * 每条「不动」的分支（不创建 / 不猜形状 / 失败不改原文件）的理由也在那边，
+ * 判据和动作必须待在一起，否则下一个人改一处、另一处漂走。
+ *
+ * 失败不阻断启动：`sealText` 在 safeStorage 不可用时（Linux 无 keyring）会抛，
+ * 那时保持明文是正确的降级 —— 门禁会把它报成红，而不是让它看起来已经修好。
+ */
+function migrateTokenAtRest(): void {
+  const r = migrateSecretAtRest({
+    file: tokenPath(),
+    label: '本地 API 令牌',
+    pick: (raw) =>
+      raw !== null && typeof raw === 'object'
+        ? ((raw as Record<string, unknown>).token as string | undefined)
+        : undefined,
+    isSealed,
+    isWellFormed: (v) => TOKEN_PATTERN.test(v),
+    seal: sealText,
+    // 只换 token 的形态，其余字段（createdAt）原样保留 —— 迁移不该顺手抹掉别的字段
+    render: (sealed, previous) => JSON.stringify({ ...previous, token: sealed }, null, 2)
+  })
+
+  if (r.outcome === 'resealed') {
+    console.log('[localapi] 已把盘上的明文令牌就地密封（令牌值未变）')
+  } else if (r.outcome === 'failed') {
+    console.error('[localapi] 明文令牌密封失败，原文件未改动（下次启动再试）：' + String(r.reason))
+  }
+  // 其余结局（missing / unreadable / not-json / empty / already-sealed / bad-shape）
+  // 都是「原文件一个字节都没动」，启动阶段不需要日志噪音。
 }
 
 /* ────────────────────────────── 状态广播 ────────────────────────────── */
 
+/**
+ * 对外状态里**没有 token 字段** —— 这不是省略，是契约。
+ * 渲染层只需要知道「有没有在跑、在哪个端口」，它不需要凭证本身。
+ */
 function snapshot(): LocalApiState {
-  ensureToken()
   return { ...state }
 }
 
@@ -213,8 +334,11 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
 
 /** 定长比较，避免按字节提前返回泄露令牌前缀 */
 function tokenMatches(given: string): boolean {
+  // 空令牌一律不匹配：两个空 Buffer 做 timingSafeEqual 会返回 true，
+  // 那等于「还没生成令牌」时任何 Bearer 都能过
+  if (secret.length === 0) return false
   const a = Buffer.from(given, 'utf8')
-  const b = Buffer.from(state.token, 'utf8')
+  const b = Buffer.from(secret, 'utf8')
   if (a.length !== b.length) return false
   return timingSafeEqual(a, b)
 }
@@ -262,8 +386,15 @@ function toAction(raw: unknown): Action {
   if (typeof rec.id === 'string') action.id = rec.id
   if (typeof rec.text === 'string') action.text = rec.text
   if (typeof rec.key === 'string') action.key = rec.key
-  if (typeof rec.url === 'string') action.url = rec.url
-  if (typeof rec.query === 'string') action.query = rec.query
+  // query / url 必须裁剪，与 agent 侧 toAction 保持一致。
+  //
+  // 为什么这不是格式洁癖：这两个字段都会进 `assessRisk` 的 haystack，而
+  // `\s+` 类词条（`place\s*order` / `log\s*out`）本来就吃空白，但
+  // 「`place order ` 末尾带空格」和「`place order`」在**只读意图判定**里
+  // 走的是 `intent.includes(...)`，两边裁剪不一致时同一个意图在两条入口
+  // 会得到不同等级。闸门分叉比闸门漏判更难查，因为它取决于调用方走哪条路。
+  if (typeof rec.url === 'string') action.url = rec.url.trim()
+  if (typeof rec.query === 'string') action.query = rec.query.trim()
   if (typeof rec.summary === 'string') action.summary = rec.summary
   if (typeof rec.submit === 'boolean') action.submit = rec.submit
   if (typeof rec.amount === 'number' && Number.isFinite(rec.amount)) action.amount = rec.amount
@@ -409,8 +540,12 @@ async function handleProfiles(
     const action = toAction(payload.action)
     // 外部调用方没有「用户意图」可传，所以这里**不传 intent**：
     // 执行器会按空意图重算，得到永不降级的最保守等级。
-    // 想让 L2 动作通过，只有一条路 —— 请求体里显式写 "confirm": true。
-    const confirmed = payload.confirm === true
+    //
+    // 请求体里的 `confirm` 字段**已经没有任何效力**，留着也不会被读。
+    // 原先 `"confirm": true` 直接把 approvedBy 抬到 'api' —— 外部脚本
+    // （或者一个拿到了令牌的 XSS 载荷）自己声明一句「我确认了」就放行，
+    // 而真正该问的人从头到尾没被问过。
+    // 现在 L2 只能由主进程弹系统原生窗口取得凭证，意味着**机器前必须有人**。
 
     const tab = requireTab(id)
     const cdp = bridgeFor(tab.wc)
@@ -419,24 +554,84 @@ async function handleProfiles(
     // 这里现采一帧再交给执行器，元素编号必须真实存在于当前页面。
     const snap = await captureSnapshot(cdp)
 
+    // 先自己判一次等级：只有知道「这是不是 L2」才谈得上要不要弹确认。
+    // 语义来源必须与执行器一致 —— 都从快照取元素可读名，不吃调用方输入。
+    const target = action.id ? snap.elements.find((el) => el.id === action.id) : undefined
+    const verdict = assessRisk(action, '', target?.name ?? '')
+
+    let ticket: string | undefined
+    if (verdict.level === 'L2') {
+      const outcome = await requestConsent({
+        action,
+        level: 'L2',
+        reason: verdict.reason,
+        ...(verdict.matched !== undefined ? { matched: verdict.matched } : {}),
+        target: describeAction(action, snap),
+        origin: 'localapi'
+      })
+      if (outcome.kind !== 'granted') {
+        // 三种失败要分开报，否则调用方只能看到「409」然后猜：
+        // 拒绝 = 人明确不同意（别重试，去问人）；超时 = 人不在（补上人再重试）；
+        // 弹不出来 = 环境问题（重试有意义）。混成一个码，客户端只能一律重试，
+        // 而「一律重试」对着一个明确拒绝的动作就是在骚扰机器前的人。
+        const detail = `这是一个不可逆动作，需要有人在应用窗口上点「允许执行」才能继续。${verdict.reason}`
+        if (outcome.kind === 'denied') {
+          throw new ApiError(
+            409,
+            'E_CONSENT_DENIED',
+            `${detail} 本次已被本机用户明确拒绝（在确认窗口点了「取消」），请勿自动重试。`
+          )
+        }
+        if (outcome.kind === 'timeout') {
+          throw new ApiError(
+            409,
+            'E_CONSENT_TIMEOUT',
+            `${detail} 120 秒内无人确认，已按拒绝处理。`
+          )
+        }
+        // 503：环境问题，调用方补什么字段都没用，重试才有意义
+        throw new ApiError(
+          503,
+          'E_CONSENT_UNAVAILABLE',
+          `${detail} 本次无法弹出系统确认窗口（应用窗口已关闭或环境异常）。`
+        )
+      }
+      ticket = outcome.ticket
+    }
+
     let result
     try {
       result = await executeAction(cdp, action, snap, {
-        approvedBy: confirmed ? 'api' : 'none',
+        ...(ticket !== undefined ? { ticket } : {}),
+        origin: 'api',
         onGate: (event) => auditGate(getStores(), event)
       })
     } catch (err) {
       if (err instanceof ApprovalRequiredError) {
-        // 409 而不是 403：调用方补一个字段就能过，不是权限不够。
+        // 走到这里说明我们自己那次判定是 L1、执行器重算成了 L2（两份语义不一致）。
+        // 不再提供「加个字段重试」的出路：那正是被拆掉的那条旁路。
         throw new ApiError(
           409,
           'E_APPROVAL_REQUIRED',
-          `${err.message}；确认无副作用后在请求体加 "confirm": true 重试`
+          `${err.message}；不可逆动作必须由人在应用窗口上确认，请重试并等待系统确认框`
         )
       }
       if (err instanceof AuditUnavailableError) {
         // 503：环境问题，调用方补什么字段都没用，重试才有意义
         throw new ApiError(503, 'E_AUDIT_UNAVAILABLE', err.message)
+      }
+      if (err instanceof MaskIncompleteError) {
+        // 503 而不是 4xx：调用方的请求没有任何问题，是**这个环境没伪装住**。
+        // 不给出「加个字段跳过」的出路 —— 那等于让调用方替用户决定
+        // 「指纹漏了也可以付钱」，而这正是闸门要拦的东西。
+        // 单独一个错误码，是为了让调用方能区分「等一会儿重试」（环境修好）
+        // 和「补字段重试」（永远没用）—— 混成 500 时这两件事长得一样。
+        throw new ApiError(
+          503,
+          'E_MASK_INCOMPLETE',
+          `${err.message}（伪装状态：${err.state}，缺口：${err.kind}）；` +
+            '该环境的指纹未完全生效，不可逆动作已拦下，未执行'
+        )
       }
       throw err
     }
@@ -520,7 +715,7 @@ async function startService(port?: number): Promise<LocalApiState> {
   if (server !== null) {
     if (target === state.port) {
       // 同端口只换令牌，不重建监听：重启监听会打断客户端已经建立的 keep-alive 连接
-      state = { ...state, token: createToken() }
+      createToken()
       emit()
       return snapshot()
     }
@@ -531,13 +726,14 @@ async function startService(port?: number): Promise<LocalApiState> {
     next.on('error', (err) => console.error('[localapi] 服务异常', err))
     const previous = server
     server = next
-    state = { running: true, port: target, token: createToken(), startedAt: Date.now(), requests: 0 }
+    createToken()
+    state = { running: true, port: target, startedAt: Date.now(), requests: 0 }
     emit()
     await closeServer(previous)
     return snapshot()
   }
 
-  const token = ensureToken()
+  ensureToken()
   const srv = buildServer()
 
   try {
@@ -550,7 +746,7 @@ async function startService(port?: number): Promise<LocalApiState> {
 
   srv.on('error', (err) => console.error('[localapi] 服务异常', err))
   server = srv
-  state = { running: true, port: target, token, startedAt: Date.now(), requests: 0 }
+  state = { running: true, port: target, startedAt: Date.now(), requests: 0 }
   emit()
   return snapshot()
 }
@@ -575,9 +771,31 @@ async function stopService(): Promise<LocalApiState> {
 export function registerLocalApiModule(ctx: ModuleContext): void {
   context = ctx
 
+  // 启动即密封历史明文令牌。放在注册里而不是 startService 里，见 migrateTokenAtRest 的注释：
+  // 不启用本地 API 的用户永远走不到 startService，他们的明文令牌会一直在盘上。
+  migrateTokenAtRest()
+
   ctx.handle(CH.localApi.state, () => snapshot())
   ctx.handle(CH.localApi.start, (_event, port) =>
     startService(typeof port === 'number' ? port : undefined)
   )
   ctx.handle(CH.localApi.stop, () => stopService())
+
+  /**
+   * 把令牌写进剪贴板，**但不把它交给渲染层**。
+   *
+   * 为什么不是 `revealToken(): string`：那只是把泄露点从 `state()` 挪到另一个通道，
+   * 被 XSS 的渲染层照样调一下就拿走明文 —— 挪一个函数名治不好任何事。
+   * 用户真正的需求是「把令牌粘到别处」，剪贴板正好满足这一点，而渲染层读不到剪贴板
+   * （navigator.clipboard.readText 需要用户手势与权限，不是随手可调）。
+   *
+   * 代价：界面上没法「显示」完整令牌。这是有意的取舍 —— 能显示就能被读走。
+   * 如果将来一定要在界面上显示，必须走「系统原生窗口确认 + 只显示一次」，
+   * 而不是新增一个返回明文的通道。
+   */
+  ctx.handle(CH.localApi.copyToken, () => {
+    const token = ensureToken()
+    clipboard.writeText(token)
+    return { copied: true }
+  })
 }

@@ -26,7 +26,7 @@ import type { ScriptRunOptions } from '@shared/ipc'
 import type { ActionType, AgentStep } from '@shared/protocol'
 import { Button, Icon, Modal, cx, useToast } from '@renderer/components/ui'
 import { bridge, errorMessage } from '@renderer/lib/api'
-import { formatRelative, profileNo } from '@renderer/lib/format'
+import { ACTION_LABEL, formatRelative, profileNo } from '@renderer/lib/format'
 import './script.css'
 
 export interface PanelProps {
@@ -35,16 +35,16 @@ export interface PanelProps {
 
 const DEFAULT_DELAY = 300
 
-/** 下拉里显示中文名，值仍然是协议里的 ActionType，避免两套枚举 */
-const ACTION_LABEL: Record<ActionType, string> = {
-  click: '点击',
-  type: '输入',
-  press: '按键',
-  scroll: '滚动',
-  navigate: '打开网址',
-  extract: '提取内容',
-  done: '结束脚本'
-}
+/**
+ * 动作类型 → 中文：**不在这里自己写一份**。
+ *
+ * 这里原来有一份独立副本，7 条里 3 条措辞和正本不同（`打开网址` / `提取内容` / `结束脚本`）。
+ * 症状是「同一个动作在脚本编辑器下拉里叫『打开网址』、在审计页叫『导航』」——
+ * 用户不会把这个当 bug 报，他会以为这是两个不同的动作。
+ *
+ * 正本在 `@shared/protocol` 的 `ACTION_LABEL`（主进程写审计「目标」列时也要用），
+ * 经 `@renderer/lib/format` 转出。要改措辞就改正本，一处改、两处生效。
+ */
 
 const ACTION_ORDER: ActionType[] = ['click', 'type', 'press', 'scroll', 'navigate', 'extract', 'done']
 
@@ -364,14 +364,17 @@ export function ScriptPanel({ profiles }: PanelProps) {
    * 确认后从被拦下的那一步续跑。
    *
    * 不从头再来：前面几步已经在页面上留下状态，重放等于执行两次。
-   * 闸门在预扫描阶段拦下时 executed 是 0，续跑点就是第一步风险动作，
-   * 和运行中拦下的情况共用同一条路径。
+   *
+   * 注意这里**不带任何「我已确认」的标记** —— 那不是省略，是被删掉的字段。
+   * 续跑时主进程会为那一步重新弹出系统原生确认窗口，用户当场点了才跑。
+   * 传 `confirmed: true` 这种「渲染层自称用户已同意」的东西，等于把闸门
+   * 交给最可能被攻破的那一层，所以它已经不存在了（传了也会被忽略）。
    */
   async function confirmRun() {
     const pending = pendingRun
     setPendingRun(null)
     if (!pending || !pending.failedAt) return
-    await run({ confirmed: true, startAt: pending.failedAt })
+    await run({ startAt: pending.failedAt })
   }
 
   /* ────────────────────────────── 从任务导入 ────────────────────────────── */
@@ -839,14 +842,14 @@ export function ScriptPanel({ profiles }: PanelProps) {
 
       <Modal
         open={pendingRun !== null}
-        title="这段回放含不可逆步骤"
+        title="这一步需要你当面确认"
         icon="alert"
         onClose={() => setPendingRun(null)}
         footer={
           <>
             <Button onClick={() => setPendingRun(null)}>取消</Button>
             <Button variant="danger" onClick={() => void confirmRun()}>
-              确认并继续
+              重试这一步
             </Button>
           </>
         }
@@ -854,8 +857,12 @@ export function ScriptPanel({ profiles }: PanelProps) {
         <p>{pendingRun?.error}</p>
         <p>
           {pendingRun && pendingRun.executed > 0
-            ? `前 ${pendingRun.executed} 步已经执行，确认后从第 ${pendingRun.failedAt} 步继续，不会重放前面的步骤。`
-            : `确认后从第 ${pendingRun?.failedAt ?? 1} 步开始执行。`}
+            ? `前 ${pendingRun.executed} 步已经执行，可以从第 ${pendingRun.failedAt} 步继续，不会重放前面的步骤。`
+            : `可以从第 ${pendingRun?.failedAt ?? 1} 步开始执行。`}
+        </p>
+        <p>
+          点「重试这一步」后会弹出系统确认窗口，你需要在那里点「允许执行」；
+          这个页面没有代替它批准的能力。
         </p>
         <p>取消则页面停在当前状态，脚本不会自动回滚。</p>
       </Modal>

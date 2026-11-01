@@ -55,6 +55,54 @@ export type ActionType =
   | 'extract'
   | 'done'
 
+/**
+ * 动作类型 → 中文。**唯一来源**。
+ *
+ * 放在 shared 而不是各层各一份，是因为它同时被两个进程用到：
+ * 主进程往审计里写「目标」列（`modules/audit.ts`），渲染层画任务缩略标签
+ * （`lib/format.ts` → `TaskList.tsx` / `AuditPanel.tsx`）。两份副本的下场是
+ * 改一份、另一份静默留在旧词上 —— 而症状是「同一个动作在两个页面叫不同名字」，
+ * 没人会把它当 bug 报。
+ *
+ * 用 `Record<ActionType, string>` 而不是普通对象：协议里加一个动作时，
+ * 这里少写一条会**编译失败**，而不是在界面上显示英文原文。
+ */
+export const ACTION_LABEL: Record<ActionType, string> = {
+  click: '点击',
+  type: '输入',
+  press: '按键',
+  scroll: '滚动',
+  navigate: '导航',
+  extract: '提取',
+  done: '结束'
+}
+
+/**
+ * 把一个动作拆成「给人看的目标列」和「给复盘用的技术标识」。
+ *
+ * 原先审计里是把协议原文直接拼进去的：
+ *     [action.type, action.id ? `#${action.id}` : '', action.url ?? ''].join(' ')
+ * 于是中文界面里出现英文动作名（`navigate https://…`）和一轮快照用完即弃的
+ * 元素编号（`click #e7`）—— 用户既看不懂，也拿它做不了任何事。
+ *
+ * 元素编号没有丢，只是挪进 `marker`：
+ *   - 目标列是给人扫一眼的，编号在那里是噪音；
+ *   - marker 会被拼进审计的 detail，需要复盘时才看；
+ *   - 两列**都参与哈希**（`digest` 的输入含 target 与 detail），所以挪位置不改变
+ *     可校验性。反过来是硬约束：绝不能为了界面上好看，把信息塞进一个不参与哈希的
+ *     展示字段 —— 那种字段谁都能改，审计就不再是审计了。
+ *
+ * 放在 shared 里（而不是 `modules/audit.ts` 内部）是为了能被 Node 单测：
+ * `audit.ts` 静态 import 了 electron，纯 Node 里连模块都求值不了。
+ */
+export function describeAction(action: Action): { target: string; marker: string } {
+  const verb = ACTION_LABEL[action.type] ?? action.type
+  const target = [verb, action.id ? '某个元素' : '', action.url ?? '']
+    .filter((v) => v.length > 0)
+    .join(' ')
+  return { target, marker: action.id ? `；元素=#${action.id}` : '' }
+}
+
 export interface Action {
   type: ActionType
   /** click / type / press 必填，必须是当轮快照里出现过的编号 */
@@ -87,6 +135,63 @@ export interface ModelDecision {
 /* ────────────────────────────── 风险分级 ────────────────────────────── */
 
 /**
+ * 闸门与执行器**唯一允许**的语义拼接方式。
+ *
+ * ── 为什么必须只有一份实现 ──
+ *
+ * 这两处各自拼过一次串，而且拼法不同：
+ *
+ *   loop.ts      extra = [name, thought].join(' ')                  ← name 出现 1 次
+ *   actions.ts   extra = [name, approval.extra].join(' ')            ← name 出现 2 次
+ *
+ * 抑制规则看的是「命中词**紧邻**的右文」。name 被拼两次之后，第一个 name 的右文
+ * 从 `"s"` 变成了 `"Checkout s s"` —— 相邻关系被打断，抑制失效，于是
+ * **闸门判 L1、执行器判 L2**：不弹确认框、没有票、动作被拦，用户从未被问过。
+ *
+ * 实测（`name='Checkout s'`, `thought='s'`）：
+ *   拼一次 → L1（抑制生效）
+ *   拼两次 → L2（抑制失效）
+ *
+ * 也就是说「两边结论一致」原先靠的是一个**下标的巧合**，不是断言。
+ * 把拼接收成一个函数之后，「拼两次」在结构上写不出来。
+ */
+export function semanticOf(name: string, thought: string): string {
+  return [name, thought].filter((v) => v.length > 0).join(' ')
+}
+
+/**
+ * 按编号取快照元素。**编号先 trim 再比**。
+ *
+ * 三条路径原先各写一遍 `snapshot.elements.find(el => el.id === id)`，
+ * 其中执行器那一条 trim 了、闸门那两条没有。于是模型吐出 `" e7"` 时：
+ * 闸门查不到元素 → 语义里没有元素名 → 判 L1 → 不弹框；
+ * 执行器 trim 后查到了 → 判 L2 → 抛 ApprovalRequiredError。
+ * 用户从头到尾没被问过，动作被拦，模型重试到步数耗尽。
+ *
+ * 这种「同一份数据两种查法」不该靠人记住，所以收敛成一个函数。
+ */
+export function findElement(snapshot: PageSnapshot, id?: string): SnapshotElement | undefined {
+  if (typeof id !== 'string') return undefined
+  const key = id.trim()
+  if (key.length === 0) return undefined
+  return snapshot.elements.find((el) => el.id === key)
+}
+
+/**
+ * 闸门与执行器**唯一**的语义入口。
+ *
+ * 元素名一律由这里从快照取，`note` 只放「模型自述 / 录制备注」这类不含元素名的文本。
+ * 这样「name 被拼两次」在结构上写不出来 —— 不是靠三条路径的作者都记得只拼一次。
+ *
+ * 历史：这个 bug 真实发生过。闸门判 L1、执行器判 L2，动作被拦而用户从未被问过，
+ * 实测 98 个用例里 50 个误拦、0 个真绕过 —— 它不会放行危险动作，
+ * 但会让支付按钮彻底点不动，用户只会去把整个机制关掉。
+ */
+export function actionSemantic(action: Action, snapshot: PageSnapshot, note?: string): string {
+  return semanticOf(findElement(snapshot, action.id)?.name ?? '', note ?? '')
+}
+
+/**
  * L0 只读 / L1 可逆 / L2 不可逆（必须人工确认）
  * 判定发生在**执行器**，不依赖模型自觉。
  */
@@ -97,6 +202,20 @@ export interface RiskVerdict {
   reason: string
   /** 命中的关键词，用于在确认弹窗里高亮 */
   matched?: string
+  /**
+   * 命中了词表、但被宾语抑制掉的那些词根（可能不止一个）。
+   *
+   * 为什么要把「没命中」和「命中后被抑制」分开暴露：两者都返回 L1，
+   * 但含义相反 —— 前者是「这句话里没有不可逆语义」，后者是「有，但判定它是
+   * 名词不是动作」。合并之后，测试只能断言 L1，于是「抑制规则写宽了、
+   * 把真动作也吞了」和「词表根本没覆盖这门语言」会得到同一个绿。
+   * 这个字段存在，那两种情况才各自可观测。
+   *
+   * **必须是数组**：一条动作可以同时命中多个被抑制的词根（`支払い方法と注文履歴`
+   * 会同时抑制 `支払` 和 `注文`）。只记第一个的话，「抑制规则误吞了支付」这种
+   * 情况会因为另一个词根先被记下而从证据里消失 —— 审计记录里少了最关键的那条。
+   */
+  suppressed?: string[]
 }
 
 /* ────────────────────────────── 执行结果 ────────────────────────────── */

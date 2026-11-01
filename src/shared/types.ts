@@ -68,6 +68,59 @@ export interface FingerprintConfig {
   webgpu: boolean
 }
 
+/**
+ * 伪装（指纹注入）状态。
+ *
+ * ── 为什么必须有 `'unknown'` ──
+ *
+ * `Page.addScriptToEvaluateOnNewDocument` 的返回只证明「脚本已排进队列」，
+ * 不证明任何一条属性真的装上了。原先这条返回之后就置 `'ok'`，于是
+ * **一个属性都没装上的页面，状态也是 ok** —— 门禁读到的是「从未测量过的成功」。
+ * 这正是本轮反复出现的那类假绿：「没报错」和「没跑」在外部完全同形。
+ *
+ * 所以 `'unknown'` 的语义是**脚本已下发、结果未回读**，它既不等于成功也不等于失败，
+ * 而门禁对它的处置是**拒绝 L2**（见 `actions.ts` 的判定表）。
+ * 真正的 `'ok'` 只能由「页面台账回读 = 0 条失败」来置。
+ */
+export type MaskState = 'unknown' | 'ok' | 'rolled-back' | 'degraded'
+
+/**
+ * 失败来源。
+ *
+ * 页面决定「是否可信」，子目标决定「可信到什么程度」：
+ * page 侧失败 → 拒绝 L2；worker / iframe 侧失败 → 界面告警 + 审计留痕，不拦 L2。
+ * 理由：worker 注入当前是停用状态（`WORKER_INJECTION_ENABLED = false`），
+ * 若它也算拦截条件，所有 L2 都会被拦 —— 闸门全阻断等于用户把闸门关掉，比漏判更糟。
+ */
+export type MaskSource = 'page' | 'worker' | 'iframe' | 'other'
+
+export interface MaskFailure {
+  /** 出问题的属性名，或造成降级的那个 target */
+  attr: string
+  reason: string
+  source: MaskSource
+}
+
+export interface MaskStateRecord {
+  /** 会话内有效：窗口销毁即失效，跨会话无意义 */
+  webContentsId: number
+  profileId: string
+  state: MaskState
+  failed: MaskFailure[]
+  at: number
+}
+
+/**
+ * 落盘的那一份（`Profile.maskLast`）。
+ *
+ * 去掉 `webContentsId`：它是本次进程里的编号，写进盘只会让下一个会话读到
+ * 一个指向不存在窗口的数字，看起来像证据其实不是。
+ *
+ * **门禁不读这个字段。** 它是「这个环境上次会话有没有回滚过」的历史，
+ * 给界面和审计看；门禁读的是进程内的实时状态（见 `setMaskStateLookup` 的注释）。
+ */
+export type MaskLastRecord = Omit<MaskStateRecord, 'webContentsId'>
+
 export interface Profile {
   /** prf_ 前缀 + 12 位 base32 */
   id: string
@@ -89,6 +142,14 @@ export interface Profile {
   lastUsedAt: number | null
   /** 最近一次启动失败的原因，status==='error' 时有值 */
   lastError?: string
+  /**
+   * 上一次会话结束时这个环境的伪装状态。
+   *
+   * 只用于界面与审计：重启后窗口重新测量，这条记录**必然**是旧的，
+   * 所以展示时必须带上 `at` 并写明「上次会话」，不能让人当成当前状态。
+   * 门禁不读它 —— 拿一个可能过期的值去拒绝合法操作，比漏判更难查。
+   */
+  maskLast?: MaskLastRecord | null
 }
 
 export interface CreateProfileInput {
@@ -244,7 +305,43 @@ export interface FingerprintTemplate {
 
 /* ────────────────────────────── 迁移包 ────────────────────────────── */
 
-export interface MigrationBundle {
+/**
+ * 单条密文。字段与 `core/portable-seed.ts` 的 `SealedBlob` 结构一致。
+ *
+ * 两处各写一份是有意的，不是漏了复用：`portable-seed.ts` 刻意对 `@shared`
+ * 保持零依赖（它要能被 `node --test` 直接跑，加密逻辑如果只能靠「启动整个
+ * Electron 再手工点一遍」验证，那它实际上不会被验证）。所以它不能反向
+ * 引用这里的类型。漂移由编译器兜住 —— 导出时 `sealer.seal()` 的返回值要
+ * 赋给 `sealed` 字段，形状对不上就是编译错误。
+ */
+export interface BundleSealedBlob {
+  /** base64，12 字节 GCM nonce，**每条独立** */
+  iv: string
+  /** base64，16 字节 GCM tag */
+  tag: string
+  /** base64，密文 */
+  ct: string
+}
+
+/** 整个包的 KDF 头。所有条目共用一次 scrypt，靠 HKDF 分离出每条自己的密钥 */
+export interface BundleSealHeader {
+  v: 2
+  kdf: 'scrypt'
+  n: number
+  r: number
+  p: number
+  /** base64，16 字节随机盐 */
+  salt: string
+}
+
+/**
+ * v1：只有可见信息，**没有任何身份参数**。
+ *
+ * 保留这个类型不是为了让新版本还能导出 v1 —— 导出只会产出 v2。它是为了
+ * 能**读懂**旧包并把它拦在门外：`version: 1` 的包导入后每个环境都会拿到一套
+ * 全新身份，而界面上看不出区别。
+ */
+export interface MigrationBundleV1 {
   version: 1
   exportedAt: number
   app: string
@@ -252,7 +349,34 @@ export interface MigrationBundle {
   proxies: MigrationProxy[]
 }
 
-/** 迁移包里的环境：不含 apiKey、不含明文代理密码（用 key 占位） */
+/** v2 的一个环境：明文层只有 `name` / `platform`，身份在 `sealed` 里 */
+export interface MigrationBundleEntry {
+  name: string
+  platform: OSKind
+  sealed: BundleSealedBlob
+}
+
+/**
+ * v2：口令封装的迁移包。
+ *
+ * 版本号是**必填字段而不是可选开关**。如果写成「有 `entries` 就按 v2 读、
+ * 没有就按 v1 读」，那么旧版应用读到 v2 包时会走 v1 分支 —— 而旧版的
+ * `parseBundle` 是白名单重建（只取它认识的字段），它会**静默丢掉**整个
+ * `entries`，然后按「没有身份」的 v1 语义给用户建出一批新身份，还报成功。
+ * 版本号存在，旧版就会明确拒绝；可选字段存在，旧版就会安静地做错事。
+ */
+export interface MigrationBundleV2 {
+  version: 2
+  exportedAt: number
+  app: string
+  header: BundleSealHeader
+  entries: MigrationBundleEntry[]
+  proxies: MigrationProxy[]
+}
+
+export type MigrationBundle = MigrationBundleV1 | MigrationBundleV2
+
+/** 迁移包里的环境（v1 专用：v2 的等价物是 `MigrationBundleEntry`） */
 export interface MigrationProfile {
   name: string
   platform: OSKind
@@ -305,8 +429,12 @@ export interface ScriptRunResult {
   /**
    * 回放停在某一步等人工确认。
    *
-   * 和普通失败的区别是「再跑一次就好」：带上 `confirmed: true` 和
-   * `startAt: failedAt` 重发，会从停下的那一步续跑，不重放已经执行过的步骤。
+   * 和普通失败的区别是「再跑一次就好」：带上 `startAt: failedAt` 重发，
+   * 会从停下的那一步续跑，不重放已经执行过的步骤。
+   *
+   * 注意这里**没有「确认标记」可以传**：续跑时那一步会重新弹系统确认框，
+   * 用户当场点了才跑。原先的 `confirmed: true` 是渲染层自称「用户已同意」，
+   * 等于把授权交给可能已被攻破的那一层。
    */
   needsConfirm?: boolean
 }
@@ -326,12 +454,133 @@ export interface AuditEntry {
   hash: string
 }
 
+/**
+ * 审计链校验结论的分类。
+ *
+ * 前四种是**结论**：「链有问题，断在这里」。
+ * 最后一种 `unreadable` 是**不知道**：文件读不到或已损坏，根本没读到内容 ——
+ * 它必须和「断链」在界面上长得不一样。把「读不到」渲染成「链断了」是造一个
+ * 假结论；反过来渲染成「正常」则是把一次可能的删除/破坏报成绿灯。
+ */
+export type AuditVerifyKind =
+  | 'head-truncated'
+  | 'seq-gap'
+  | 'prev-mismatch'
+  | 'content-mismatch'
+  | 'unreadable'
+  /**
+   * 尾部被删 / 被替换 / 锚点落后。
+   *
+   * 和 `head-truncated` 必须分开：那一个是「最老的几条不见了」，链条本身还连着；
+   * 这一个是「最新的几条不见了」，剩下的部分**完全自洽** —— 序号连续、prev 全对、
+   * 每条 hash 都能重算对上。链内比对永远发现不了它，只有日志外面的锚点能。
+   */
+  | 'tail-truncated'
+  /**
+   * 锚点还没建立（升级上来的旧数据，或 settings.json 被删）。
+   *
+   * 不是「断链」，也不是「通过」：这一轮确实无法判断尾部有没有被删。
+   * 界面上必须长得和两者都不一样，否则「删掉 settings.json」就成了一条绕过路径。
+   */
+  | 'unanchored'
+
 export interface AuditVerifyResult {
-  ok: boolean
+  /**
+   * 链路自洽吗。**刻意不叫 `ok`。**
+   *
+   * `preload/index.ts` 用「返回体里有没有 `ok` 字段」判断这是不是 `Result<T>` 包装：
+   *
+   *     if ('ok' in res) { if (res.ok) return res.data; throw … }
+   *
+   * 而正常路径主进程的 `handle()` 会把它包成 `{ ok: true, data: <本对象> }` —— 拆一层
+   * 刚好。可只要任何一环少包或多包一层（新加通道、手写 handler、测试桩、将来某个
+   * wrapper 改动），渲染层拿到的就是 `undefined`，面板里一次属性访问就抛，React 卸载
+   * 整棵树 → **审计面板直接空白，用户连报错都看不到**。
+   *
+   * 改名的第二个理由更根本：一个本身要被 `Result<T>` 包着的对象自己再叫 `ok`，
+   * 读代码的人分不清「传输成功」和「校验通过」—— 而断链时这两件事**正好相反**
+   * （传输成功、校验失败）。叫 `consistent` 之后 `{ok:true, data:{consistent:false}}`
+   * 是自解释的。
+   *
+   * 更严的做法是判别联合（`{consistent:true} | {consistent:false; kind}`），那样
+   * 「`consistent:false` 却没有 `kind`」在类型上写不出来。没这么做的原因是
+   * `ChainVerdict` 还要多带一个 `adoptHead`，拆成联合后 `audit.ts` 里
+   * `const { adoptHead, ...result } = verdict` 这一句就没法直接满足联合类型，
+   * 需要把内核的返回也一起拆成联合 —— 那是独立的一步，不该和这次改名混在一起。
+   */
+  consistent: boolean
   total: number
   /** 第一条断链的位置，从 1 开始 */
   brokenAt?: number
+  /**
+   * 断链 / 无法判断的原因。
+   *
+   * `unreadable` 时**不会**带 `brokenAt` —— 没有「断在第几条」这回事，压根没读到。
+   */
+  kind?: AuditVerifyKind
   message: string
+}
+
+/* ────────────────────────────── 数据健康 ────────────────────────────── */
+
+/**
+ * 一个数据文件不可用的完整快照。
+ *
+ * 和 `StoreCorruptError` 的字段对齐，但这里是**可序列化**的：它要穿过 IPC
+ * 到渲染层，Error 实例过不去。
+ */
+export interface StoreCorruptionInfo {
+  /**
+   * io = 文件读不到（权限/被占用），数据本身未必有问题
+   * crypto = 内容读得出来但解不开（换了机器 / 密钥丢了），文件也没坏
+   * 其余 = 内容确实坏了
+   */
+  kind: 'parse' | 'shape' | 'version' | 'io' | 'crypto'
+  file: string
+  detail: string
+  /** 检测到损坏时留下的字节副本；没留成就是 null（原文件同样没被改动） */
+  backupPath: string | null
+  at: number
+}
+
+export interface StoreFileHealth {
+  name: string
+  /** 真实绝对路径。数据目录里 `.json` 与无后缀混用，所以只能报路径不能报规则 */
+  file: string
+  exists: boolean
+  /** 盘上实际的 schema 版本（0 = 旧裸格式） */
+  schemaVersion: number
+  corruption: StoreCorruptionInfo | null
+  /** 读已降级成空值、写已全拒。盘上的数据没有被清掉，但界面看不到 */
+  degraded: boolean
+}
+
+export interface StoreBackupHealth {
+  path: string
+  name: string
+  bytes: number
+  at: number
+  /** corrupt = 损坏文件的字节副本；preupgrade = 迁移前快照；schema = 旧命名的迁移快照 */
+  origin: 'corrupt' | 'preupgrade' | 'schema'
+  /**
+   * 备份文件里检出的明文 seed 条数。
+   *
+   * 大于 0 意味着**身份派生根以明文留在了盘上**，而主文件里它已经被加密或已废弃 ——
+   * 这类备份是纯负债，但不要自动删（它可能仍是唯一的已知良好快照），只标红让人处理。
+   */
+  plaintextSeeds: number
+}
+
+export interface StoreHealth {
+  dataDir: string
+  stores: StoreFileHealth[]
+  backups: StoreBackupHealth[]
+  /** 任一 store 处于损坏 / 只读降级 */
+  degraded: boolean
+  /** 一句话结论，null = 一切正常 */
+  headline: string | null
+  /** 逐条给用户看的提示（含该做什么、不该做什么） */
+  notes: string[]
 }
 
 /* ────────────────────────────── 一致性自检 ────────────────────────────── */
@@ -395,8 +644,15 @@ export interface HistoryItem {
 export interface LocalApiState {
   running: boolean
   port: number
-  /** 访问令牌，客户端放 Authorization: Bearer <token> */
-  token: string
+  /**
+   * 这里**故意没有 `token`**。
+   *
+   * 这个结构会经 `ss:localApi:state` 与 `ss:push:local-api-state` 到达渲染层，
+   * 而渲染层是最可能被页面内容攻破的一层。令牌放在这里等于把凭证交给它：
+   * 服务还没启动（running:false）时也能读到，于是「启动 + 读令牌 + 带 confirm:true
+   * 调 /act」可以全程零人工交互完成。令牌现在只存在主进程内存里，
+   * 需要交到用户手上时由主进程写剪贴板。
+   */
   startedAt: number | null
   /** 已处理的请求数 */
   requests: number
@@ -409,6 +665,13 @@ export interface IpcError {
   code: string
   message: string
   detail?: string
+  /**
+   * 结构化补充信息。目前只有 `legacy-identity-loss` 用它列出「导入后会变的具体字段」。
+   *
+   * 不做成 `Record<string, unknown>` 是有意的：那个类型的每个读取点都要
+   * 自己校验，而校验漏掉的表现是「界面上少了一栏」，不会报错。
+   */
+  lostFields?: string[]
 }
 
 export type Result<T> = { ok: true; data: T } | { ok: false; error: IpcError }

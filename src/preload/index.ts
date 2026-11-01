@@ -29,9 +29,14 @@ async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
     const err = new Error(wrapped.error?.message ?? '操作失败') as Error & {
       code?: string
       detail?: string
+      lostFields?: string[]
     }
     err.code = wrapped.error?.code
     err.detail = wrapped.error?.detail
+    // 结构化补充信息必须原样过桥。丢了它，`legacy-identity-loss` 在渲染层
+    // 就只剩一句「身份会变」的泛泛之谈 —— 而那个对话框的全部价值就在于
+    // 把「具体变哪几项」摆到用户面前。
+    err.lostFields = wrapped.error?.lostFields
     throw err
   }
   return res as T
@@ -90,7 +95,8 @@ const api: ShadowSurfAPI = {
   agent: {
     run: (req) => invoke(CH.agent.run, req),
     cancel: () => invoke(CH.agent.cancel),
-    confirm: (approved) => invoke(CH.agent.confirm, approved),
+    // 这里原本有 confirm(approved)。它已经随通道一起删掉：
+    // 渲染层不能断言「用户同意了」，只能请求（run）或取消（cancel）。
     snapshot: (profileId, tabId) => invoke(CH.agent.snapshot, profileId, tabId),
     onEvent: (cb) => subscribe(CH.push.agentEvent, cb)
   },
@@ -110,7 +116,8 @@ const api: ShadowSurfAPI = {
 
   system: {
     info: () => invoke(CH.system.info),
-    openExternal: (url) => invoke(CH.system.openExternal, url)
+    openExternal: (url) => invoke(CH.system.openExternal, url),
+    storeHealth: () => invoke(CH.system.storeHealth)
   },
 
   proxies: {
@@ -133,8 +140,9 @@ const api: ShadowSurfAPI = {
   },
 
   migration: {
-    export: (profileIds) => invoke(CH.migration.export, profileIds),
-    import: (json) => invoke(CH.migration.import, json)
+    export: (profileIds, password) => invoke(CH.migration.export, profileIds, password),
+    import: (json, password, acceptLegacyIdentityLoss) =>
+      invoke(CH.migration.import, json, password, acceptLegacyIdentityLoss)
   },
 
   scripts: {
@@ -168,6 +176,8 @@ const api: ShadowSurfAPI = {
     state: () => invoke(CH.localApi.state),
     start: (port) => invoke(CH.localApi.start, port),
     stop: () => invoke(CH.localApi.stop),
+    // 只把令牌写进剪贴板，不返回明文 —— 渲染层拿不到它
+    copyToken: () => invoke(CH.localApi.copyToken),
     onState: (cb) => subscribe(CH.push.localApiState, cb)
   }
 }

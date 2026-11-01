@@ -507,6 +507,88 @@
   pointer-events: none;
 }
 
+/* ── 口令行 ──
+ * 复用 .tpl-form / .tpl-field，只压一下高度：迁移区比保存区紧凑，
+ * 两行 30px 的输入框会把左右两栏拉得不齐。
+ */
+.tpl-pass {
+  flex-wrap: nowrap;
+  gap: 8px;
+}
+
+.tpl-pass .tpl-field {
+  flex: 1 1 0;
+}
+
+/* ── 导入后的身份核对结果 ── */
+
+.tpl-adopt {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+}
+
+.tpl-adopt-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+}
+
+/* 涨跌色是行情惯例，这里不用；一致=正常色，不一致=警示色 */
+.tpl-adopt-row.ok {
+  color: var(--ink-3);
+}
+
+.tpl-adopt-row.bad {
+  color: var(--danger, #d9534f);
+}
+
+.tpl-adopt-name {
+  flex: 0 1 auto;
+  overflow: hidden;
+  font-weight: 600;
+  color: var(--ink-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tpl-adopt-verdict {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── v1 包确认框里的字段清单 ── */
+
+.tpl-loss-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.tpl-loss-fields code {
+  padding: 1px 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+}
+
+.tpl-loss-note {
+  font-size: 11px;
+  color: var(--ink-4);
+}
+
 /* ── 窄屏 ── */
 
 @media (max-width: 900px) {

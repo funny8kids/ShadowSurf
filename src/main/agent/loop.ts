@@ -6,7 +6,7 @@
  *    宁可多抓一次也不要在旧快照上执行动作（幻觉点错就是这个原因）。
  * 2. **失败不中断**。点击落空是常态（元素被遮挡、懒加载未完成），
  *    下一轮快照会自愈；只有「页面关闭 / 模型连续输出非 JSON」才终止。
- * 3. **风险判定在循环外**。L2 动作一律走 askConfirm，绝不靠模型自觉。
+ * 3. **风险判定在循环外**。L2 动作一律走系统原生确认框，绝不靠模型自觉。
  */
 
 import type { CdpBridge } from '@main/core/cdp'
@@ -20,11 +20,12 @@ import type {
   RunRequest
 } from '@shared/protocol'
 import type { Settings, TaskRecord } from '@shared/types'
+import { actionSemantic } from '@shared/protocol'
 
 import { captureSnapshot } from '@main/agent/snapshot'
-import type { Approval } from '@main/agent/actions'
 import { describeAction, executeAction } from '@main/agent/actions'
 import { assessRisk } from '@main/agent/risk'
+import { requestConsent, type ConsentOutcome } from '@main/agent/consent'
 import { auditGate } from '@main/modules/audit'
 import { getStores } from '@main/store'
 import { chat, parseJSONLoose, type ChatMessage } from '@main/agent/llm'
@@ -35,8 +36,14 @@ export interface LoopDeps {
   getCdp: () => CdpBridge | null
   settings: Settings
   emit: (e: AgentEvent) => void
-  /** 弹确认框，返回用户是否同意；超时/取消返回 false */
-  askConfirm: (reason: string, action: Action, stepIndex: number) => Promise<boolean>
+  /**
+   * 发起这次 run 的渲染层 webContents id，绑到同意凭证上。
+   *
+   * 注意这里**没有** `askConfirm`：同意不再由渲染层回答。
+   * 原先的 `askConfirm` 等的是渲染层回一个 boolean，而渲染层正是可能被 XSS 的那一层 ——
+   * 把「要不要执行不可逆动作」的答案交给它，等于把闸门建在被攻破的一侧。
+   */
+  senderId?: number
 }
 
 /** 步数上限的硬边界：太小做不成事，太大就是烧钱且容易在同一个坑里打转 */
@@ -44,6 +51,20 @@ const MIN_STEPS = 1
 const MAX_STEPS_LIMIT = 30
 /** 跳转后给页面留一点时间发起请求，否则下一轮抓到的还是旧页面 */
 const NAVIGATE_SETTLE_MS = 900
+
+/**
+ * 「没拿到票」的四种原因，分别怎么讲给模型听。
+ *
+ * 不能合成一句话：用户点了取消（别再来烦我）、120 秒没人理（人可能不在）、
+ * 窗口弹不出来（环境有问题）、任务被停止（用户要走）—— 模型对这四种的
+ * 正确反应完全不同，混成「用户拒绝了」会让它在人不在的时候反复重试。
+ */
+const CONSENT_REFUSAL: Record<ConsentOutcome['kind'], string> = {
+  granted: '已获授权',
+  denied: '用户在系统确认窗口中点了「取消」',
+  timeout: '系统确认窗口 120 秒内无人确认，按拒绝处理',
+  unavailable: '系统确认窗口无法弹出，按拒绝处理'
+}
 
 export async function runAgent(
   req: RunRequest,
@@ -155,30 +176,52 @@ export async function runAgent(
       // ── risk gate ───────────────────────────────────────────
       // click 动作里只有元素编号，光看 action 扫不出「立即支付」这种语义，
       // 必须把目标元素的可读名和模型自述一起送进判定。
-      const target = action.id
-        ? snapshot.elements.find((el) => el.id === action.id)
-        : undefined
-      // 单独取出来：执行器要用**同一份**语义重算，两份 extra 不一致会让
-      // 闸门判 L1、执行器判 L2，凭空多出一次「未授权」异常。
-      const semantic = [target?.name ?? '', thought].filter((v) => v.length > 0).join(' ')
-      const verdict = assessRisk(action, req.intent, semantic)
-      // 授权默认没有。只有 askConfirm 真的返回 true 才升级 ——
+      //
+      // 闸门与执行器必须看到**同一段文本**，否则会出现「闸门判 L1、执行器判 L2」：
+      // 不弹确认框 → 没有票 → 动作被拦 → 用户从未被问过 → 模型重试到步数耗尽。
+      //
+      // 这个 bug 真发生过：两边各自拼串，而抑制规则看的是「命中词紧邻的右文」，
+      // 元素名拼两次就把那段右文换掉了，抑制随之失效。现在拼接收敛到
+      // `actionSemantic`（`@shared/protocol`）—— 元素名由它自己从快照取，
+      // 调用方只能传 `note`，「拼两次」在结构上写不出来。
+      //
+      // 送给执行器的 `note` 只放**模型自述**，元素名由执行器自己取
+      // （本地 HTTP API 手里只有 action.id，拿不到元素名，靠调用方传就漏了那条路径）。
+      const verdict = assessRisk(action, req.intent, actionSemantic(action, snapshot, thought))
+      // 凭证默认没有。它不是「我判定这是 L2」推出来的，而是 requestConsent
+      // 真的返回了一张票 —— 也就是有人在系统窗口上点了「允许执行」。
       // 这里刻意不写成 `verdict.level === 'L2' ? 'user' : 'none'`：
       // 那等于把「我判定这是 L2」当成「用户批准过」，用结论代替证据。
-      // 现在这句话与「谁真的点了按钮」一一对应，删掉确认分支也骗不过去。
-      let approvedBy: Approval['approvedBy'] = 'none'
+      let ticket: string | undefined
       if (verdict.level === 'L2') {
+        // 这个事件现在只是**展示**：让界面能显示「等待你在系统窗口中确认」。
+        // 它不再承载决策，渲染层回什么都不影响下面这一步。
         deps.emit({ type: 'need-confirm', reason: verdict.reason, action, stepIndex })
-        const approved = await deps.askConfirm(verdict.reason, action, stepIndex)
-        if (!approved) {
-          // 拒绝原因必须留在历史里，否则模型下一轮还会提同样的动作（死循环的头号来源）
+        const outcome = await raceAbort(
+          requestConsent(
+            {
+              action,
+              level: 'L2',
+              reason: verdict.reason,
+              matched: verdict.matched,
+              target: describeAction(action, snapshot),
+              origin: 'loop'
+            },
+            deps.senderId
+          ),
+          signal
+        )
+        if (!outcome || outcome.kind !== 'granted') {
+          // 拒绝原因必须留在历史里，否则模型下一轮还会提同样的动作（死循环的头号来源）。
+          // 四种「没拿到票」的原因分开写：模型据此决定换方案还是直接结束，
+          // 而「超时」和「用户点了取消」对它的含义完全不同。
           const rejected: AgentStep = {
             index: stepIndex,
             plan,
             thought,
             action,
             status: 'rejected',
-            result: `用户拒绝了这个动作（${verdict.reason}），换一个方案或结束`,
+            result: `${CONSENT_REFUSAL[outcome?.kind ?? 'denied']}（${verdict.reason}），换一个方案或结束`,
             label: describeAction(action, snapshot),
             at: Date.now(),
             durationMs: 0
@@ -187,7 +230,7 @@ export async function runAgent(
           deps.emit({ type: 'step', step: { ...rejected } })
           continue
         }
-        approvedBy = 'user'
+        ticket = outcome.ticket
       }
 
       // ── act ─────────────────────────────────────────────────
@@ -205,13 +248,15 @@ export async function runAgent(
       let outcome: ActionResult
       try {
         outcome = await executeAction(cdp, action, snapshot, {
-          // 只有 askConfirm 真的返回 true 才会是 'user'。L1（含只读意图降级）
+          // 只有 requestConsent 真的返回了票才会有值。L1（含只读意图降级）
           // 不预支授权：那种情况下执行器用同一份 intent 重算出来也是 L1，
-          // 根本走不到判断上；万一两份结论不一致，'none' 会让执行器抛错，
+          // 根本走不到判断上；万一两份结论不一致，没有票会让执行器抛错，
           // 把不一致暴露出来而不是悄悄放行。
-          approvedBy,
+          ...(ticket !== undefined ? { ticket } : {}),
+          origin: 'agent',
           intent: req.intent,
-          extra: semantic,
+          note: thought,
+          ...(deps.senderId !== undefined ? { senderId: deps.senderId } : {}),
           // 闸门事件落到同一条审计链：原先 agent 这条路径跑 40 步一个字节都不留，
           // 事后完全无法回答「它到底点过什么」。
           onGate: (event) => auditGate(getStores(), event)
@@ -363,5 +408,34 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
       return
     }
     signal.addEventListener('abort', done, { once: true })
+  })
+}
+
+/**
+ * 等一个「人可能永远不会回答」的 promise，但用户点停止时立刻放行。
+ *
+ * 没有这层的话，对话框开着时点「停止」会看起来毫无反应 —— 主循环卡在
+ * 一个最长 120 秒的等待里，停止按钮形同虚设。被放弃的那个 promise
+ * 仍然会在用户之后点「允许」时铸出一张票，但没人会去消费它，
+ * 下次发券时被 sweep 清掉。
+ */
+function raceAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T | null> {
+  if (signal.aborted) return Promise.resolve(null)
+  return new Promise<T | null>((resolve) => {
+    const onAbort = (): void => {
+      signal.removeEventListener('abort', onAbort)
+      resolve(null)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    void work.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(value)
+      },
+      () => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(null)
+      }
+    )
   })
 }

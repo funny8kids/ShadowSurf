@@ -9,6 +9,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { Profile, TaskRecord } from '@shared/types'
 import { Button, Icon, cx, useToast } from './ui'
 import {
+  ACTION_LABEL,
   formatClock,
   formatDate,
   formatDuration,
@@ -22,16 +23,6 @@ import {
   taskStatusText,
   taskTone
 } from '@renderer/lib/format'
-
-const ACTION_LABEL: Record<string, string> = {
-  click: '点击',
-  type: '输入',
-  press: '按键',
-  scroll: '滚动',
-  navigate: '导航',
-  extract: '提取',
-  done: '结束'
-}
 
 interface TaskListProps {
   tasks: TaskRecord[]

@@ -44,29 +44,43 @@ try {
   const seed = 'a'.repeat(64)
   const cases = ['windows', 'macos', 'linux']
 
+  // page 与 worker 是两套完全不同的注入源（Worker 里没有 Navigator/document），
+  // 必须分别解析。早先只检查 page 那份，于是 worker 脚本哪怕有语法错误也一路绿。
+  const targets = ['page', 'worker']
+
   for (const os of cases) {
     const cfg = presets.resolveFingerprint(os, seed)
-    const src = fpMod.buildInjectionScript(cfg, seed)
 
-    try {
-      // 只解析不执行：vm.Script 的构造期就会跑完整的语法分析
-      new Script(src, { filename: `injection-${os}.js` })
-      console.log(`ok   ${os.padEnd(8)} ${src.length} 字节`)
-      // 落盘给 tools/probe-mask.cjs 用 —— 那边要在真 Chromium 里跑一遍
-      if (os === 'windows') {
-        mkdirSync(resolve(root, 'artifacts'), { recursive: true })
-        writeFileSync(resolve(root, 'artifacts/injection-windows.js'), src, 'utf8')
-      }
-    } catch (err) {
-      failed = true
-      console.error(`FAIL ${os}：${err.message}`)
-      // 把出错行附近打出来，否则只给一句 "Unexpected token" 没法定位
-      const line = /:(\d+)$/.exec(err.stack ?? '')?.[1]
-      if (line) {
-        const lines = src.split('\n')
-        const n = Number(line)
-        for (let i = Math.max(0, n - 3); i < Math.min(lines.length, n + 2); i++) {
-          console.error(`  ${String(i + 1).padStart(4)} | ${lines[i]}`)
+    for (const target of targets) {
+      const src = fpMod.buildInjectionScript(cfg, seed, target)
+
+      try {
+        // 只解析不执行：vm.Script 的构造期就会跑完整的语法分析
+        new Script(src, { filename: `injection-${target}-${os}.js` })
+        console.log(`ok   ${os.padEnd(8)} ${target.padEnd(6)} ${src.length} 字节`)
+        // 落盘给 tools/probe-mask.cjs / tools/probe-worker.cjs 用 ——
+        // 那两个要在真 Chromium 里各跑一遍
+        if (os === 'windows') {
+          mkdirSync(resolve(root, 'artifacts'), { recursive: true })
+          writeFileSync(resolve(root, `artifacts/injection-${target}-windows.js`), src, 'utf8')
+          // `tools/probe-mask.cjs` 读的是这个不带 target 的名字，保持兼容。
+          // 改文件名会让那条探针静默变成「读不到文件 → exit 2」，
+          // 而 exit 2 很容易被当成「环境没装好」而不是「产物名改了」。
+          if (target === 'page') {
+            writeFileSync(resolve(root, 'artifacts/injection-windows.js'), src, 'utf8')
+          }
+        }
+      } catch (err) {
+        failed = true
+        console.error(`FAIL ${os}/${target}：${err.message}`)
+        // 把出错行附近打出来，否则只给一句 "Unexpected token" 没法定位
+        const line = /:(\d+)$/.exec(err.stack ?? '')?.[1]
+        if (line) {
+          const lines = src.split('\n')
+          const n = Number(line)
+          for (let i = Math.max(0, n - 3); i < Math.min(lines.length, n + 2); i++) {
+            console.error(`  ${String(i + 1).padStart(4)} | ${lines[i]}`)
+          }
         }
       }
     }

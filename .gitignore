@@ -17,3 +17,4 @@ artifacts/
 
 # 一次性排查用的临时工程（手工 new Electron 跑单点探针），不进版本库
 probe-tmp/
+tools/probe-tmp-*

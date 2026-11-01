@@ -52,13 +52,20 @@ function upsertStep(list: AgentStep[], next: AgentStep): AgentStep[] {
   return copy
 }
 
-/** 把动作翻译成一句人话；模型给的字段一律当字符串处理 */
+/**
+ * 把动作翻译成一句人话。
+ *
+ * 渲染层手里**没有快照**，所以拿不到元素的可读名 —— 那就说「某个元素」，
+ * 绝不把 `action.id`（协议里的 `e12`）印出来：那是每轮临时分配的编号，
+ * 对用户没有意义，出现在界面上只会让人以为页面上真有个叫 e12 的东西。
+ * 主进程侧有快照，那边由 `describeAction(action, snapshot)` 给出带名字的版本。
+ */
 function describeAction(action: Action): string {
   switch (action.type) {
     case 'click':
-      return `点击页面元素 ${action.id ?? '（未指定）'}`
+      return '点击某个页面元素'
     case 'type':
-      return `在 ${action.id ?? '（未指定）'} 输入「${action.text ?? ''}」${action.submit ? ' 并回车提交' : ''}`
+      return `在某个输入框输入「${action.text ?? ''}」${action.submit ? ' 并回车提交' : ''}`
     case 'press':
       return `按下 ${action.key ?? '（未指定）'} 键`
     case 'scroll':
@@ -214,11 +221,20 @@ export function AgentPanel({
     }
   }
 
-  async function answerConfirm(approved: boolean): Promise<void> {
+  /**
+   * 这里**只能取消**。
+   *
+   * 原先这里有「确认执行」按钮，它会 `invoke('ss:agent:confirm', true)`，
+   * 主进程读一个 boolean 就当作用户批准 —— 于是一个被 XSS 的渲染层不用显示任何弹窗，
+   * 直接发那条 IPC 就能批准支付。同意来源已经换成主进程弹的系统原生窗口，
+   * 这个按钮如果留着，就只是把那个漏洞重新画在界面上：点了不会有任何效果，
+   * 却让人以为是自己批准的。所以删掉它，只留「取消本次任务」。
+   */
+  async function cancelFromConfirm(): Promise<void> {
     setConfirm(null)
     try {
-      await bridge().agent.confirm(approved)
-      setStatus('running')
+      await bridge().agent.cancel()
+      setStatus('idle')
     } catch (err) {
       toast.push(errorMessage(err), 'err')
     }
@@ -610,23 +626,25 @@ export function AgentPanel({
 
       <Modal
         open={confirm !== null}
-        title="需要你确认"
+        title="等待你在系统窗口中确认"
         icon="alert"
-        onClose={() => void answerConfirm(false)}
+        onClose={() => void cancelFromConfirm()}
         footer={
           <>
-            <Button variant="ghost" onClick={() => void answerConfirm(false)}>
-              拒绝
-            </Button>
-            <Button variant="primary" onClick={() => void answerConfirm(true)}>
-              确认执行
+            <Button variant="ghost" onClick={() => void cancelFromConfirm()}>
+              取消本次任务
             </Button>
           </>
         }
-        note="Esc 拒绝 · 焦点默认在安全选项上"
+        note="确认窗口由操作系统绘制 · 这个页面无权替你点「允许」"
       >
-        <span>{confirm?.reason ?? '这一步可能产生不可逆的结果。'}</span>
-        <span className="muted">确认后将在页面上真实执行，无法撤销。</span>
+        <span>
+          {confirm?.reason ?? '这一步可能产生不可逆的结果。'}
+        </span>
+        <span className="muted">
+          请到应用弹出的系统确认窗口上点「允许执行」。这里的按钮只能取消 ——
+          批准必须来自那个窗口，否则被篡改的界面就能自己批准自己。
+        </span>
         {confirm ? <span className="code">{describeAction(confirm.action)}</span> : null}
       </Modal>
     </aside>

@@ -17,19 +17,29 @@
 import { CH } from '@shared/ipc'
 import type { AutomationScript, ScriptRunResult, ScriptStep } from '@shared/types'
 import type { Action, ActionResult, ActionType, PageSnapshot, SnapshotElement } from '@shared/protocol'
+import { actionSemantic } from '@shared/protocol'
 import type { ModuleContext } from './context'
 
 import { CollectionStore } from '@main/store'
 import { bridgeFor } from '@main/core/cdp'
 import { captureSnapshot } from '@main/agent/snapshot'
-import { ApprovalRequiredError, executeAction } from '@main/agent/actions'
+import { ApprovalRequiredError, MaskIncompleteError, describeAction, executeAction } from '@main/agent/actions'
 import { assessRisk } from '@main/agent/risk'
+import { requestConsent, type ConsentOutcome } from '@main/agent/consent'
 import { auditGate } from '@main/modules/audit'
 
 /** 步骤间默认等待，给页面留出渲染/请求的时间 */
 const DEFAULT_DELAY_MS = 300
 /** 上限：单步等太久会让一次回放卡到不可用，超过就按上限截断 */
 const MAX_DELAY_MS = 5000
+
+/** 「没拿到票」的四种原因，分别讲清楚 —— 混成一句会让用户不知道下一步该做什么 */
+const CONSENT_REFUSAL: Record<ConsentOutcome['kind'], string> = {
+  granted: '已获授权',
+  denied: '本机用户点了「取消」',
+  timeout: '120 秒内无人确认，按拒绝处理',
+  unavailable: '系统确认窗口无法弹出'
+}
 
 /** 动作协议里允许出现在脚本中的类型，其余值一律当脏数据丢掉 */
 const VALID_ACTIONS: ActionType[] = [
@@ -276,7 +286,10 @@ export function registerScriptModule(ctx: ModuleContext): void {
     scripts.remove(String(id))
   })
 
-  ctx.handle(CH.scripts.run, async (_event, scriptId, profileId, rawOptions): Promise<ScriptRunResult> => {
+  ctx.handle(CH.scripts.run, async (event, scriptId, profileId, rawOptions): Promise<ScriptRunResult> => {
+    // 发起方 webContents id 要一直带到 requestConsent：凭证的存在意义之一就是
+    // 「这张票只对发起它的那个渲染进程有效」。留一个入口不传，这个不变量就破了个例。
+    const senderId = typeof event?.sender?.id === 'number' ? event.sender.id : undefined
     const script = scripts.get(String(scriptId))
     if (!script) throw new Error('脚本不存在，可能已被删除')
 
@@ -285,12 +298,13 @@ export function registerScriptModule(ctx: ModuleContext): void {
     if (total === 0) throw new Error('脚本还没有步骤，先添加一步或从历史任务导入')
 
     const opts = (rawOptions !== null && typeof rawOptions === 'object' ? rawOptions : {}) as {
-      confirmed?: boolean
       startAt?: number
     }
-    const confirmed = opts.confirmed === true
-    // startAt 是「跑到第 N 步被闸门拦下 → 用户确认后从第 N 步续跑」。
-    // 不重跑前 N-1 步：它们已经在页面上留下状态，重跑等于执行两次。
+    // 这里**不再有 `confirmed`**。它原来是「渲染层自称用户已同意整段回放」，
+    // 而渲染层正是可能被攻破的那一层 —— 一段含支付的脚本，只要 XSS 发一次
+    // `{confirmed:true}` 就整段跑完，用户从头到尾没被问过。
+    // 现在每一步 L2 动作都由主进程弹系统原生确认框，一次确认只放行一步。
+    // startAt 保留：它是「从第 N 步续跑」的位置参数，本身不能批准任何事。
     const rawStart = opts.startAt
     const startIndex =
       typeof rawStart === 'number' && Number.isInteger(rawStart) && rawStart >= 1 && rawStart <= total
@@ -299,38 +313,6 @@ export function registerScriptModule(ctx: ModuleContext): void {
 
     const handle = ctx.wm.getTab(String(profileId))
     if (!handle) throw new Error('请先打开该环境再回放')
-
-    // ── 风险预扫描 ─────────────────────────────────────────────
-    // 回放没有「用户意图」可传：录制那一刻的意图不属于这次运行，页面也早换了。
-    // 所以先用录制时留下的文字扫一遍 —— 选择器和备注是人写的，
-    // 能覆盖绝大多数「按钮名里带支付 / 删除 / 发送」的情况，而且不需要页面。
-    //
-    // 只在还没确认时扫：确认过就不必再问第二遍。
-    const risky: Array<{ at: number; label: string; reason: string }> = []
-    if (!confirmed) {
-      for (let i = startIndex; i < total; i += 1) {
-        const step = steps[i]
-        const hint = [step.selector, step.note]
-          .filter((v): v is string => typeof v === 'string' && v.length > 0)
-          .join(' ')
-        const risk = assessRisk({ type: step.action }, '', hint)
-        if (risk.level === 'L2') risky.push({ at: i + 1, label: hint, reason: risk.reason })
-      }
-      if (risky.length > 0) {
-        const first = risky[0]
-        return {
-          ok: false,
-          executed: 0,
-          total,
-          failedAt: first.at,
-          needsConfirm: true,
-          error:
-            `第 ${first.at} 步${first.label ? `（${first.label}）` : ''}${first.reason}` +
-            (risky.length > 1 ? `；另有 ${risky.length - 1} 步同类` : '') +
-            '。确认后整段回放才会执行'
-        }
-      }
-    }
 
     const cdp = bridgeFor(handle.wc)
     try {
@@ -358,25 +340,59 @@ export function registerScriptModule(ctx: ModuleContext): void {
       }
 
       // 元素名只有运行时才知道：录制时选择器可能只写着 #btn1，实际按钮叫「立即支付」。
-      // 预扫描看不到这一层，所以执行器这道闸必须再判一次。
-      const target = action.id
-        ? snapshot.elements.find((el) => el.id === action.id)
-        : undefined
-      const semantic = [target?.name ?? '', step.note ?? '', step.selector ?? '']
+      // 这一步先自己判一次等级 —— 只有知道「是不是 L2」才谈得上要不要弹确认。
+      // 语义来源必须与执行器一致：都用快照里的元素可读名，不吃渲染层传来的东西。
+      // 语义入口只有 `actionSemantic` 一处：元素名由它自己从快照取。
+      // 这里原先拼成 `[name, note, selector].join(' ')` 再交给执行器，
+      // 而执行器又拼了一次 name —— name 出现两次，抑制规则失效，
+      // 脚本回放因此和 agent loop 中了同一个 bug（闸门判 L1、执行器判 L2）。
+      const note = [step.note ?? '', step.selector ?? '']
         .filter((v) => v.length > 0)
         .join(' ')
+      const verdict = assessRisk(action, '', actionSemantic(action, snapshot, note))
+      // 每一处 L2 都单独问一次。不提供「整段放行」：脚本是录制产物，
+      // 用户批准的是「这一步现在执行」，不是「这个文件以后随便跑」。
+      let ticket: string | undefined
+      if (verdict.level === 'L2') {
+        const outcome = await requestConsent(
+          {
+            action,
+            level: 'L2',
+            reason: verdict.reason,
+            ...(verdict.matched !== undefined ? { matched: verdict.matched } : {}),
+            target: describeAction(action, snapshot),
+            origin: 'script'
+          },
+          senderId
+        )
+        if (outcome.kind !== 'granted') {
+          return {
+            ok: false,
+            executed,
+            total,
+            failedAt: at,
+            needsConfirm: true,
+            error:
+              `第 ${at} 步需要你在系统确认窗口里点「允许执行」才会运行：${CONSENT_REFUSAL[outcome.kind]}。${verdict.reason}` +
+              (executed > 0 ? `（前 ${executed} 步已执行）` : '') +
+              '。可以从这一步续跑，届时会再问一次'
+          }
+        }
+        ticket = outcome.ticket
+      }
 
       let result: ActionResult
       try {
         result = await executeAction(cdp, action, snapshot, {
-          // 没确认就传 'none'：执行器自己重算等级，撞上 L2 会抛出来。
-          // 这是预扫描漏掉时的硬兜底 —— 宁可停在半路，也不能悄悄执行。
-          approvedBy: confirmed ? 'user' : 'none',
-          extra: semantic,
+          ...(ticket !== undefined ? { ticket } : {}),
+          origin: 'script',
+          note,
           onGate: (event) => auditGate(ctx.stores, event)
         })
       } catch (err) {
         if (err instanceof ApprovalRequiredError) {
+          // 走到这里说明我们判 L1、执行器重算成 L2（两份语义不一致）。
+          // 不提供「加个 confirmed 字段重试」的出路：那正是被拆掉的那条旁路。
           return {
             ok: false,
             executed,
@@ -384,6 +400,22 @@ export function registerScriptModule(ctx: ModuleContext): void {
             failedAt: at,
             needsConfirm: true,
             error: `第 ${at} 步：${err.message}（前 ${executed} 步已执行）`
+          }
+        }
+        if (err instanceof MaskIncompleteError) {
+          // 伪装不完整时**停在原地**，不再往下跑。
+          // 继续跑的话后续每一步都会撞同一堵墙，而回放结果里只会剩一串
+          // 「执行失败」，用户看不出根因是「这个环境没伪装住」。
+          // 也不提供「忽略并继续」：不可逆动作在指纹泄漏的前提下执行，
+          // 后果无法撤销，而脚本可以随时重跑。
+          return {
+            ok: false,
+            executed,
+            total,
+            failedAt: at,
+            error:
+              `第 ${at} 步：伪装不完整，动作已拦下（状态 ${err.state}，缺口 ${err.kind}）：` +
+              `${err.message}（前 ${executed} 步已执行）`
           }
         }
         throw err

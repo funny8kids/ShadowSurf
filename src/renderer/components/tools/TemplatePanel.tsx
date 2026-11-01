@@ -12,6 +12,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import type { FingerprintTemplate, OSKind, Profile } from '@shared/types'
+import type { MigrationAdoptReport } from '@shared/ipc'
 import { Button, Icon, Modal, cx, useToast } from '@renderer/components/ui'
 import { bridge, errorMessage, hasBridge } from '@renderer/lib/api'
 import './template.css'
@@ -25,6 +26,16 @@ const OS_LABEL: Record<OSKind, string> = {
   macos: 'macOS',
   linux: 'Linux'
 }
+
+/**
+ * 口令下限，与 main 侧 `MIN_PASSWORD_LENGTH` 同值。
+ *
+ * 这里再写一遍不是重复校验（main 仍然会拒），而是**为了在输入时就拦住**：
+ * 用户点「导出」之后才被拒，他会以为是自己操作错了；输入框旁边写着下限，
+ * 他才知道这是产品要求。两边一旦漂移，最坏结果也只是多一次往返 ——
+ * 判定权始终在 main，渲染层这句话不影响任何决策。
+ */
+const MIN_PASS = 8
 
 /** 卡片摘要：只挑「一眼能看出两台机器像不像」的四个参数 */
 function summarize(template: FingerprintTemplate): Array<{ k: string; v: string }> {
@@ -80,6 +91,24 @@ export function TemplatePanel({ profiles }: PanelProps) {
 
   const [exportIds, setExportIds] = useState<string[]>([])
   const [importText, setImportText] = useState('')
+
+  // 口令。导出要两次（打错一个字符 = 这个包永远打不开，且不可逆 ——
+  // 包里只有密文，没有任何地方能找回口令）。导入只要一次。
+  const [exportPass, setExportPass] = useState('')
+  const [exportPass2, setExportPass2] = useState('')
+  const [importPass, setImportPass] = useState('')
+
+  /**
+   * v1 包缺身份时的待确认态。
+   *
+   * 不把它做成 Toast：Toast 会自己消失，而「导入后不是同一个身份」这件事
+   * 需要用户看清楚再决定。所以留在面板上，直到他确认或取消。
+   * `json` 一并存着 —— 确认时要拿**同一份文本**重发，而不是让用户再粘一次。
+   */
+  const [legacyLoss, setLegacyLoss] = useState<{ lostFields: string[]; json: string } | null>(null)
+
+  /** 最近一次导入的身份核对结果。这是「导进来了」和「身份对了」的区别 */
+  const [adopted, setAdopted] = useState<MigrationAdoptReport[] | null>(null)
 
   useEffect(() => {
     setLocalProfiles(profiles)
@@ -195,11 +224,21 @@ export function TemplatePanel({ profiles }: PanelProps) {
       toast.push('请先勾选要导出的环境', 'info')
       return
     }
+    // 口令在渲染层先自检一遍：不是为了安全（main 才是判定的地方），
+    // 是为了不在用户点完之后才告诉他「少了一个字符」。
+    if (exportPass.length < MIN_PASS) {
+      toast.push(`口令至少 ${MIN_PASS} 个字符`, 'info')
+      return
+    }
+    if (exportPass !== exportPass2) {
+      toast.push('两次输入的口令不一致', 'err')
+      return
+    }
     setBusy('export')
     try {
-      const json = await bridge().migration.export(exportIds)
+      const json = await bridge().migration.export(exportIds, exportPass)
       downloadJson(json, `shadowsurf-${dateStamp()}.json`)
-      toast.push(`已导出 ${exportIds.length} 个环境（代理密码留空）`, 'ok')
+      toast.push(`已导出 ${exportIds.length} 个环境（口令加密，代理密码留空）`, 'ok')
     } catch (err) {
       toast.push(errorMessage(err), 'err')
     } finally {
@@ -207,19 +246,51 @@ export function TemplatePanel({ profiles }: PanelProps) {
     }
   }
 
-  async function runImport(text: string): Promise<void> {
+  /**
+   * 导入。
+   *
+   * `accept` 只在「用户看过 lostFields 并点了继续」时为 true。默认 false 是
+   * 必须的：v1 包不含身份，静默导入会让用户以为搬过来的还是同一台设备，
+   * 而站点看到的是一个全新指纹 —— 这类错误事后无法从界面上看出来。
+   */
+  async function runImport(text: string, accept = false): Promise<void> {
     const payload = text.trim()
     if (!payload) {
       toast.push('请粘贴迁移包 JSON 或选择文件', 'info')
       return
     }
+    if (importPass.length < MIN_PASS) {
+      toast.push(`口令至少 ${MIN_PASS} 个字符`, 'info')
+      return
+    }
     setBusy('import')
     try {
-      const result = await bridge().migration.import(payload)
+      const result = await bridge().migration.import(
+        payload,
+        importPass,
+        accept ? true : undefined
+      )
       await refreshProfiles()
       setImportText('')
-      toast.push(`导入完成：环境 ${result.profiles} 个，代理 ${result.proxies} 个`, 'ok')
+      setImportPass('')
+      setLegacyLoss(null)
+      setAdopted(result.adopted)
+      const bad = result.adopted.filter((a) => !a.ok).length
+      // 「写了几行」和「身份对不对」是两件事，所以分成两句说。
+      toast.push(
+        bad === 0
+          ? `导入完成：环境 ${result.profiles} 个，代理 ${result.proxies} 个，身份核对全部通过`
+          : `导入完成：环境 ${result.profiles} 个，但 ${bad} 个身份核对不一致，详见下方`,
+        bad === 0 ? 'ok' : 'err'
+      )
     } catch (err) {
+      // v1 包缺身份不是「失败」，是「需要你确认」。它带 code 与结构化字段，
+      // 所以能被单独识别出来 —— 其余错误照旧走 Toast。
+      const lost = (err as { lostFields?: unknown }).lostFields
+      if (Array.isArray(lost) && lost.length > 0 && lost.every((v) => typeof v === 'string')) {
+        setLegacyLoss({ lostFields: lost as string[], json: payload })
+        return
+      }
       toast.push(errorMessage(err), 'err')
     } finally {
       setBusy(null)
@@ -450,6 +521,34 @@ export function TemplatePanel({ profiles }: PanelProps) {
                 </div>
               )}
 
+              {/* 口令不是可选项：包里的 seed / 指纹 / 代理 key 都用它派生的密钥封着，
+                  没有口令就没有包。两次输入是为了防手误 —— 打错一个字符，
+                  这个包就永远打不开了，而包里只有密文，没有任何找回途径。 */}
+              <div className="tpl-form tpl-pass">
+                <label className="tpl-field">
+                  <span>加密口令（至少 {MIN_PASS} 位）</span>
+                  <input
+                    type="password"
+                    value={exportPass}
+                    autoComplete="new-password"
+                    spellCheck={false}
+                    placeholder="导出后需要用它才能导回来"
+                    onChange={(e) => setExportPass(e.target.value)}
+                  />
+                </label>
+                <label className="tpl-field">
+                  <span>再输一次</span>
+                  <input
+                    type="password"
+                    value={exportPass2}
+                    autoComplete="new-password"
+                    spellCheck={false}
+                    placeholder="两次必须一致"
+                    onChange={(e) => setExportPass2(e.target.value)}
+                  />
+                </label>
+              </div>
+
               <div className="tpl-actions">
                 <Button
                   variant="ghost"
@@ -466,7 +565,21 @@ export function TemplatePanel({ profiles }: PanelProps) {
             <div className="tpl-col">
               <div className="tpl-col-head">
                 <h4>导入</h4>
-                <span className="tpl-col-meta">版本 1 · 重名环境自动加「副本」后缀</span>
+                <span className="tpl-col-meta">v2 口令加密 · v1 需确认身份损失</span>
+              </div>
+
+              <div className="tpl-form tpl-pass">
+                <label className="tpl-field">
+                  <span>包口令</span>
+                  <input
+                    type="password"
+                    value={importPass}
+                    autoComplete="current-password"
+                    spellCheck={false}
+                    placeholder="导出这个包时设的口令"
+                    onChange={(e) => setImportPass(e.target.value)}
+                  />
+                </label>
               </div>
 
               <textarea
@@ -497,6 +610,27 @@ export function TemplatePanel({ profiles }: PanelProps) {
                   </button>
                 ) : null}
               </div>
+
+              {/* 「导进来了」与「身份对了」是两件事。这里只显示后者 ——
+                  profiles 计数已经在 Toast 里说过，再列一遍只是噪音。 */}
+              {adopted !== null && adopted.length > 0 ? (
+                <div className="tpl-adopt">
+                  {adopted.map((a) => (
+                    <div key={a.name} className={cx('tpl-adopt-row', a.ok ? 'ok' : 'bad')}>
+                      <Icon name={a.ok ? 'check' : 'alert'} size={12} />
+                      <span className="tpl-adopt-name">{a.name}</span>
+                      <span className="tpl-adopt-verdict">
+                        {a.ok
+                          ? `身份一致（核对 ${a.compared.length} 个字段）`
+                          : `不一致：${a.compared
+                              .filter((c) => c.from !== c.to)
+                              .map((c) => c.field)
+                              .join('、') || '未知字段'}`}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </div>
           </div>
         </section>
@@ -526,6 +660,52 @@ export function TemplatePanel({ profiles }: PanelProps) {
         <p>
           确定删除模板「{pendingDelete?.name ?? ''}」？已经应用到环境的指纹不会回滚，
           只是这份快照以后不能再用了。
+        </p>
+      </Modal>
+
+      {/* v1 包缺身份的确认框。
+          措辞刻意不用「警告」而用事实陈述：用户需要理解的是「搬过来的不是同一台设备」，
+          而不是被吓一跳。列出具体字段，是因为「身份」这个词太抽象，
+          而「canvas / webgl / audio 会变」是可核对的具体后果。 */}
+      <Modal
+        open={legacyLoss !== null}
+        title="这个包不含身份参数"
+        icon="alert"
+        onClose={() => setLegacyLoss(null)}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setLegacyLoss(null)}>
+              取消
+            </Button>
+            <Button
+              variant="danger"
+              icon="swap"
+              disabled={busy === 'import'}
+              onClick={() => {
+                if (legacyLoss === null) return
+                const { json } = legacyLoss
+                setLegacyLoss(null)
+                void runImport(json, true)
+              }}
+            >
+              仍然导入
+            </Button>
+          </>
+        }
+      >
+        <p>
+          这是一个 version 1 的迁移包，里面没有指纹参数。导入会成功，但导入后的环境
+          与包里那台机器**不是同一个身份** —— 站点会把它当成一台全新的设备。
+        </p>
+        <p className="tpl-loss-fields">
+          以下参数会重新随机生成：
+          {legacyLoss?.lostFields.map((f) => (
+            <code key={f}>{f}</code>
+          ))}
+        </p>
+        <p className="tpl-loss-note">
+          如果原意只是「把环境搬到另一台机器」，应该用本版本重新导出一次（导出时已包含身份）。
+          当前这一步不会写入任何东西，取消是安全的。
         </p>
       </Modal>
     </div>

@@ -11,11 +11,16 @@
  */
 
 import { CH } from '@shared/ipc'
+import type { MigrationAdoptReport, MigrationImportResult } from '@shared/ipc'
 import { OS_TEMPLATES, resolveFingerprint } from '@shared/presets'
 import type {
+  BundleSealHeader,
   FingerprintConfig,
   FingerprintTemplate,
   MigrationBundle,
+  MigrationBundleEntry,
+  MigrationBundleV1,
+  MigrationBundleV2,
   MigrationProfile,
   MigrationProxy,
   OSKind,
@@ -23,7 +28,9 @@ import type {
   ProxyProtocol,
   ProxyRecord
 } from '@shared/types'
+import { BUNDLE_VERSION, MIN_PASSWORD_LENGTH, createOpener, createSealer } from '@main/core/portable-seed'
 import { CollectionStore } from '@main/store'
+import { appendAudit } from './audit'
 import type { ModuleContext } from './context'
 
 const OS_KINDS: readonly OSKind[] = ['windows', 'macos', 'linux']
@@ -155,11 +162,17 @@ function proxyKeyOf(protocol: string, host: string, port: number, username?: str
   return `${protocol}|${host.trim().toLowerCase()}|${port}|${(username ?? '').trim()}`
 }
 
-function exportBundle(ctx: ModuleContext, profileIds: string[]): string {
+function exportBundle(ctx: ModuleContext, profileIds: string[], rawPassword: unknown): string {
   const ids = Array.from(new Set(profileIds.map((id) => id.trim()).filter((id) => id !== '')))
   if (ids.length === 0) throw new Error('请先选择要导出的环境')
 
-  const profiles: MigrationProfile[] = []
+  const password = assertPassword(rawPassword)
+  // 先建封装器：口令太短要在读任何环境数据**之前**就拒掉。
+  // 反过来写（先收集再校验口令）会让一次注定失败的导出也把全部 seed 在内存里
+  // 过一遍，而这次导出的失败原因恰恰是「口令太弱」。
+  const sealer = createSealer(password)
+
+  const entries: MigrationBundleEntry[] = []
   const proxies = new Map<string, MigrationProxy>()
 
   ids.forEach((id, index) => {
@@ -185,26 +198,47 @@ function exportBundle(ctx: ModuleContext, profileIds: string[]): string {
       }
     }
 
-    // 只导出可重建身份的最小集合：分组、标签、颜色属于本机组织方式，
-    // 带过去反而会和目标机器的习惯打架。
-    profiles.push({
-      name: profile.name,
-      platform: profile.platform,
-      note: profile.note || undefined,
-      fingerprint: structuredClone(profile.fingerprint),
-      proxyKey
-    })
+    // 明文层只放 name + platform：够人核对「这个包里有哪几个环境」，
+    // 不含任何身份参数。`note` 进密封层 —— 它经常写着「主店，卡尾号 XXXX」，
+    // 泄露它和泄露身份是同一级别的事。
+    //
+    // 分组、标签、颜色仍然不导出：它们属于本机组织方式，带过去只会和目标机器
+    // 的习惯打架。这一点与 v1 相同。
+    const plain = { name: profile.name, platform: profile.platform }
+    const sealed = sealer.seal(
+      plain,
+      {
+        seed: profile.seed,
+        fingerprint: structuredClone(profile.fingerprint),
+        note: profile.note || undefined,
+        proxyKey
+      },
+      index
+    )
+
+    entries.push({ name: plain.name, platform: plain.platform, sealed })
   })
 
-  const bundle: MigrationBundle = {
-    version: 1,
+  const bundle: MigrationBundleV2 = {
+    version: 2,
     exportedAt: Date.now(),
     app: 'ShadowSurf',
-    profiles,
+    header: sealer.header,
+    entries,
     proxies: Array.from(proxies.values())
   }
   // 缩进 2 空格：迁移包经常被人打开肉眼核对，可读性优先于体积
   return JSON.stringify(bundle, null, 2)
+}
+
+function assertPassword(raw: unknown): string {
+  if (typeof raw !== 'string') throw new Error('参数「password」必须是字符串')
+  if (raw.length < MIN_PASSWORD_LENGTH) {
+    throw new Error(
+      `口令至少 ${String(MIN_PASSWORD_LENGTH)} 个字符：这个包一旦泄露，里面的身份就全部泄露`
+    )
+  }
+  return raw
 }
 
 /* ────────────────────────────── 迁移包：校验 ────────────────────────────── */
@@ -359,22 +393,80 @@ function parseBundle(raw: string): MigrationBundle {
   }
 
   const root = asRecord(data, '迁移包')
-  if (root.version !== 1) {
-    // 版本号是唯一的兼容性开关：宁可明确拒绝，也不要按旧格式猜字段
-    fail(`不支持的迁移包版本：${String(root.version)}，当前只支持 version 1`)
+  const version = root.version
+
+  // 版本号是唯一的兼容性开关：宁可明确拒绝，也不要按旧格式猜字段。
+  //
+  // 对**更高**版本单独给一句话，因为那句「请升级应用」是唯一有用的建议。
+  // 混在「不支持 version X」里，用户会以为包坏了，然后回去重新导出一遍 ——
+  // 而他能导出的仍然是同一台机器上的同一个版本。
+  if (version !== 1 && version !== BUNDLE_VERSION) {
+    if (typeof version === 'number' && version > BUNDLE_VERSION) {
+      throw new Error(
+        `此包由更新版本的 ShadowSurf 创建（version=${String(version)}，本版本最高支持 ${String(BUNDLE_VERSION)}）。` +
+          '请升级应用后再导入 —— 按本版本的格式猜字段，会得到一批看起来正常、实际身份不对的环境。'
+      )
+    }
+    throw new Error(
+      `不支持的迁移包版本：${String(version)}（本版本支持 1 和 ${String(BUNDLE_VERSION)}）`
+    )
   }
-  if (!Array.isArray(root.profiles)) fail('迁移包缺少必填字段「profiles」')
   if (root.proxies !== undefined && !Array.isArray(root.proxies)) {
     fail('迁移包的「proxies」必须是数组')
   }
 
-  const proxyRaw = (root.proxies ?? []) as unknown[]
+  const proxies = ((root.proxies ?? []) as unknown[]).map(parseMigrationProxy)
+  const exportedAt = typeof root.exportedAt === 'number' ? root.exportedAt : Date.now()
+  const app = typeof root.app === 'string' ? root.app : 'ShadowSurf'
+
+  if (version === 1) {
+    if (!Array.isArray(root.profiles)) fail('迁移包缺少必填字段「profiles」')
+    const v1: MigrationBundleV1 = {
+      version: 1,
+      exportedAt,
+      app,
+      profiles: (root.profiles as unknown[]).map(parseMigrationProfile),
+      proxies
+    }
+    return v1
+  }
+
+  if (!Array.isArray(root.entries)) fail('环境包缺少必填字段「entries」')
+  const v2: MigrationBundleV2 = {
+    version: 2,
+    exportedAt,
+    app,
+    header: parseSealHeader(root.header),
+    entries: (root.entries as unknown[]).map(parseBundleEntry),
+    proxies
+  }
+  return v2
+}
+
+/**
+ * 这里只断言「是个对象」，真正的参数逐项校验在 `portable-seed` 的 `assertHeader` 里。
+ *
+ * 分开写不是为了少做一次检查，而是因为那条校验的位置**必须**在派生密钥之前：
+ * 一个 `n: 2**30` 的包能让导入方分配几十 GB，等解到一半才发现参数不对就已经晚了。
+ * 把校验留在那个模块里，它就和「先验参数再 scrypt」这个顺序绑在一起，搬不走。
+ */
+function parseSealHeader(raw: unknown): BundleSealHeader {
+  const rec = asRecord(raw, '环境包的口令派生头（kdf）')
+  return rec as unknown as BundleSealHeader
+}
+
+function parseBundleEntry(raw: unknown, index: number): MigrationBundleEntry {
+  const where = `环境包第 ${String(index + 1)} 条`
+  const rec = asRecord(raw, where)
+  const sealed = asRecord(rec.sealed, where + ' 的密文段（sealed）')
   return {
-    version: 1,
-    exportedAt: typeof root.exportedAt === 'number' ? root.exportedAt : Date.now(),
-    app: typeof root.app === 'string' ? root.app : 'ShadowSurf',
-    profiles: (root.profiles as unknown[]).map(parseMigrationProfile),
-    proxies: proxyRaw.map(parseMigrationProxy)
+    name: reqString(rec, 'name', where),
+    platform: reqEnum(rec, 'platform', where, OS_KINDS),
+    sealed: {
+      iv: reqString(sealed, 'iv', where + ' 的密文段'),
+      tag: reqString(sealed, 'tag', where + ' 的密文段'),
+      ct: reqString(sealed, 'ct', where + ' 的密文段')
+    }
   }
 }
 
@@ -393,8 +485,81 @@ function uniqueName(base: string, taken: Set<string>): string {
   fail(`环境名「${base}」的副本过多，请先清理重名环境`)
 }
 
-function importBundle(ctx: ModuleContext, json: string): { profiles: number; proxies: number } {
+/**
+ * v1 包导入后**具体会变**的东西。
+ *
+ * 写「身份会变」是没用的 —— 用户无法据此判断该不该继续，也无法在事后核对
+ * 到底变了什么。这里每一条都对应一个真实机制，且都能被验证。
+ *
+ * 有一条需要特别说清楚：v1 包**是带 `fingerprint` 的**（它明文放在包里），
+ * 所以导入后 UA / 屏幕 / 时区 / 语言这些**参数会原样保留**。真正变的是 `seed`，
+ * 而 `seed` 是注入脚本的噪声种子（`fingerprint.ts` 里 `h32()` 把 `S` 直接
+ * XOR 进去）。于是结果是「参数全对、噪声全变」—— 站点拿到的指纹哈希变了，
+ * 用户却看不出任何区别。这种状态比「参数明显变了」更难发现，所以更要提前说。
+ */
+const LOST_FIELDS_V1: readonly string[] = [
+  'seed（环境身份根）：导入后由本机 master.key 重新派生，与包里那个不是同一个',
+  'canvas 噪声序列：注入脚本把 seed 当噪声种子（h32 里 XOR 进 S），seed 一变，每个像素的偏移都变',
+  'audio / WebGL 等所有经 seed 抖动的读数：同上，整条序列一起变',
+  '站点侧的指纹哈希：上面两项一变，站点算出的 visitor id 就变，风控会把这台机器当成新设备',
+  '与 seed 的自洽性：fingerprint 参数会原样保留，但按新 seed 重算会得到另一套；此后任何「按 seed 重建指纹」的操作（重掷种子、应用模板、克隆时换指纹）都会把环境改成另一个样子',
+  '代理密码：v1 包一律留空，需导入后自行补齐（这一条与 v2 相同，不是 v1 独有）'
+]
+
+/**
+ * 「这个包会换掉身份，你确认吗」不是一个普通错误，所以它带 `code` 和结构化字段。
+ *
+ * 为什么用抛异常而不是返回 `{ ok:false }`：`ctx.handle` 的统一信封已经把
+ * 「失败」表达成 `{ ok:false, error }`。再在 data 里套一层 `ok:false`，渲染层
+ * 就要判断两层 ok，而漏判的那次表现是「弹了确认框但什么都没发生」。
+ */
+class LegacyIdentityLossError extends Error {
+  readonly code = 'legacy-identity-loss'
+  readonly lostFields: string[]
+
+  constructor() {
+    super(
+      '这个迁移包是旧格式（version 1），里面不含任何身份参数。导入本身会成功，' +
+        '但导入后的环境与包里那些**不是同一个身份** —— 站点会把它当成一台新设备。' +
+        '要继续，需要显式确认。'
+    )
+    this.name = 'LegacyIdentityLossError'
+    this.lostFields = [...LOST_FIELDS_V1]
+  }
+}
+
+function importBundle(
+  ctx: ModuleContext,
+  json: string,
+  rawPassword: unknown,
+  acceptLegacyIdentityLoss: unknown
+): MigrationImportResult {
   const bundle = parseBundle(json)
+
+  if (bundle.version === 1) {
+    if (acceptLegacyIdentityLoss !== true) {
+      // 这里在解析之后、**任何 store 调用之前**就返回。
+      // 「不写任何文件」靠的不是事后清理，而是顺序：没有「先建一半再问」的可能。
+      throw new LegacyIdentityLossError()
+    }
+    const result = importV1(ctx, bundle)
+    // 用户确认过「身份会变」，这条必须留痕。
+    // 将来他发现某个店铺被风控，需要能查到「这批环境是某天用旧包导进来的」——
+    // 没有这条记录，那天就只是一次「正常的导入」。
+    appendAudit(
+      ctx.stores,
+      'migration.import.legacy',
+      `${String(result.profiles)} 个环境`,
+      `确认以旧格式（v1）导入：seed 重新派生，身份未搬迁；代理 ${String(result.proxies)} 个`
+    )
+    return result
+  }
+
+  return importV2(ctx, bundle, rawPassword)
+}
+
+/** v1：包里只有可见信息，seed 由本机重新派生 —— 这就是「身份没搬过来」 */
+function importV1(ctx: ModuleContext, bundle: MigrationBundleV1): MigrationImportResult {
   if (bundle.profiles.length === 0) throw new Error('迁移包里没有任何环境')
 
   // 落盘前先做一次整体校验。原来这段校验放在创建环境的 forEach 里，
@@ -410,14 +575,184 @@ function importBundle(ctx: ModuleContext, json: string): { profiles: number; pro
   })
 
   // 先建代理：环境要按 key 引用代理，顺序反了就只能拿到空引用
+  const { keyToProxy, created: createdProxies } = importProxies(ctx, bundle.proxies)
+
+  const taken = new Set(ctx.stores.profiles.list().map((profile) => profile.name))
+  const written: string[] = []
+  const adopted: MigrationAdoptReport[] = []
+
+  try {
+    for (const item of bundle.profiles) {
+      const created = ctx.stores.profiles.create({
+        name: uniqueName(item.name, taken),
+        platform: item.platform,
+        fingerprint: structuredClone(item.fingerprint),
+        proxy: proxyConfigOf(
+          item.proxyKey !== undefined ? keyToProxy.get(item.proxyKey) : undefined
+        )
+      })
+      written.push(created.id)
+      taken.add(created.name)
+
+      // CreateProfileInput 没有 note 字段，只能建完再补一次。
+      if (item.note !== undefined) {
+        ctx.stores.profiles.update(created.id, { note: item.note })
+      }
+
+      // v1 没有可比的东西：包里没有 seed，所以「搬过来的身份是不是同一个」
+      // 这个问题的答案是「没有搬过来」。这里如实写进报告，而不是省掉这一栏 ——
+      // 空列表和「明确说没搬」在界面上是两种完全不同的信息。
+      adopted.push({
+        name: created.name,
+        ok: false,
+        compared: [
+          { field: 'seed', from: '(v1 包不含 seed)', to: created.seed.slice(0, 8) + '…（本机新派生）' },
+          { field: 'fingerprint 参数', from: '包内原值', to: '原样写回（未重算）' }
+        ]
+      })
+    }
+  } catch (err) {
+    rollback(ctx, written, createdProxies)
+    throw err
+  }
+
+  return { profiles: written.length, proxies: createdProxies.length, adopted }
+}
+
+/**
+ * v2：解全部 → 校验全部 → 才写盘。
+ *
+ * 这个顺序是硬要求，不是风格。流式导入（解一条写一条）在第 N 条口令/密文出错时，
+ * 会在库里留下前 N-1 条**身份正确**的环境和一条都没有的失败提示 —— 用户看到
+ * 「导入失败」，实际却已经搬进来一半。半导入的身份比没有更糟：他会去重试，
+ * 于是同一批身份在库里出现两份。
+ */
+function importV2(
+  ctx: ModuleContext,
+  bundle: MigrationBundleV2,
+  rawPassword: unknown
+): MigrationImportResult {
+  if (bundle.entries.length === 0) throw new Error('环境包里没有任何环境')
+  if (typeof rawPassword !== 'string' || rawPassword === '') {
+    throw new Error('这个环境包需要口令才能打开：没有口令无法解开里面的身份')
+  }
+
+  const opener = createOpener(bundle.header, rawPassword)
+
+  // ── 第一步：全部解密。一条解不开就整批不做 ──
+  const opened = bundle.entries.map((entry, index) => {
+    const payload = opener.open(
+      entry.sealed,
+      { name: entry.name, platform: entry.platform },
+      index
+    )
+    const fingerprint = asBundleFingerprint(payload.fingerprint, `「${entry.name}」`)
+    // AAD 绑定了明文的 name|platform，所以这两项改不了。但**密文里**的
+    // `fingerprint.os` 是导出方写的，GCM 只保证它没被改过，不保证它和明文层一致。
+    // 一个平台写 windows、指纹写 macos 的包能解开，但导入后会得到一条
+    // 「列表说 windows、注入按 macos 走」的环境 —— 这种自相矛盾要在写盘前挡掉。
+    if (fingerprint.os !== entry.platform) {
+      throw new Error(
+        `「${entry.name}」的平台自相矛盾：包内明文写的是 ${entry.platform}，` +
+          `密文里的指纹是 ${String(fingerprint.os)}。已取消整批导入。`
+      )
+    }
+    return { entry, payload, fingerprint }
+  })
+
+  // ── 第二步：全部校验。代理引用错是纯静态可判的 ──
+  const bundleProxyKeys = new Set(bundle.proxies.map((item) => item.key))
+  opened.forEach(({ entry, payload }, index) => {
+    if (payload.proxyKey !== undefined && !bundleProxyKeys.has(payload.proxyKey)) {
+      throw new Error(
+        `环境包第 ${index + 1} 个环境（${entry.name}）引用的代理「${payload.proxyKey}」不在包中，已取消整批导入`
+      )
+    }
+  })
+
+  // ── 第三步：才写盘 ──
+  const { keyToProxy, created: createdProxies } = importProxies(ctx, bundle.proxies)
+  const taken = new Set(ctx.stores.profiles.list().map((profile) => profile.name))
+  const written: string[] = []
+  const adopted: MigrationAdoptReport[] = []
+
+  try {
+    for (const { entry, payload, fingerprint } of opened) {
+      const result = ctx.stores.profiles.adopt(
+        {
+          name: uniqueName(entry.name, taken),
+          platform: entry.platform,
+          fingerprint,
+          proxy: proxyConfigOf(
+            payload.proxyKey !== undefined ? keyToProxy.get(payload.proxyKey) : undefined
+          )
+        },
+        payload.seed
+      )
+
+      adopted.push({
+        name: result.profile === null ? entry.name : result.profile.name,
+        ok: result.ok,
+        compared: result.compared
+      })
+
+      if (result.profile === null) {
+        // adopt 已经把自己写进去的那一条回滚了，但前面几条还在 —— 一起撤掉
+        const diff = result.compared
+          .filter((row) => row.from !== row.to)
+          .slice(0, 3)
+          .map((row) => `${row.field}：包内 ${row.from} → 盘上 ${row.to}`)
+          .join('；')
+        throw new Error(
+          `「${entry.name}」写盘后从盘上读回来的身份与包里的不一致，已回滚整批导入。` +
+            (diff === '' ? '（差异字段未能列出）' : '差异：' + diff)
+        )
+      }
+
+      written.push(result.profile.id)
+      taken.add(result.profile.name)
+      if (payload.note !== undefined) {
+        ctx.stores.profiles.update(result.profile.id, { note: payload.note })
+      }
+    }
+  } catch (err) {
+    rollback(ctx, written, createdProxies)
+    throw err
+  }
+
+  return { profiles: written.length, proxies: createdProxies.length, adopted }
+}
+
+/**
+ * 密文里的 fingerprint 只保证「没被改过」，不保证「形状完整」——
+ * 导出方可能是个更旧或更怪的版本。这里只查两个字段，因为少了这两个，
+ * `adopt` 会写出一条 `platform` 投影落空的环境，症状要等到启动时才出现。
+ */
+function asBundleFingerprint(raw: unknown, where: string): FingerprintConfig {
+  const rec = asRecord(raw, where + ' 的 fingerprint')
+  const os = rec.os
+  if (typeof os !== 'string' || !(OS_KINDS as readonly string[]).includes(os)) {
+    throw new Error(`${where} 的 fingerprint.os 不合法：${String(os)}`)
+  }
+  if (typeof rec.userAgent !== 'string' || rec.userAgent === '') {
+    throw new Error(`${where} 的 fingerprint.userAgent 缺失`)
+  }
+  return rec as unknown as FingerprintConfig
+}
+
+/** 建代理并返回「包内 key → 本机记录」的映射。v1 / v2 共用 */
+function importProxies(
+  ctx: ModuleContext,
+  items: MigrationProxy[]
+): { keyToProxy: Map<string, ProxyRecord>; created: string[] } {
   const keyToProxy = new Map<string, ProxyRecord>()
   const knownKeys = new Map<string, ProxyRecord>()
   for (const record of ctx.stores.proxies.list()) {
     knownKeys.set(proxyKeyOf(record.protocol, record.host, record.port, record.username), record)
   }
 
-  let proxyCount = 0
-  for (const item of bundle.proxies) {
+  const created: string[] = []
+  for (const item of items) {
     const identity = proxyKeyOf(item.protocol, item.host, item.port, item.username)
     let record = knownKeys.get(identity)
     if (record === undefined) {
@@ -436,44 +771,50 @@ function importBundle(ctx: ModuleContext, json: string): { profiles: number; pro
       }
       ctx.stores.proxies.add(record)
       knownKeys.set(identity, record)
-      proxyCount += 1
+      created.push(record.id)
     }
     // 迁移包内的 key 可能和本机去重键不同（比如对方手工改过），两套映射都要建
     keyToProxy.set(item.key, record)
   }
+  return { keyToProxy, created }
+}
 
-  const taken = new Set(ctx.stores.profiles.list().map((profile) => profile.name))
-  let profileCount = 0
+function proxyConfigOf(proxy: ProxyRecord | undefined): Profile['proxy'] {
+  if (proxy === undefined) return null
+  return {
+    type: proxy.protocol,
+    host: proxy.host,
+    port: proxy.port,
+    username: proxy.username,
+    password: proxy.password
+  }
+}
 
-  bundle.profiles.forEach((item) => {
-    const proxy = item.proxyKey !== undefined ? keyToProxy.get(item.proxyKey) : undefined
-
-    const created = ctx.stores.profiles.create({
-      name: uniqueName(item.name, taken),
-      platform: item.platform,
-      fingerprint: structuredClone(item.fingerprint),
-      proxy:
-        proxy === undefined
-          ? null
-          : {
-              type: proxy.protocol,
-              host: proxy.host,
-              port: proxy.port,
-              username: proxy.username,
-              password: proxy.password
-            }
-    })
-    taken.add(created.name)
-
-    // CreateProfileInput 没有 note 字段，只能建完再补一次。
-    // 放在 create 之后而不是合并进一次写入，是为了不改动 store 的既有签名。
-    if (item.note !== undefined) {
-      ctx.stores.profiles.update(created.id, { note: item.note })
+/**
+ * 整批失败时把自己刚写进去的删掉。
+ *
+ * 为什么不在失败点上各自回滚：写盘发生在循环里，任何一步都可能抛
+ * （adopt 的深比较失败、update 的 note 写入失败）。逐个 catch 的写法等于
+ * 「每个抛点都要记得回滚」，漏一个就是半批数据。这里只在外面兜一层。
+ *
+ * 已经不在库里的 id 不算失败：回滚的目标是「回到导入前的状态」，
+ * 而那条本来就不在了，状态已经对了。
+ */
+function rollback(ctx: ModuleContext, profileIds: string[], proxyIds: string[]): void {
+  for (const id of profileIds) {
+    try {
+      ctx.stores.profiles.remove(id)
+    } catch {
+      // 已被 adopt 自己回滚掉的那条会走到这里，属正常
     }
-    profileCount += 1
-  })
-
-  return { profiles: profileCount, proxies: proxyCount }
+  }
+  for (const id of proxyIds) {
+    try {
+      ctx.stores.proxies.remove(id)
+    } catch {
+      // 同上
+    }
+  }
 }
 
 /* ────────────────────────────── 参数收敛 ────────────────────────────── */
@@ -509,12 +850,12 @@ export function registerTemplateModule(ctx: ModuleContext): void {
 
   ctx.handle(CH.templates.remove, (_event, id) => removeTemplate(ctx, asId(id, 'id')))
 
-  ctx.handle(CH.migration.export, (_event, profileIds) =>
-    exportBundle(ctx, asIdList(profileIds))
+  ctx.handle(CH.migration.export, (_event, profileIds, password) =>
+    exportBundle(ctx, asIdList(profileIds), password)
   )
 
-  ctx.handle(CH.migration.import, (_event, json) => {
+  ctx.handle(CH.migration.import, (_event, json, password, acceptLegacyIdentityLoss) => {
     if (typeof json !== 'string') throw new Error('参数「json」必须是字符串')
-    return importBundle(ctx, json)
+    return importBundle(ctx, json, password, acceptLegacyIdentityLoss)
   })
 }

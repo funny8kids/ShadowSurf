@@ -12,43 +12,150 @@
 
 import { hkdfSync, randomBytes } from 'node:crypto'
 import * as fs from 'node:fs'
+import { safeStorage } from 'electron'
 import { filePath } from '@main/store/db'
 import { TIMEZONE_GEO, resolveFingerprint } from '@shared/presets'
-import type { FingerprintConfig, OSKind } from '@shared/types'
+import type { FingerprintConfig, OSKind, Profile } from '@shared/types'
 
 /* ────────────────────────────── 主密钥 ────────────────────────────── */
 
 const MASTER_KEY_FILE = 'master.key'
 const HKDF_SALT = 'shadowsurf'
 
+/**
+ * 主密钥的落盘前缀。
+ *
+ * 旧格式是**裸 32 字节随机数** —— 拿到这个文件就能直接当 HKDF 的 ikm 用，
+ * 于是「所有环境的指纹」全都能重算出来。它和 profiles.json 躺在同一个目录里，
+ * 所以任何一次目录拷贝都同时拿到锁和钥匙。
+ *
+ * 现在用 Electron 的 safeStorage（Windows 走 DPAPI，按当前登录用户加密）包一层，
+ * 前缀标明格式，便于将来换算法（v2）和识别降级形态。
+ */
+const MASTER_KEY_PREFIX = 'SSKEYv1:'
+
 let cachedMaster: Buffer | null = null
 
-/**
- * 本机主密钥：32 字节随机数，首次运行时生成并落盘（0600）。
- * 所有 profile 的 seed 都由它派生，所以这个文件就是「这台机器上所有身份」的根。
- * 泄露它 = 泄露所有环境的指纹规律；丢了它 = 所有环境指纹全部漂移。
- */
-export function masterKey(): Buffer {
-  if (cachedMaster !== null) return cachedMaster
-  const file = filePath(MASTER_KEY_FILE)
-
+/** 把 32 字节密钥写成 SSKEYv1 形态；safeStorage 不可用时返回 false，由调用方决定怎么办 */
+function writeWrapped(file: string, key: Buffer): boolean {
+  let payload: string
   try {
-    const existing = fs.readFileSync(file)
-    if (existing.length >= 32) {
-      cachedMaster = existing
-      return existing
-    }
+    if (!safeStorage.isEncryptionAvailable()) return false
+    payload = safeStorage.encryptString(key.toString('hex')).toString('base64')
   } catch {
-    /* 首次运行，继续走生成分支 */
+    return false
   }
 
-  const fresh = randomBytes(32)
-  fs.writeFileSync(file, fresh, { mode: 0o600 })
+  writeAtomic(file, MASTER_KEY_PREFIX + payload)
+  return true
+}
+
+/**
+ * 原子写。
+ *
+ * 这个文件是**全机所有身份的根**：写到一半崩掉（断电、被杀进程、杀软拦写）
+ * 会留下一个截断的 `master.key`，而 `masterKey()` 对「长度不足且无前缀」的
+ * 形态是**抛错**的 —— 于是所有环境的指纹派生一起失效。
+ *
+ * 用 tmp + rename 之后，最坏情况是「旧文件还在、tmp 是垃圾」，也就是零损失。
+ * 这也是 `json-file.ts` 对数据文件用的同一套做法；根密钥没有任何理由比数据文件弱。
+ */
+function writeAtomic(file: string, data: Buffer | string): void {
+  const tmp = file + '.tmp'
+  const fd = fs.openSync(tmp, 'w', 0o600)
+  try {
+    fs.writeFileSync(fd, data)
+    fs.fsyncSync(fd)
+  } finally {
+    fs.closeSync(fd)
+  }
+  fs.renameSync(tmp, file)
   try {
     // Windows 上 chmod 是近似实现，失败也无所谓
     fs.chmodSync(file, 0o600)
   } catch {
     /* ignore */
+  }
+}
+
+/**
+ * 本机主密钥：32 字节随机数，首次运行时生成并落盘（0600）。
+ * 所有 profile 的 seed 都由它派生，所以这个文件就是「这台机器上所有身份」的根。
+ * 泄露它 = 泄露所有环境的指纹规律；丢了它 = 所有环境指纹全部漂移。
+ *
+ * 读取顺序：
+ *   1. `SSKEYv1:` 前缀 → safeStorage 解密（正常路径）
+ *   2. 恰好 32 字节 → 旧裸密钥，**照常使用**，并尽力就地封装回写
+ *   3. 其它 → 抛错。不猜、不重建：把损坏的根密钥当成「没有根密钥」去生成新的，
+ *      会让所有环境的噪声静默漂移，而用户完全看不出发生了什么。
+ *
+ * 注意用的是同步版 safeStorage API（本版本标了 deprecated）。
+ * 换异步版要把 masterKey / deriveSeed / create / clone / regenerate 一路改成 async，
+ * 改动面远超本次范围；同步版仍然可用，这里显式记一笔，避免后来人以为是无意为之。
+ */
+export function masterKey(): Buffer {
+  if (cachedMaster !== null) return cachedMaster
+  const file = filePath(MASTER_KEY_FILE)
+
+  let existing: Buffer | null = null
+  try {
+    existing = fs.readFileSync(file)
+  } catch {
+    /* 首次运行，继续走生成分支 */
+  }
+
+  if (existing !== null) {
+    const text = existing.toString('utf8')
+
+    if (text.startsWith(MASTER_KEY_PREFIX)) {
+      let key: Buffer
+      try {
+        const hex = safeStorage.decryptString(
+          Buffer.from(text.slice(MASTER_KEY_PREFIX.length), 'base64')
+        )
+        key = Buffer.from(hex, 'hex')
+      } catch (err) {
+        // 换机器 / 换用户 / 系统重装都会走到这里：DPAPI 解不开别人的密文。
+        // 宁可明确报错，也不要静默换一把新密钥 —— 那等于把所有环境的噪声改掉。
+        throw new Error(
+          '主密钥无法解密（' + String(err instanceof Error ? err.message : err) + '）：' +
+            'safeStorage 的密钥绑定当前系统用户与这台机器。' +
+            '如果你是从别的机器/用户拷来的数据目录，指纹噪声将无法保持一致。'
+        )
+      }
+      if (key.length < 32) {
+        throw new Error(`主密钥解密后长度不足 32 字节（实际 ${key.length}）`)
+      }
+      cachedMaster = key
+      return key
+    }
+
+    if (existing.length >= 32) {
+      // 旧裸密钥：先按原样用，再尝试封装。封装失败不影响本次运行，
+      // 但会留下「仍是裸密钥」的状态，verify-seed-at-rest 会如实报出来。
+      const legacy = existing.subarray(0, 32)
+      cachedMaster = legacy
+      if (!writeWrapped(file, legacy)) {
+        console.warn(
+          '[fingerprint] safeStorage 不可用，主密钥仍以裸 32 字节落盘。' +
+            '这台机器上「拿到数据目录 = 拿到全部指纹」的前提没有解除。'
+        )
+      }
+      return legacy
+    }
+
+    throw new Error(`主密钥文件形态无法识别（${existing.length} 字节，且无 ${MASTER_KEY_PREFIX} 前缀）`)
+  }
+
+  const fresh = randomBytes(32)
+  if (!writeWrapped(file, fresh)) {
+    // 降级形态也走原子写：这个文件写坏 = 全机身份派生一起失效，没有理由在
+    // 「加密不可用」这条更脆弱的路径上反而把写保护去掉。
+    writeAtomic(file, fresh)
+    console.warn(
+      '[fingerprint] safeStorage 不可用，主密钥以裸 32 字节落盘。' +
+        '这台机器上「拿到数据目录 = 拿到全部指纹」的前提没有解除。'
+    )
   }
   cachedMaster = fresh
   return fresh
@@ -285,7 +392,476 @@ function injectionConfig(fp: FingerprintConfig, seed: string): InjectionConfig {
  * - 噪声用 seed 派生的哈希，不用 Math.random()：同一坐标永远同一扰动，
  *   所以同一页面多次读取得到相同结果——「稳定」才是伪装，抖动等于自曝。
  */
-export function buildInjectionScript(fp: FingerprintConfig, seed: string): string {
+/* ────────────────────────── 多 target 注入源 ────────────────────────── */
+
+/**
+ * 注入目标。
+ *
+ * 为什么必须区分：`Page.addScriptToEvaluateOnNewDocument` 只作用于 document。
+ * Worker 是**独立 target**，全局是 `WorkerGlobalScope`：没有 `Navigator` / `window` /
+ * `document` / `Screen` / `Element` / `HTMLCanvasElement` / `CanvasRenderingContext2D`。
+ * 把 page 那份 source 原样灌进 Worker，`_MASK_TABLE` 第一项 `[Navigator.prototype, …]`
+ * 就抛 ReferenceError，被外层 catch 吞掉，**后面一行都不执行**——不报错、不生效，
+ * 是「看起来装了其实没装」的典型。实测（真 Chromium）Worker 相对宿主零改动。
+ *
+ * iframe 与 page 同源：OOPIF 是独立进程的 document，window/document/canvas 都在，
+ * 只是需要按 target 单独下一遍（page 级注入到不了跨进程子帧）。
+ */
+export type InjectionTarget = 'page' | 'worker' | 'iframe'
+
+/** 契约名。与 Profile 同构，单独导出只是让调用方不必依赖 store 层类型 */
+export type FingerprintProfile = Profile
+
+/**
+ * Worker 专用注入源。
+ *
+ * 与 page 版的三个结构性差异（不是「少几段」那么简单）：
+ * 1. navigator 的原型是 `WorkerNavigator.prototype`，不是 `Navigator.prototype` ——
+ *    必须用 `Object.getPrototypeOf(self.navigator)` 动态取，写死接口名会静默空转。
+ * 2. 表要重写：page 表里的 `Screen` / `window` / `Element` / `HTMLCanvasElement` /
+ *    `CanvasRenderingContext2D` 在 Worker 里不存在，**不声明**（而不是声明了再失败）。
+ * 3. 伪装层必须整层搬。`defVal` 是 `defGet` 的封装，装上去的**全是 accessor**；
+ *    不搬 `_maskOne` / `Function.prototype.toString` 的话，
+ *    `getOwnPropertyDescriptor(proto, 'hardwareConcurrency').get.toString()`
+ *    会直接吐出 `function () { return 12; }` —— 比不伪装更容易被判定插桩。
+ *
+ * 台账与失败语义（不留任何全局）：
+ * 三本账留在 IIFE 闭包里 —— `_applied` / `_failed` / `_skipped`。
+ * 任一属性失败**不回滚**，脚本末尾抛 `[ss-mask] applied=… failed=…`。
+ *
+ * 为什么放弃「整体回滚」：回滚只撤得掉 `defGet`/`defMethod` 登记的项，
+ * 而 `Intl.DateTimeFormat = _Patched`、`Intl[nm] = W` 是裸赋值，撤不掉 ——
+ * 回滚后的终态恰恰是它想消灭的矛盾（Intl 说伪装时区、Date 说宿主时区）。
+ * 而且回滚的终态是「零伪装 = 真实指纹 100% 泄露」，比坏一个属性更差。
+ * 详见脚本里「`_rollback` 已删除」那段注释。
+ *
+ * 失败怎么被看见：不靠页面自报。早先往 self 上挂过一个诊断全局（SS_DIAG），
+ * 一行 `Object.getOwnPropertyNames(self)` 就能看到，等于自己给检测方留标记，
+ * 已被 `tests/structure.test.ts` 的「dev-only 诊断通道不得出现在构建产物里」挡下。
+ * 现在改成抛错（`Runtime.evaluate` 会放进 `exceptionDetails`，页面删不掉），
+ * 外加主进程 resume 后读实际值跟 profile 比对 —— 两条都不需要页面配合。
+ */
+function buildWorkerScript(fp: FingerprintConfig, seed: string): string {
+  const cfg = injectionConfig(fp, seed)
+  const json = JSON.stringify(cfg).replace(/</g, '\\u003c')
+  const L: string[] = []
+
+  L.push('(function () {')
+  L.push('  var T = "worker";')
+  L.push('  var C = ' + json + ';')
+  L.push('  var S = C.seed | 0;')
+  L.push("  var _LOC = (C.languages && C.languages.length) ? C.languages[0] : (C.locale || 'en-US');")
+  // 三本账，**全部留在 IIFE 闭包里，不对外暴露**：
+  //   `_applied` —— 装成功的属性名；
+  //   `_failed`  —— 装失败的属性名 + 原因（**非空就抛错**，见脚本末尾）；
+  //   `_skipped` —— 原生就没有的属性，按「不该造」跳过（不算失败，见 defGet）。
+  // 早先还有一个 `__SS_DIAG__` 全局把它们挂到 self 上，已按裁决删除：
+  // 一行 `Object.getOwnPropertyNames(self)` 就能看到它，等于自己给检测方留标记。
+  L.push('  var _applied = [];')
+  L.push('  var _failed = [];')
+  L.push('  var _skipped = [];')
+  L.push('  var _masked = [];')
+  L.push('')
+  L.push('  var _fakeSrc = function (nm) { return "function " + nm + "() { [native code] }"; };')
+  L.push('  var _noProto = function (fn) {')
+  L.push('    try { return { f() { return fn.apply(this, arguments); } }.f; } catch (e) { return fn; }')
+  L.push('  };')
+  L.push('  var _maskOne = function (fn, nm, len) {')
+  L.push('    if (typeof fn !== "function") { return fn; }')
+  L.push('    try { Object.defineProperty(fn, "name", { value: nm, configurable: true }); } catch (e) {}')
+  // 原生方法的 length 是外部事实（`getParameter` 是 1 参、`toTimeString` 是 0 参），
+  // 换掉之后再也推导不出来。不还原的话 `f.length` 一行就能判定被换过。
+  L.push('    try { if (typeof len === "number") { Object.defineProperty(fn, "length", { value: len, configurable: true }); } } catch (e) {}')
+  L.push('    _masked.push(fn);')
+  L.push('    return fn;')
+  L.push('  };')
+  L.push('')
+  // 声明：只登记「这个属性属于本次要改的清单」，真正的 apply 在 defGet 里做。
+  // 分开是为了让「声明了但没改成功」和「压根没声明」在台账里可区分。
+  L.push('  var defGet = function (o, p, fn) {')
+  L.push('    if (!o) { _failed.push({ p: p, why: "宿主对象不存在" }); return; }')
+  L.push('    try {')
+  L.push('      var d = Object.getOwnPropertyDescriptor(o, p);')
+  // **原生没有的属性不创建。**
+  // 早先这里是 `had: !!d` 然后照装不误，于是在 http:// 这类非安全上下文里，
+  // `[SecureContext]` 的属性（`navigator.deviceMemory` 之类）本来**不存在**，
+  // 却被我们凭空造了一个出来。属性**存在性**是比属性值更硬的指纹：
+  // 一个本该没有 deviceMemory 的页面有了它，比「值不对」更容易被判定。
+  // 跳过不算失败 —— 那正是原生真相，所以记 `_skipped` 而不是 `_failed`。
+  L.push('      if (!d) { _skipped.push(p); return; }')
+  // getter 也必须走 `_noProto` + `"get " + p`，两条都是一行就能查的：
+  //   `"prototype" in getOwnPropertyDescriptor(P,"x").get`   → 原生 false，裸函数 true
+  //   `...get.toString()`                                    → 原生 "function get x() { [native code] }"
+  // 少了这两处，Worker 里的 accessor 和 page 里的长得不一样，
+  // 而「同一个属性在两个上下文里 toString 不同」本身就是判定插桩的充分条件。
+  L.push('      var g = _maskOne(_noProto(fn), "get " + p, 0);')
+  L.push('      Object.defineProperty(o, p, {')
+  L.push('        configurable: d.configurable !== false,')
+  L.push('        enumerable: d.enumerable,')
+  L.push('        get: g')
+  L.push('      });')
+  L.push('      _applied.push(p);')
+  // getter 也要进伪装台账：`defVal` 装的是 accessor，不登记的话
+  // `getOwnPropertyDescriptor(proto, "hardwareConcurrency").get.toString()`
+  // 会直接吐出 `function () { return v; }` —— 比不伪装更容易被判定插桩。
+  // （`_maskOne` 已在上面调过，这里不再重复登记。）
+  L.push('    } catch (e) {')
+  // 这一层最阴：属性不可配置时 defineProperty 会抛，被这里吞掉就是「这一个属性
+  // 静默保持原生」。块级 try 和枚举截断都看不见它，只有台账能看见。
+  L.push('      _failed.push({ p: p, why: String((e && e.message) || e) });')
+  L.push('    }')
+  L.push('  };')
+  L.push('  var defVal = function (o, p, v) { defGet(o, p, function () { return v; }); };')
+  // 方法必须保持「数据属性」形态。
+  // 用 defGet 把 `Date.prototype.getTimezoneOffset` 换成 accessor 会出事：
+  // 之后任何一次 `Date.prototype.getTimezoneOffset` 的**读取**都会触发 getter，
+  // 而 getter 里 `this` 是 prototype 不是 Date，直接抛 "this is not a Date object"。
+  // 原生方法本来就是 value 属性，这里照原样装回去，形态也才不会被查出来。
+  L.push('  var defMethod = function (o, p, fn) {')
+  L.push('    if (!o) { _failed.push({ p: p, why: "宿主对象不存在" }); return; }')
+  L.push('    try {')
+  L.push('      var d = Object.getOwnPropertyDescriptor(o, p);')
+  L.push('      if (!d) { _skipped.push(p); return; }')
+  // 原生方法同样是**没有 prototype 的 concise method**，而且 length 是外部事实。
+  // 裸函数装回去的话 `"prototype" in Date.prototype.getHours` 立刻为 true —— 一行可查。
+  L.push('      var _len = (typeof d.value === "function") ? d.value.length : fn.length;')
+  L.push('      var m = _maskOne(_noProto(fn), p, _len);')
+  L.push('      Object.defineProperty(o, p, {')
+  L.push('        value: m,')
+  L.push('        writable: d.writable !== false,')
+  L.push('        enumerable: d.enumerable,')
+  L.push('        configurable: d.configurable !== false')
+  L.push('      });')
+  L.push('      _applied.push(p);')
+  L.push('    } catch (e) { _failed.push({ p: p, why: String((e && e.message) || e) }); }')
+  L.push('  };')
+  L.push('')
+  // `_rollback` 已删除 —— 这里**刻意**不留「整体回滚」。
+  //
+  // 早先的策略是「任一属性失败 → 撤销本次全部 apply」，理由是「半伪装会自证」。
+  // 实测把它推翻了：回滚只撤得掉 `defGet`/`defMethod` 登记的项，而
+  // `Intl.DateTimeFormat = _Patched` 和 `Intl[nm] = W` 是**裸赋值**，撤不掉。
+  // 于是回滚后的终态恰恰是它想消灭的那个矛盾：
+  //   `Intl.DateTimeFormat().resolvedOptions().timeZone` = 伪装值（还在）
+  //   `new Date().getTimezoneOffset()`                  = 宿主值（已撤）
+  // 同一个上下文两个时区 —— 回滚亲手制造了它。
+  //
+  // 更要命的是终态本身：回滚 = 零伪装 = 真实指纹 100% 泄露。
+  // 25 个属性里坏 1 个，回滚等于把另外 24 个好的也扔掉。部分伪装只漏那 1 个。
+  // 所以现在的策略是：**保留部分伪装 + 完整失败台账 + 失败时抛错**。
+  //
+  // 抛错而不是挂全局：
+  //   · 生产路径 —— `Runtime.evaluate` 把它放进 `exceptionDetails`，主进程读得到；
+  //   · 探针路径 —— `new Function(src)()` 直接抛，探针 catch 得到；
+  //   · 零全局、零 console。页面删得掉属性，删不掉已经返回给调试器的异常。
+  L.push('')
+  // 这里**不**往页面/Worker 上留任何诊断全局。
+  //
+  // 早先有一个诊断全局 SS_DIAG（declared / applied / failed / rolledBack），
+  // 被 `tests/structure.test.ts` 的「dev-only 诊断通道不得出现在构建产物里」挡下：
+  // 这个字符串会原样进 `out/main/index.js`，等于我们自己给检测方留了一个
+  // 「哪些 Intl 构造器被接管过」的标记 —— 比不伪装更容易判定。
+  // 用运行期判断（`process.env.NODE_ENV`）消不掉它，打包后那个值常常是 undefined；
+  // 而注入脚本是**运行时拼出来的字符串**，vite 的 `define` 也够不到它。
+  // 所以结论是：一个全局都不留。
+  //
+  // 那「回滚发生了」怎么被看见？—— 由主进程在 `Runtime.runIfWaitingForDebugger`
+  // 之后对同一个 session 做一次 `Runtime.evaluate`，读 `navigator.hardwareConcurrency`
+  // 之类的值跟 profile 比对。整体回滚后这些值会退回宿主值，一比就出来。
+  // 这条路不需要任何页面内全局，也不需要 console（console 同样是页面可见的 tell）。
+  // 它落在 cdp.ts / windows.ts 那条链路上，不在这里。
+  L.push('')
+  L.push('  try {')
+  // ── navigator ────────────────────────────────────────────────────────
+  // 关键：Worker 里没有 `Navigator` 这个构造器，navigator 的原型是
+  // `WorkerNavigator.prototype`。写死 `Navigator.prototype` 会抛 ReferenceError。
+  L.push('    var NP = Object.getPrototypeOf(self.navigator);')
+  L.push('    defVal(NP, "userAgent", C.ua);')
+  L.push('    defVal(NP, "appVersion", C.appVersion);')
+  L.push('    defVal(NP, "platform", C.platform);')
+  L.push('    defVal(NP, "vendor", C.vendor);')
+  L.push('    defVal(NP, "hardwareConcurrency", C.cores);')
+  L.push('    defVal(NP, "deviceMemory", C.memory);')
+  L.push('    defVal(NP, "language", C.languages[0]);')
+  L.push('    defGet(NP, "languages", function () { return C.languages.slice(); });')
+  L.push('    defVal(NP, "webdriver", false);')
+  L.push('    defVal(NP, "pdfViewerEnabled", true);')
+  L.push('')
+  // ── Intl：locale 与 timeZone 都必须接管 ──────────────────────────────
+  // 不接管 timeZone 的话 `resolvedOptions().timeZone` 报宿主，而
+  // `getTimezoneOffset` 报伪装值 —— 同一页面两个时区，不需要参照值就能判定。
+  L.push('    var _DTF = Intl.DateTimeFormat;')
+  L.push('    var _lang = _LOC;')
+  L.push('    var _Patched = function (locales, options) {')
+  L.push('      var o = {};')
+  L.push('      if (options) { for (var k in options) { o[k] = options[k]; } }')
+  L.push('      if (!o.timeZone) { o.timeZone = C.tz; }')
+  L.push('      if (locales === undefined || locales === null) { locales = _lang; }')
+  L.push('      return new _DTF(locales, o);')
+  L.push('    };')
+  L.push('    _Patched.prototype = _DTF.prototype;')
+  L.push('    try { Object.defineProperty(_Patched, "name", { value: "DateTimeFormat", configurable: true }); } catch (e) {}')
+  L.push('    try { Object.defineProperty(_DTF.prototype, "constructor", { value: _Patched, configurable: true, writable: true }); } catch (e) {}')
+  L.push('    Intl.DateTimeFormat = _Patched;')
+  L.push('    _maskOne(_Patched, "DateTimeFormat");')
+  L.push('')
+  // `_parts` 必须写死 "en-US"，**不能**跟 `_LOC`。它不产出给页面看的字符串，
+  // 只喂下面 :596 的 `parseInt(arr[i].value, 10)` 反解时区偏移。
+  // ar-EG / fa-IR / bn-BD 的 `formatToParts` 吐阿拉伯-印度数字（"١٩٦٩"），
+  // `parseInt` 返回 NaN → y/mo/dd 全 0 → offset 恒 0 → `_shifted` 不平移，
+  // 所有 getFullYear/getMonth/getHours 一起错，而注入不报任何错。
+  // `_nameFmt`（时区名）才是要跟 `_LOC` 的那个。
+  L.push('    var _parts = new _DTF("en-US", {')
+  L.push('      timeZone: C.tz, hour12: false, year: "numeric", month: "2-digit",')
+  L.push('      day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit"')
+  L.push('    });')
+  L.push('')
+  // 其余 Intl 构造器：运行时枚举 + **每个成员单独 try**。
+  // 整段包一个 try 的话，任何一个成员抛错都会让 _IN 从那一刻截断，
+  // 后面的构造器全部不接管 —— 外部表现就是「DateTimeFormat 说 de-DE、
+  // DurationFormat 说 zh-CN」，同一个 Intl 上两个语言，不需要参照值即可判定。
+  L.push('    var _IN = [];')
+  L.push('    var _ik = [];')
+  L.push('    try { _ik = Object.getOwnPropertyNames(Intl); } catch (e) { _ik = []; }')
+  L.push('    for (var _ii = 0; _ii < _ik.length; _ii++) {')
+  L.push('      try {')
+  L.push('        var _iv = Intl[_ik[_ii]];')
+  L.push('        if (typeof _iv === "function" && typeof _iv.supportedLocalesOf === "function" && _ik[_ii] !== "DateTimeFormat") { _IN.push(_ik[_ii]); }')
+  L.push('      } catch (e) {}')
+  L.push('    }')
+  L.push('    for (var ni = 0; ni < _IN.length; ni++) {')
+  L.push('      try {')
+  L.push('        (function (nm) {')
+  L.push('          var Orig = Intl[nm];')
+  L.push('          if (typeof Orig !== "function") { return; }')
+  L.push('          var W = function (locales, options) {')
+  L.push('            if (locales === undefined || locales === null) { locales = _lang; }')
+  L.push('            return new Orig(locales, options);')
+  L.push('          };')
+  L.push('          W.prototype = Orig.prototype;')
+  L.push('          if (Orig.supportedLocalesOf) { W.supportedLocalesOf = Orig.supportedLocalesOf; }')
+  // 上一句是**共享**同一个 prototype 对象，不是复制一份。
+  // 少了下面这行，`Orig.prototype.constructor` 仍指回原生构造器，
+  // `new (Intl.NumberFormat.prototype.constructor)()` 就拿到未包装的原生 formatter
+  // —— 宿主 locale + 宿主时区，本段全部作废，而 `_maskOne` 修不了它
+  // （它只改 name/length/toString，改不了「constructor 指回谁」）。
+  // 注释里刻意不写出赋值语句原文：structure.test.ts 用正则数「复用/修复」配对，
+  // 注释里出现同样字面量会被数成第 5 处复用，让配对断言假红。
+  L.push('          try { Object.defineProperty(Orig.prototype, "constructor", { value: W, configurable: true, writable: true }); } catch (e) {}')
+  L.push('          try { Object.defineProperty(W, "prototype", { writable: false, enumerable: false, configurable: false }); } catch (e) {}')
+  L.push('          try { Object.defineProperty(W, "name", { value: nm, configurable: true }); } catch (e) {}')
+  L.push('          Intl[nm] = W;')
+  L.push('          _maskOne(W, nm);')
+  L.push('        })(_IN[ni]);')
+  L.push('      } catch (e) { _failed.push({ p: "Intl." + _IN[ni], why: String((e && e.message) || e) }); }')
+  L.push('    }')
+  L.push('')
+  // ── Date：本地 getter 整体平移 + toLocale* 带上 profile 的 locale/timeZone ──
+  // 只改 getTimezoneOffset 是不够的：Date 的本地时间 getter 读宿主时区表，
+  // 一台 UTC+8 的机器配洛杉矶环境，getHours() 会直接吐东八区的小时数。
+  L.push('    var _gtzoNative = Date.prototype.getTimezoneOffset;')
+  L.push('    var _offT = NaN, _offV = 0;')
+  L.push('    var _targetOff = function (d) {')
+  L.push('      var t = d.getTime();')
+  L.push('      if (t === _offT) { return _offV; }')
+  L.push('      var y = 0, mo = 1, dd = 1, hh = 0, mi = 0, ss = 0;')
+  L.push('      var arr = _parts.formatToParts(d);')
+  L.push('      for (var i = 0; i < arr.length; i++) {')
+  L.push('        var tp = arr[i].type, v = parseInt(arr[i].value, 10);')
+  L.push('        if (tp === "year") { y = v; }')
+  L.push('        else if (tp === "month") { mo = v; }')
+  L.push('        else if (tp === "day") { dd = v; }')
+  L.push('        else if (tp === "hour") { hh = v % 24; }')
+  L.push('        else if (tp === "minute") { mi = v; }')
+  L.push('        else if (tp === "second") { ss = v; }')
+  L.push('      }')
+  L.push('      var asUTC = Date.UTC(y, mo - 1, dd, hh, mi, ss);')
+  L.push('      var off = Math.round((t - asUTC) / 60000);')
+  L.push('      if (!isFinite(off)) { off = 0; }')
+  L.push('      _offT = t; _offV = off;')
+  L.push('      return off;')
+  L.push('    };')
+  L.push('    var _shifted = function (d) {')
+  L.push('      var t = _targetOff(d), h = 0;')
+  L.push('      try { h = _gtzoNative.call(d); } catch (e) {}')
+  L.push('      return new Date(d.getTime() + (h - t) * 60000);')
+  L.push('    };')
+  L.push('    var _withTz = function (fn) {')
+  L.push('      return function (l, o) {')
+  L.push('        var q = {};')
+  L.push('        if (o) { for (var k in o) { q[k] = o[k]; } }')
+  L.push('        if (!q.timeZone) { q.timeZone = C.tz; }')
+  L.push('        if (l === undefined || l === null) { l = _lang; }')
+  L.push('        return fn.call(this, l, q);')
+  L.push('      };')
+  L.push('    };')
+  L.push('    defMethod(Date.prototype, "getTimezoneOffset", function () { return _targetOff(this); });')
+  L.push('    var _LOCAL = ["getFullYear", "getMonth", "getDate", "getDay", "getHours", "getMinutes", "getSeconds"];')
+  L.push('    for (var li = 0; li < _LOCAL.length; li++) {')
+  L.push('      (function (nm) {')
+  L.push('        var orig = Date.prototype[nm];')
+  L.push('        defMethod(Date.prototype, nm, function () { return orig.apply(_shifted(this), arguments); });')
+  L.push('      })(_LOCAL[li]);')
+  L.push('    }')
+  // toString 也必须走平移：`new Date(0).toString()` 会带出宿主时区名，
+  // 与已改好的 getHours() 直接矛盾。先取原生再包，不能在里面再 `String(date)`，
+  // 那会回到被替换后的 toString，无限递归。
+  // toString / toTimeString 印的是**宿主机**的 GMT 偏移和时区名，平移救不了：
+  // 平移只改时刻，改不了格式化时用的时区表。所以整个重写，和 page 版同一条路子。
+  L.push('    var _p2 = function (n) { return (n < 10 ? "0" : "") + n; };')
+  L.push('    var _DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];')
+  L.push('    var _MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];')
+  L.push('    var _nameFmt = new _DTF(_LOC, { timeZone: C.tz, timeZoneName: "long" });')
+  L.push('    var _zoneName = function (d) {')
+  L.push('      try {')
+  L.push('        var a = _nameFmt.formatToParts(d);')
+  L.push('        for (var i = 0; i < a.length; i++) { if (a[i].type === "timeZoneName") { return a[i].value; } }')
+  L.push('      } catch (e) {}')
+  L.push('      return "";')
+  L.push('    };')
+  L.push('    defMethod(Date.prototype, "toTimeString", function () {')
+  L.push('      if (isNaN(this.getTime())) { return "Invalid Date"; }')
+  L.push('      var off = -this.getTimezoneOffset();')
+  L.push('      var sg = off >= 0 ? "+" : "-";')
+  L.push('      var ab = Math.abs(off);')
+  L.push('      var zone = "GMT" + sg + _p2(Math.floor(ab / 60)) + _p2(ab % 60);')
+  L.push('      var nm = _zoneName(this);')
+  L.push('      return _p2(this.getHours()) + ":" + _p2(this.getMinutes()) + ":" + _p2(this.getSeconds()) + " " + zone + (nm ? " (" + nm + ")" : "");')
+  L.push('    });')
+  L.push('    defMethod(Date.prototype, "toDateString", function () {')
+  L.push('      if (isNaN(this.getTime())) { return "Invalid Date"; }')
+  L.push('      return _DOW[this.getDay()] + " " + _MON[this.getMonth()] + " " + _p2(this.getDate()) + " " + this.getFullYear();')
+  L.push('    });')
+  L.push('    defMethod(Date.prototype, "toString", function () {')
+  L.push('      if (isNaN(this.getTime())) { return "Invalid Date"; }')
+  L.push('      return this.toDateString() + " " + this.toTimeString();')
+  L.push('    });')
+  L.push('    defMethod(Date.prototype, "toLocaleString", _withTz(Date.prototype.toLocaleString));')
+  L.push('    defMethod(Date.prototype, "toLocaleDateString", _withTz(Date.prototype.toLocaleDateString));')
+  L.push('    defMethod(Date.prototype, "toLocaleTimeString", _withTz(Date.prototype.toLocaleTimeString));')
+  L.push('    _maskOne(Date.prototype.getTimezoneOffset, "getTimezoneOffset");')
+  L.push('')
+  // ── WebGL：只装原型，**不建 context** ────────────────────────────────
+  // `WEBGL_debug_renderer_info` 给出的是高熵硬指纹，跨上下文一对读就能判定插桩。
+  //
+  // **曾经崩溃**：这里原来是 `new OffscreenCanvas(1, 1).getContext("webgl")` ——
+  // 建一个实例再 `Object.getPrototypeOf(ctx)` 取 prototype。那一行在**暂停态**
+  // worker（`waitForDebuggerOnStart` 挂住、isolate 停住）里执行会让渲染进程
+  // crashed（实测 `render-process-gone: crashed`，整页白屏）。
+  // 实测把条件钉死的三组对照：
+  //   · 普通 worker 顶层执行同一行（全程无 CDP）→ 不崩
+  //   · 同一会话先 `runIfWaitingForDebugger` 再 evaluate 同一行 → 不崩
+  //   · 暂停态只执行这一行、别的什么都不做 → 崩
+  // 所以条件是「暂停态 × 建 GL context」。机制推测是暂停期 isolate 挂住，
+  // 而创建 GL context 要走 GPU 进程同步 IPC —— **这是推测，未验证**。
+  //
+  // **修法**：不建 context。`getParameter` 的伪装只依赖 prototype，
+  // 而 `WebGLRenderingContext` 是 `[Exposed=(Window,Worker)]`，
+  // 实测 Worker 里 `typeof WebGLRenderingContext === "function"`（不是 undefined），
+  // prototype 直接可取。建实例纯属多余。
+  //
+  // **不要再加回来**：任何在注入期创建 GL/GPU 资源的代码都会重新触发这个崩溃。
+  // 将来若确实需要实例，必须先 `Runtime.runIfWaitingForDebugger` 再注入，
+  // 代价是失去「注入早于 worker 顶层脚本」这条保证。
+  //
+  // 这里必须是 defMethod，不能是 defGet：`getParameter` 是方法（data property）。
+  // 用 defGet 装成 accessor 后，读 `…prototype.getParameter`（不调用、只读值）
+  // 会触发 getter，`this` 是 prototype 而不是 context → `_gpo.call(this, p)`
+  // 抛 Illegal invocation，整段进 _failed。这条是实测里 `applied=0` 的唯一原因。
+  L.push('    try {')
+  L.push('      var _GLC = (typeof WebGLRenderingContext !== "undefined") ? WebGLRenderingContext : null;')
+  L.push('      if (_GLC && _GLC.prototype && typeof _GLC.prototype.getParameter === "function") {')
+  L.push('        var _gpo = _GLC.prototype.getParameter;')
+  L.push('        defMethod(_GLC.prototype, "getParameter", function (p) {')
+  L.push('          if (p === 37445) { return C.glVendor; }')
+  L.push('          if (p === 37446) { return C.glRenderer; }')
+  L.push('          return _gpo.call(this, p);')
+  L.push('        });')
+  L.push('      }')
+  L.push('    } catch (e) { _failed.push({ p: "WebGL.getParameter", why: String((e && e.message) || e) }); }')
+  L.push('')
+  // ── 收口：Function.prototype.toString 必须认识所有被换过的函数 ──────────
+  L.push('    var _fts = Function.prototype.toString;')
+  L.push('    var _patched = _maskOne(_noProto(function () {')
+  L.push('      for (var i = 0; i < _masked.length; i++) {')
+  L.push('        if (_masked[i] === this) { return _fakeSrc(String(this.name || "")); }')
+  L.push('      }')
+  L.push('      return _fts.call(this);')
+  L.push('    }), "toString");')
+  L.push('    Function.prototype.toString = _patched;')
+  L.push('  } catch (e) {')
+  L.push('    _failed.push({ p: "<block>", why: String((e && e.message) || e) });')
+  L.push('  }')
+  L.push('')
+  // 失败时**不回滚**，抛错把台账带出去。理由见上面「`_rollback` 已删除」那段。
+  //
+  // 口径：
+  //   · `applied` 正常应该是 25 上下；如果它是 0 而 failed 有内容，说明整块都没装上
+  //     （这正是上一轮 WebGL 那个 bug 的读数形态）；
+  //   · `skipped` 是「原生就没有、按不该造跳过」，**不是失败**，只作参考；
+  //   · 抛错发生在 IIFE 末尾，此时已装上的属性**保持已装状态**，不回退。
+  L.push('  if (_failed.length > 0) {')
+  L.push("    throw new Error('[ss-mask] applied=' + _applied.length + ' skipped=' + _skipped.length + ' failed=' + JSON.stringify(_failed));")
+  L.push('  }')
+  L.push('})();')
+
+  return L.join('\n')
+}
+
+/**
+ * 按 target 取注入源。
+ *
+ * `'page'` 的产物**逐字节不变**（`buildPageScript` 未被改动），这是硬约束：
+ * 25 条 injection probe 全绿不能因为这次改动而回归。
+ * `'iframe'` 与 page 同源 —— OOPIF 是独立进程的 document，window/document/canvas 都在，
+ * 差别只在「要按 target 单独下一遍」，不在脚本内容。
+ */
+function dispatchScript(fp: FingerprintConfig, seed: string, target: InjectionTarget): string {
+  if (target === 'worker') return buildWorkerScript(fp, seed)
+  return buildPageScript(fp, seed)
+}
+
+/**
+ * 生成注入脚本。
+ *
+ * 两种调用形态都支持（迁移期）：
+ *   buildInjectionScript(profile)                    —— 契约形态，从 Profile 取 fingerprint + seed
+ *   buildInjectionScript(profile, 'worker')          —— 契约形态
+ *   buildInjectionScript(fingerprintConfig, seed)    —— 旧形态，等价于 target='page'
+ */
+export function buildInjectionScript(profile: FingerprintProfile, target?: InjectionTarget): string
+export function buildInjectionScript(
+  fp: FingerprintConfig,
+  seed: string,
+  target?: InjectionTarget
+): string
+export function buildInjectionScript(
+  a: Profile | FingerprintConfig,
+  b?: InjectionTarget | string,
+  c?: InjectionTarget
+): string {
+  // Profile 一定带 fingerprint + seed；FingerprintConfig 两者都没有。
+  if (a && typeof a === 'object' && 'fingerprint' in a && 'seed' in a) {
+    const p = a as Profile
+    return dispatchScript(p.fingerprint, p.seed, (b as InjectionTarget | undefined) ?? 'page')
+  }
+  // 这里必须炸，不能静默降级。
+  // `(fingerprintConfig, 'worker')` 是最容易写出来的错：第二个位置在旧形态里是 seed，
+  // 于是 'worker' 会被当成种子，函数照样返回一份**语法正确、内容却是 page 的**脚本。
+  // 调用方拿到它去注 Worker，结果和没注入一模一样（静默空转），排查成本极高。
+  // seed 是必须的（噪声要靠它确定），所以正确写法只有：
+  //   buildInjectionScript(profile, 'worker')            —— Profile 自带 seed
+  //   buildInjectionScript(fingerprintConfig, seed, 'worker')
+  if (typeof b === 'string' && (b === 'page' || b === 'worker' || b === 'iframe')) {
+    throw new Error(
+      `buildInjectionScript: 第二个参数是 seed，不是 target。` +
+        `要指定 target 请传整个 Profile（自带 seed），或写成 (fingerprintConfig, seed, '${b}')。`
+    )
+  }
+  return dispatchScript(a as FingerprintConfig, String(b ?? ''), c ?? 'page')
+}
+
+function buildPageScript(fp: FingerprintConfig, seed: string): string {
   const cfg = injectionConfig(fp, seed)
   // < 只可能出现在字符串值里，替换成 \u003c 防止脚本被内联进 HTML 时提前闭合
   const json = JSON.stringify(cfg).replace(/</g, '\\u003c')
@@ -309,12 +885,21 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('    function defGet(o, p, fn) {')
   L.push('      try {')
   L.push('        var d = Object.getOwnPropertyDescriptor(o, p);')
+  // **原生没有的属性不创建。**
+  //
+  // 实测（非安全上下文 data: URL，`isSecureContext === false`）：
+  //   注入前 `'deviceMemory' in navigator` → false，原型上根本没有这个属性
+  //   注入后 → true，被我们凭空造了一个 accessor 出来
+  // 属性**存在性**是比属性值更硬的指纹：一个本该没有 `deviceMemory` 的页面有了它，
+  // 比「值不对」更容易判定。`[SecureContext]` 的属性在 http:// 页面上就是这样。
+  // 跳过不算失败 —— 那正是原生真相。
+  L.push('        if (!d) { return; }')
   L.push('        Object.defineProperty(o, p, {')
-  L.push('          configurable: d ? d.configurable !== false : true,')
-  L.push('          enumerable: d ? d.enumerable : true,')
+  L.push('          configurable: d.configurable !== false,')
+  L.push('          enumerable: d.enumerable,')
   L.push('          get: fn')
   L.push('        });')
-  L.push('      } catch (e) {}')
+  L.push('      } catch (e) { _failed.push({ p: p, why: String((e && e.message) || e) }); }')
   L.push('    }')
   L.push('    function defVal(o, p, v) { defGet(o, p, function () { return v; }); }')
 
@@ -325,6 +910,16 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
      `function (ok) { _reply(ok); }`，一处露馅等于前面所有伪装白做。 */
   L.push('')
   L.push('    var _masked = [];')
+  // page 侧的失败台账。
+  //
+  // 早先 page 侧**完全没有**台账：任何一个 `defineProperty` 失败都被 `catch (e) {}`
+  // 静默吞掉 —— 属性保持宿主值、其它属性是伪装值，页面上没有任何痕迹。
+  // worker 侧至少有「失败就抛错」，page 侧连「有没有装全」都无从得知。
+  // 而 page 是当前唯一在工作的注入路径，这一层更该有护栏。
+  //
+  // 这里**只记不撤**：不回滚（回滚的终态是零伪装 = 真实指纹全泄露），
+  // 只把失败明细挂到一个非枚举属性上给主进程读。
+  L.push('    var _failed = [];')
   L.push('    var _fakeSrc = function (nm) { return "function " + nm + "() { [native code] }"; };')
   L.push('    var _noProto = function (fn) {')
   L.push('      try { return { f() { return fn.apply(this, arguments); } }.f; } catch (e) { return fn; }')
@@ -481,14 +1076,23 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   // 运行时枚举：supportedLocalesOf 是 ECMA-402「服务构造器」的共同特征。
   // Intl.Locale 没有它（它是值类型，不是格式化器），会被自动排除。
   // getCanonicalLocales / supportedValuesOf 是普通函数，同样被排除。
+  /* 每个成员单独 try —— 这一条是拿掉字面量清单之后**换来的新代价**，必须记住。
+     早先写死的名单有个好处：漏项是「少做一点」，漏掉的那几个构造器继续用宿主 locale，
+     表现是「这个构造器不对」，容易发现。
+     改成运行时枚举之后覆盖面完整了，但整段包在一个 try 里：任何一个成员取值抛错，
+     _IN 就从那一刻截断，后面的构造器全部不接管 —— 而外部表现是
+     「DateTimeFormat 说 de-DE、DurationFormat 说 zh-CN」，同一个 Intl 对象上两个语言。
+     截断比漏项更坏，因为它是**做了一半**，而做了一半会自证。
+     单项 try 让失败退化成「跳过这一个」，而不是「后面全丢」。 */
   L.push('      var _IN = [];')
-  L.push('      try {')
-  L.push('        var _ik = Object.getOwnPropertyNames(Intl);')
-  L.push('        for (var _ii = 0; _ii < _ik.length; _ii++) {')
+  L.push('      var _ik = [];')
+  L.push('      try { _ik = Object.getOwnPropertyNames(Intl); } catch (e) { _ik = []; }')
+  L.push('      for (var _ii = 0; _ii < _ik.length; _ii++) {')
+  L.push('        try {')
   L.push('          var _iv = Intl[_ik[_ii]];')
   L.push('          if (typeof _iv === "function" && typeof _iv.supportedLocalesOf === "function") { _IN.push(_ik[_ii]); }')
-  L.push('        }')
-  L.push('      } catch (e) {}')
+  L.push('        } catch (e) {}')
+  L.push('      }')
   L.push('      for (var ni = 0; ni < _IN.length; ni++) {')
   L.push('        (function (nm) {')
   L.push('          var Orig = Intl[nm];')
@@ -510,11 +1114,12 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('        })(_IN[ni]);')
   L.push('      }')
   L.push('')
+  // 同 page 版：`_parts` 只喂 parseInt，必须锁 "en-US"；`_nameFmt` 才跟 `_LOC`。
   L.push('      var _parts = new _DTF("en-US", {')
   L.push("        timeZone: C.tz, hour12: false, year: 'numeric', month: '2-digit',")
   L.push("        day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit'")
   L.push('      });')
-  L.push("      var _nameFmt = new _DTF('en-US', { timeZone: C.tz, timeZoneName: 'long' });")
+  L.push("      var _nameFmt = new _DTF(_LOC, { timeZone: C.tz, timeZoneName: 'long' });")
   L.push('      var _gtzoNative = Date.prototype.getTimezoneOffset;')
   L.push('      var _offT = NaN, _offV = 0;')
   L.push('      var _targetOff = function (d) {')
@@ -1152,7 +1757,7 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('            // 那一刻 d.value 已经是我们的包装了，读到的是包装的形参个数。')
   L.push('            _maskOne(f, nm, _arityOf(obj, prop));')
   L.push('          }')
-  L.push('        } catch (e) {}')
+  L.push('        } catch (e) { _failed.push({ p: nm, why: String((e && e.message) || e) }); }')
   L.push('      };')
   L.push('      var _maskAll = function (obj, names, keepProto) {')
   L.push('        for (var i = 0; i < names.length; i++) { _maskAt(obj, names[i], names[i], keepProto); }')
@@ -1188,8 +1793,25 @@ export function buildInjectionScript(fp: FingerprintConfig, seed: string): strin
   L.push('        return _fts.call(this);')
   L.push('      }), "toString", 0);')
   L.push('      Function.prototype.toString = _patched;')
-  L.push('    } catch (e) {}')
+  L.push('    } catch (e) { _failed.push({ p: "<收口>", why: String((e && e.message) || e) }); }')
 
+  L.push('  } catch (e) { _failed.push({ p: "<块>", why: String((e && e.message) || e) }); }')
+  L.push('')
+  // 失败台账挂到 window 上给主进程读。
+  //
+  // 这里**故意**用一个全局，和 worker 侧「一个全局都不留」不同，理由有两条：
+  //   1. worker 侧失败可以 throw（`Runtime.evaluate` 会放进 exceptionDetails，
+  //      页面删不掉已经返回给调试器的异常）。page 侧不行 —— page 脚本是
+  //      `Page.addScriptToEvaluateOnNewDocument` 注入的，抛错只会变成一次页面报错，
+  //      主进程拿不到结构化信息，而且会污染页面的 error 事件。
+  //   2. 这个属性**页面可以删**。删掉就等于承认自己在伪装 —— 那反而是更强的信号，
+  //      所以不怕删。主进程读到「读不到」时按 degraded 处理（见 windows.ts），
+  //      默认不信。
+  // 用非枚举，避免 `Object.keys(window)` / `for...in` 扫到。
+  L.push('  try {')
+  L.push('    Object.defineProperty(window, "__ss_mask_failed__", {')
+  L.push('      value: _failed, enumerable: false, configurable: true, writable: false')
+  L.push('    });')
   L.push('  } catch (e) {}')
   L.push('})();')
 

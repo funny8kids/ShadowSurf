@@ -17,21 +17,22 @@ import type {
   Settings,
   TaskRecord
 } from '@shared/types'
-import type { Action, AgentEvent, RunRequest } from '@shared/protocol'
-import { getStores } from '@main/store'
+import type { AgentEvent, RunRequest } from '@shared/protocol'
+import { getStores, collectStoreHealth, dataDir } from '@main/store'
 import type { WindowManager } from '@main/core/windows'
 import type { ContentInsets } from '@main/core/windows'
 import type { ProfileRuntime } from '@main/core/profiles'
 import { bridgeFor } from '@main/core/cdp'
 import { captureSnapshot } from '@main/agent/snapshot'
 import { runAgent } from '@main/agent/loop'
+import { setConsentAuditSink } from '@main/agent/consent'
 import { testConnection } from '@main/agent/llm'
 import type { ModuleContext } from '@main/modules/context'
 import { registerProxyModule } from '@main/modules/proxy'
 import { registerTemplateModule } from '@main/modules/templates'
 import { registerScriptModule } from '@main/modules/scripts'
 import { registerLocalApiModule } from '@main/modules/localapi'
-import { registerAuditModule } from '@main/modules/audit'
+import { auditConsent, registerAuditModule } from '@main/modules/audit'
 import { registerDataModule } from '@main/modules/data'
 
 export interface HandlerContext {
@@ -43,16 +44,40 @@ export interface HandlerContext {
 
 interface ActiveRun {
   controller: AbortController
-  /** 用户点了确认 / 拒绝时调用，用完即清 */
-  resolveConfirm: ((approved: boolean) => void) | null
 }
 
 let activeRun: ActiveRun | null = null
 
-function toErrorPayload(err: unknown): { code: string; message: string; detail?: string } {
+interface ErrorPayload {
+  code: string
+  message: string
+  detail?: string
+  /**
+   * 少数错误自带**结构化**的补充信息，必须原样过到渲染层。
+   *
+   * 目前只有一处：`legacy-identity-loss` 需要列出「导入后会变的具体字段」。
+   * 不把它塞进 `message` 字符串里，是因为界面要拿它渲染成一个清单 ——
+   * 从一段中文里正则抠字段名，是那种「今天能跑、改一次文案就断」的做法。
+   *
+   * 这里只做透传，不做白名单：加白名单等于每加一种结构化错误就要改这个
+   * 文件，而漏改的症状是「字段悄悄消失、界面显示空清单」，不会有人发现。
+   */
+  lostFields?: string[]
+}
+
+function toErrorPayload(err: unknown): ErrorPayload {
   if (err instanceof Error) {
     const code = (err as Error & { code?: string }).code ?? 'E_INTERNAL'
-    return { code, message: err.message, detail: err.stack?.split('\n').slice(1, 3).join('\n') }
+    const payload: ErrorPayload = {
+      code,
+      message: err.message,
+      detail: err.stack?.split('\n').slice(1, 3).join('\n')
+    }
+    const lost = (err as Error & { lostFields?: unknown }).lostFields
+    if (Array.isArray(lost) && lost.every((item) => typeof item === 'string')) {
+      payload.lostFields = lost as string[]
+    }
+    return payload
   }
   return { code: 'E_INTERNAL', message: String(err) }
 }
@@ -80,6 +105,17 @@ function broadcast(channel: string, payload: unknown): void {
 
 export function registerHandlers(ctx: HandlerContext): void {
   const stores = getStores()
+
+  /**
+   * 把「同意询问的结果」接到审计链上。
+   *
+   * 挂在这里（组合根）而不是 `consent.ts` 内部直接 import audit：
+   * `consent.ts` 必须能在纯 Node 里被探针加载（它是同意的唯一来源，
+   * 加载不了就只能靠读代码「证明」闸门有效）。注入之后挂载点仍然只有
+   * `requestConsent` 一处 —— loop / script / localapi 三条路径都经过它，
+   * 所以「拒签不写审计」这种漏记不可能发生。
+   */
+  setConsentAuditSink((outcome, req) => auditConsent(stores, outcome, req))
 
   /* ── 环境 ── */
 
@@ -204,7 +240,7 @@ export function registerHandlers(ctx: HandlerContext): void {
     if (!tab) throw new Error('没有找到可操作的标签页，请先打开该环境')
 
     const controller = new AbortController()
-    const run: ActiveRun = { controller, resolveConfirm: null }
+    const run: ActiveRun = { controller }
     // 锁必须在这里同步落下。原来写在 await cdp.attach() 之后，
     // 两个并发的 agent.run 都能越过上面的检查，各自跑一个循环。
     activeRun = run
@@ -230,25 +266,10 @@ export function registerHandlers(ctx: HandlerContext): void {
           getCdp: () => (cdp.attached && !tab.wc.isDestroyed() ? cdp : null),
           settings: stores.settings.get(),
           emit,
-          askConfirm: (reason: string, action: Action, stepIndex: number) =>
-            new Promise<boolean>((resolve) => {
-              // 5 分钟无人应答按拒绝处理：宁可少做，不可挂着等
-              const timer = setTimeout(() => {
-                if (run.resolveConfirm === settle) {
-                  run.resolveConfirm = null
-                  resolve(false)
-                }
-              }, 5 * 60 * 1000)
-              const settle = (approved: boolean): void => {
-                clearTimeout(timer)
-                resolve(approved)
-              }
-              run.resolveConfirm = settle
-              // reason/action/stepIndex 已由 loop 通过 need-confirm 事件发给渲染层
-              void reason
-              void action
-              void stepIndex
-            })
+          // 把发起方 webContents id 传下去，凭证会绑到这个窗口上。
+          // 这里**不再有 askConfirm**：同意只能来自主进程弹出的系统原生窗口，
+          // 渲染层回答什么都不影响决策。
+          senderId: event.sender.id
         },
         controller.signal
       )
@@ -265,13 +286,27 @@ export function registerHandlers(ctx: HandlerContext): void {
     activeRun?.controller.abort()
   })
 
-  handle(CH.agent.confirm, (_e, approved) => {
-    const run = activeRun
-    if (!run) return
-    const settle = run.resolveConfirm
-    run.resolveConfirm = null
-    settle?.(Boolean(approved))
-  })
+  /*
+   * 这里原本是 `ss:agent:confirm`：读一个 boolean 就当作用户同意。
+   *
+   * 它有三个独立的毛病，任何一个都足够致命：
+   * 1. `_e`（发起方）完全没用 —— 没有 sender 校验，谁调都算；
+   * 2. 同意由**调用方声明**，而不是主进程持有的凭证。被 XSS 的渲染层只要
+   *    不显示弹窗、直接 invoke 这个通道，一次支付就被批准了；
+   * 3. 收参没有类型约束，而它当时是 `settle?.(Boolean(approved))` ——
+   *    `Boolean('false') === true`，渲染层送 `'false'` / `'no'` / `'0'`
+   *    任一非空字符串，拿到的都是**批准**。JS 里最经典的一类隐式转换，
+   *    而它偏偏出现在最该 fail-closed 的那一处。
+   *
+   * 现在整个通道被删掉了，而不是改成「只能取消」。
+   * 一个名字叫 confirm、行为却是取消的通道比没有更危险：下一个人看到
+   * `CH.agent.confirm` 会以为它是批准入口，写出依赖它的代码，然后在运行时
+   * 才发现「点了没反应」。渲染层的「取消本次任务」本来就走 `agent.cancel()`，
+   * 删掉这个通道不破任何东西。
+   *
+   * 批准的唯一入口是 `requestConsent` 弹出的系统原生窗口 —— 渲染层只能请求，
+   * 不能断言。
+   */
 
   handle(CH.agent.snapshot, async (_e, profileId, tabId) => {
     const tab = ctx.wm.getTab(profileId as string, tabId as string | undefined)
@@ -312,6 +347,28 @@ export function registerHandlers(ctx: HandlerContext): void {
     node: process.versions.node,
     platform: process.platform
   }))
+
+  /**
+   * 数据健康快照。
+   *
+   * 这是「备份物证存在但无消费方」的唯一解 —— 没有这条通道的话，`json-file.ts`
+   * 写出来的 `.corrupt-*` / `.preupgrade*` 永远没人看，用户只会看到空列表。
+   *
+   * 刻意做成「每次调用都重新扫盘」而不是缓存：用户可能刚手工改完文件、
+   * 刚关掉占用文件的杀软，缓存会让这个面板骗人。
+   */
+  handle(CH.system.storeHealth, () =>
+    collectStoreHealth(dataDir(), [
+      stores.profiles.health,
+      stores.tasks.health,
+      stores.settings.health,
+      stores.proxies.health,
+      stores.templates.health,
+      stores.scripts.health,
+      stores.audit.health,
+      stores.history.health
+    ])
+  )
 
   handle(CH.system.openExternal, async (_e, url) => {
     const target = String(url)

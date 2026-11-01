@@ -26,6 +26,7 @@ import { ScriptPanel } from '@renderer/components/tools/ScriptPanel'
 import { ApiPanel } from '@renderer/components/tools/ApiPanel'
 import { AuditPanel } from '@renderer/components/tools/AuditPanel'
 import { DataPanel } from '@renderer/components/tools/DataPanel'
+import { StoreHealthBanner } from '@renderer/components/StoreHealthBanner'
 import { bridge, errorMessage, hasBridge, onWindowState } from './lib/api'
 
 type View = NavKey | 'browser'
@@ -270,6 +271,9 @@ function Shell() {
         />
 
         <div className="views-wrap">
+          {/* 数据健康横幅：只在文件损坏 / 备份含明文 seed 时出现，正常状态不占位。
+              挂在视图上方而不是某个面板里，因为数据坏了影响的是全部视图。 */}
+          <StoreHealthBanner />
           <div className="views scroll-thin">
             {view === 'tasks' ? (
               <TaskList

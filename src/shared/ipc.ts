@@ -29,7 +29,8 @@ import type {
   CookieItem,
   DownloadItem,
   HistoryItem,
-  LocalApiState
+  LocalApiState,
+  StoreHealth
 } from './types'
 import type { AgentEvent, RunRequest, PageSnapshot } from './protocol'
 
@@ -63,7 +64,6 @@ export const CH = {
   agent: {
     run: 'ss:agent:run',
     cancel: 'ss:agent:cancel',
-    confirm: 'ss:agent:confirm',
     snapshot: 'ss:agent:snapshot'
   },
   tasks: {
@@ -78,7 +78,15 @@ export const CH = {
   },
   system: {
     info: 'ss:system:info',
-    openExternal: 'ss:system:openExternal'
+    openExternal: 'ss:system:openExternal',
+    /**
+     * 数据健康快照。
+     *
+     * 为什么单独一条通道而不是塞进 `info()`：`info()` 是启动时拉一次的静态信息，
+     * 而健康状态会在运行中变化（用户手工改了文件、杀软放开了句柄）。分开之后
+     * 界面可以按需重拉，不用把整份系统信息也重拉一遍。
+     */
+    storeHealth: 'ss:system:storeHealth'
   },
   proxies: {
     list: 'ss:proxies:list',
@@ -125,7 +133,9 @@ export const CH = {
   localApi: {
     state: 'ss:localApi:state',
     start: 'ss:localApi:start',
-    stop: 'ss:localApi:stop'
+    stop: 'ss:localApi:stop',
+    /** 把令牌写进剪贴板；不返回令牌本身 —— 渲染层永远拿不到明文 */
+    copyToken: 'ss:localApi:copyToken'
   },
   push: {
     windowState: 'ss:push:window-state',
@@ -185,8 +195,17 @@ export interface ContentInsetsPayload {
 export interface AgentAPI {
   run(req: RunRequest): Promise<void>
   cancel(): Promise<void>
-  /** 风险确认弹窗的回执 */
-  confirm(approved: boolean): Promise<void>
+  /**
+   * 这里**没有 `confirm()`**。
+   *
+   * 它曾经存在，签名是 `confirm(approved: boolean)`：渲染层回一个 boolean，
+   * 主进程就把它当作用户同意。也就是说「用户已同意」是**调用方的一个字段**，
+   * 而不是主进程持有的凭证 —— 被 XSS 的渲染层不显示任何弹窗、直接 invoke
+   * 就能批准一次支付。
+   *
+   * 现在批准只能来自主进程弹出的系统原生确认窗口。渲染层能做的只有
+   * `cancel()`：请求可以发起，断言不行。
+   */
   snapshot(profileId: string, tabId?: string): Promise<PageSnapshot>
   onEvent(cb: (e: AgentEvent) => void): () => void
 }
@@ -208,6 +227,13 @@ export interface SettingsAPI {
 export interface SystemAPI {
   info(): Promise<SystemInfo>
   openExternal(url: string): Promise<void>
+  /**
+   * 数据健康快照：哪些文件坏了、备份在哪、备份里还有没有明文 seed。
+   *
+   * 只读，不提供「修复」动作 —— 损坏文件是证据，含明文 seed 的备份可能是唯一
+   * 的已知良好快照，删不删该由人决定，不该由一次按钮点击决定。
+   */
+  storeHealth(): Promise<StoreHealth>
 }
 
 export interface ProxiesAPI {
@@ -232,10 +258,48 @@ export interface TemplatesAPI {
   remove(id: string): Promise<void>
 }
 
+/** 导入时逐条的环境核对结果，用于在界面上贴出「搬过来的还是不是同一个人」 */
+export interface MigrationAdoptReport {
+  name: string
+  ok: boolean
+  /** `from` 来自包里的密文，`to` 来自落盘后从盘上读回来的那份 */
+  compared: Array<{ field: string; from: string; to: string }>
+}
+
+export interface MigrationImportResult {
+  profiles: number
+  proxies: number
+  /**
+   * 每条环境的身份核对结果。
+   *
+   * 存在的理由：`profiles` 这个计数只说明「写了几行」，不说明「身份对不对」。
+   * 用户真正要问的是后者，而这个答案只有 main 进程能给出（它才看得见盘上那份）。
+   */
+  adopted: MigrationAdoptReport[]
+}
+
 export interface MigrationAPI {
-  /** 导出成 JSON 字符串，由渲染层触发下载 */
-  export(profileIds: string[]): Promise<string>
-  import(json: string): Promise<{ profiles: number; proxies: number }>
+  /**
+   * 导出成 JSON 字符串，由渲染层触发下载。
+   *
+   * `password` 不是可选的：v2 包里每个环境的 seed / fingerprint / 代理 key
+   * 都用它派生的密钥封着。没有口令就没有包，不存在「不加密的降级导出」。
+   */
+  export(profileIds: string[], password: string): Promise<string>
+  /**
+   * 导入。返回 `{ ok:false, code:'legacy-identity-loss', lostFields }` 的**唯一**
+   * 情形是：包是 v1（不含身份），且调用方没有带 `acceptLegacyIdentityLoss`。
+   * 这时 main 进程**一个字节都不写**。
+   *
+   * `acceptLegacyIdentityLoss` 的类型是字面量 `true` 而不是 `boolean`：传 `false`
+   * 和传 `undefined` 在这个决策点上没有区别，允许 `false` 只会让调用方以为
+   * 「显式拒绝了」是个有意义的状态，而实际上它和忘了传一样。
+   */
+  import(
+    json: string,
+    password: string,
+    acceptLegacyIdentityLoss?: true
+  ): Promise<MigrationImportResult>
 }
 
 export interface ScriptsAPI {
@@ -246,16 +310,21 @@ export interface ScriptsAPI {
   /**
    * 在当前环境里回放，复用同一套动作协议。
    *
-   * 脚本里含不可逆步骤时第一次调用会返回 `needsConfirm`，页面一步都不动；
-   * 用户确认后用 `{ confirmed: true, startAt: failedAt }` 重发才会真正执行。
+   * 含不可逆步骤时**没有**「一次确认整段放行」这回事：每遇到一步 L2 动作都会
+   * 由主进程弹出系统原生确认框，用户当场点「允许执行」那一步才会跑。
+   * 停在被拦下的步骤时返回 `needsConfirm`，带 `{ startAt: failedAt }` 重发可以从
+   * 那一步续跑 —— 但续跑时该步骤仍会再问一次。
    */
   run(scriptId: string, profileId: string, options?: ScriptRunOptions): Promise<ScriptRunResult>
 }
 
 export interface ScriptRunOptions {
-  /** 用户已确认整段回放含不可逆步骤 */
-  confirmed?: boolean
-  /** 从第几步开始（1 起）。用于确认后从被拦下的那一步续跑 */
+  /**
+   * 从第几步开始（1 起）。用于确认后从被拦下的那一步续跑。
+   *
+   * 注意这里**没有 `confirmed`**：那个字段等于「渲染层自称用户已同意」，
+   * 而渲染层正是可能被攻破的那一层。授权只能来自主进程弹的系统原生窗口。
+   */
   startAt?: number
 }
 
@@ -279,9 +348,18 @@ export interface DataAPI {
 }
 
 export interface LocalApiAPI {
+  /**
+   * 服务状态。
+   *
+   * 返回值里**没有令牌**：渲染层只需要知道有没有在跑、在哪个端口。
+   * 令牌曾经在这里出现（而且服务没启动时就已经给了），于是被 XSS 的渲染层
+   * 零交互就能拿到凭证。要拿令牌请用 `copyToken()`，它只写剪贴板。
+   */
   state(): Promise<LocalApiState>
   start(port?: number): Promise<LocalApiState>
   stop(): Promise<LocalApiState>
+  /** 由主进程把令牌写进剪贴板；令牌本身不会经过 IPC 回到渲染层 */
+  copyToken(): Promise<{ copied: boolean }>
   onState(cb: (s: LocalApiState) => void): () => void
 }
 

@@ -70,7 +70,6 @@ export function ApiPanel({ profiles }: PanelProps) {
   const [state, setState] = useState<LocalApiState | null>(null)
   const [port, setPort] = useState(String(DEFAULT_PORT))
   const [busy, setBusy] = useState(false)
-  const [revealed, setRevealed] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -94,7 +93,6 @@ export function ApiPanel({ profiles }: PanelProps) {
   }, [toast])
 
   const running = state?.running === true
-  const token = state?.token ?? ''
   const portNumber = Number(port)
   const portValid =
     /^\d{1,5}$/.test(port) && portNumber >= 1 && portNumber <= 65535 && Number.isInteger(portNumber)
@@ -138,17 +136,26 @@ export function ApiPanel({ profiles }: PanelProps) {
     toast.push(ok ? `${label}已复制` : '复制失败，请手动选中文本复制', ok ? 'ok' : 'err')
   }
 
-  const maskedToken =
-    token.length > 12 ? `${token.slice(0, 6)}${'•'.repeat(18)}${token.slice(-4)}` : '尚未生成'
+  /**
+   * 令牌不走 IPC 回到这里 —— 只有主进程能把它写进剪贴板。
+   *
+   * 界面上不显示完整令牌是刻意的：能显示就能被读走，而这一页跑在渲染层，
+   * 恰恰是最可能被页面内容攻破的那一层。用户真正的需求是「粘到别处」，
+   * 剪贴板正好满足，且渲染层读不到剪贴板。
+   */
+  const onCopyToken = async (): Promise<void> => {
+    try {
+      await window.ss.localApi.copyToken()
+      toast.push('令牌已复制到剪贴板', 'ok')
+    } catch (err) {
+      toast.push(errText(err, '复制令牌失败'), 'err')
+    }
+  }
+
   const base = `http://127.0.0.1:${state?.port && state.port > 0 ? state.port : DEFAULT_PORT}`
   const sampleId = profiles[0]?.id ?? 'prf_xxxxxxxxxxxx'
 
-  const buildCurl = (auth: string): string =>
-    `curl -X POST "${base}/profiles/${sampleId}/launch" \\\n  -H "Authorization: Bearer ${auth}"`
-
-  // 屏幕上默认不印完整令牌（截图外流就是凭证泄露），复制时再填真值
-  const curlShown = buildCurl(revealed && token ? token : '<token>')
-  const curlReal = buildCurl(token || '<token>')
+  const curlShown = `curl -X POST "${base}/profiles/${sampleId}/launch" \\\n  -H "Authorization: Bearer <token>"`
 
   return (
     <div className="api-panel">
@@ -221,33 +228,29 @@ export function ApiPanel({ profiles }: PanelProps) {
             这个面板原本已经说了三件让人安心的事（令牌存在哪、不印完整值、只监听回环），
             每句都成立，但语义方向一致 —— 用户读完会得出「风险已处理」。
             而唯一该说的那句一直缺席：持有这个令牌 = 能在这台机器上执行任意环境的
-            不可逆动作。部分披露比完全不提更误导，因为用户会以为问完了。 */}
+            不可逆动作。部分披露比完全不提更误导，因为用户会以为问完了。
+
+            令牌不再泄露给渲染层之后，这里的能力边界也要跟着改口径：
+            持有令牌能做的是**可回退动作**；不可逆动作仍然要人在应用窗口上点一次。
+            写「持有令牌就能支付」在改动之后是错的，而错的边界说明比没有更糟。 */}
         <p className="api-scope">
           <Icon name="alert" size={13} strokeWidth={2} />
           <span>
-            持有此令牌的本地进程可以在<strong>任意环境</strong>上执行操作，
-            包括支付、删除、发布等<strong>不可逆动作</strong>。
+            持有此令牌的本地进程可以在<strong>任意环境</strong>上执行操作。
+            <strong>可回退动作</strong>（点击链接、滚动、取数）直接执行；
+            <strong>不可逆动作</strong>（支付、删除、发布、发送）需要在本机弹窗确认，
+            必须有人当场点「允许执行」才会跑 —— 无人值守的自动化跑到那一步会停住，
+            然后在 120 秒后拿到 409 超时。
+            <br />
+            这不是能力限制，是设计：<strong>自动化可以做，不可逆的那一下要有人在场。</strong>
             令牌文件以当前用户身份可读，同一账户下的其他程序也能读到它。
           </span>
         </p>
         <div className="api-token">
-          <code className="api-token-value">{revealed ? token || '尚未生成' : maskedToken}</code>
+          <code className="api-token-value">保存在主进程内，界面不显示</code>
           <div className="api-tools">
-            <Button
-              size="sm"
-              variant="ghost"
-              icon={revealed ? 'eyeOff' : 'eye'}
-              onClick={() => setRevealed((v) => !v)}
-            >
-              {revealed ? '隐藏' : '显示'}
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={!token}
-              onClick={() => void onCopy(token, '令牌')}
-            >
-              复制
+            <Button size="sm" variant="ghost" onClick={() => void onCopyToken()}>
+              复制令牌
             </Button>
             <Button
               size="sm"
@@ -263,6 +266,8 @@ export function ApiPanel({ profiles }: PanelProps) {
         </div>
         <p className="api-hint">
           令牌是 32 字节随机值，存在数据目录的 local-api-token.json 里，重启应用不会变。
+          <strong> 界面上没有「显示令牌」是有意的</strong>：这一页跑在渲染层，能显示就能被读走。
+          「复制令牌」由主进程直接写剪贴板，明文不经过这里。
           <strong> 重新生成是唯一的补救动作</strong>：作废旧令牌后，已发出的调用立即失效。
         </p>
       </section>
@@ -284,6 +289,8 @@ export function ApiPanel({ profiles }: PanelProps) {
         <p className="api-hint">
           /act 的 body 形如 {`{ "action": { "type": "click", "id": "e3" } }`}；
           元素编号取自 /snapshot，编号不存在会被直接拒绝。
+          body 里的 {`"confirm": true`} <strong>没有任何效力</strong>：
+          不可逆动作的授权只能来自应用窗口上的一次人工点击。
         </p>
       </section>
 
@@ -294,10 +301,13 @@ export function ApiPanel({ profiles }: PanelProps) {
         </div>
         <pre className="api-curl">{curlShown}</pre>
         <div className="api-curl-foot">
-          <Button size="sm" variant="ghost" onClick={() => void onCopy(curlReal, 'curl 命令')}>
+          <Button size="sm" variant="ghost" onClick={() => void onCopy(curlShown, 'curl 命令')}>
             复制 curl
           </Button>
-          <span className="api-hint">示例用的是列表里第一个环境，可替换成任意 profile id。</span>
+          <span className="api-hint">
+            示例用的是列表里第一个环境，可替换成任意 profile id。复制后把 &lt;token&gt;
+            换成上一步「复制令牌」拿到的那串值。
+          </span>
         </div>
       </section>
 

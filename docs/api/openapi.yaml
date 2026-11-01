@@ -148,6 +148,78 @@ paths:
         '204': { description: No Content }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /v1/profiles/{profileId}/act:
+    parameters:
+      - $ref: '#/components/parameters/ProfileId'
+    post:
+      tags: [profiles]
+      summary: 在环境里执行一个动作
+      operationId: actOnProfile
+      description: |
+        同步执行一个动作并返回结果。
+
+        动作等级由服务端按**当轮页面快照**重算，调用方不能指定等级，也不能
+        指定「谁授权了」。L2（不可逆）动作必须由机器前的人当场确认：服务端会弹出
+        一个操作系统原生确认窗口，只有那次点击能产生一张一次性凭证。
+
+        请求体里**没有任何字段可以代替那次点击**。早先的 `"confirm": true` 已经
+        删除，传了也不会被读 —— 一个能被请求体说服的同意，等于没有同意。
+
+        因此无人值守调用 L2 动作**必然失败**，这是设计意图，不是缺陷。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action: { $ref: '#/components/schemas/Action' }
+      responses:
+        '200':
+          description: 动作执行成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data: { $ref: '#/components/schemas/ActionResult' }
+        '400':
+          description: |
+            `E_BAD_ACTION` — 动作类型不在 `ActionType` 里，或缺少必填字段。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: |
+            L2 动作没有取得同意，**动作一步都没有执行**。两种情形，错误码不同：
+
+            - `E_CONSENT_DENIED` — 有人在系统确认窗口上点了「取消」。这是人的
+              明确决定，**不要自动重试**，应该去问人。
+            - `E_CONSENT_TIMEOUT` — 120 秒内无人确认，按拒绝处理。人可能不在，
+              补上人之后再重试是有意义的。
+
+            另有一个 `E_APPROVAL_REQUIRED`：服务端预判等级与执行器重算的等级不一致
+            时也会落到 409，同样只能靠人当场确认。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503':
+          description: |
+            `E_MASK_INCOMPLETE` — 该环境的指纹伪装未完全生效（某个属性没装上，
+            或回读不到伪装台账）。此时**不可逆动作一律拦下**，L0/L1 不受影响。
+            这不是调用方的问题，补什么请求字段都没用；换环境或修复伪装后重试。
+
+            `E_CONSENT_UNAVAILABLE` — 系统确认窗口弹不出来（无可用窗口 / 环境异常）。
+            这**不是**「用户拒绝」，而是拿不到同意，同样按拒绝处理、同样没有执行。
+            补什么请求字段都没用，修复环境后重试才有意义。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
   /v1/profiles/{profileId}/duplicate:
     parameters:
       - $ref: '#/components/parameters/ProfileId'
@@ -534,38 +606,6 @@ paths:
                 properties:
                   data: { $ref: '#/components/schemas/Task' }
 
-  /v1/tasks/{taskId}/confirm:
-    parameters:
-      - $ref: '#/components/parameters/TaskId'
-    post:
-      tags: [tasks]
-      summary: 确认 L2 高风险动作
-      operationId: confirmAction
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [step_id, decision]
-              properties:
-                step_id: { type: string }
-                decision:
-                  type: string
-                  enum: [approve, reject]
-                remember_domain:
-                  type: boolean
-                  default: false
-      responses:
-        '200':
-          description: OK
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  data: { $ref: '#/components/schemas/Task' }
-
   /v1/tasks/{taskId}/steps:
     parameters:
       - $ref: '#/components/parameters/TaskId'
@@ -795,7 +835,14 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      description: token 存放于 ~/.shadowsurf/token
+      description: |
+        每次启动确保存在一个 32 字节随机令牌，落盘为 `<userData>/data/local-api-token.json`
+        （权限 0600，只有本用户可读）。
+
+        令牌**不经过 IPC 返回给渲染层** —— `ss.localApi.state()` 里没有 token 字段，
+        这是契约而不是省略。界面上的「复制令牌」由主进程直接写入剪贴板。
+        理由：渲染层是整个应用里最可能被页面内容攻破的一层，把令牌交给它，
+        等于把「驱动浏览器」的能力交给了页面。需要令牌的外部程序应该去读那个文件。
 
   parameters:
     Page:
@@ -876,6 +923,15 @@ components:
           properties:
             code:
               type: string
+              description: |
+                两族名字并存，这是尚未统一的债务，不是笔误：
+
+                - `E_*` 是**当前实现的真实取值**（见 `src/main/modules/localapi.ts`），
+                  调用方应该按这些值写分支；
+                - 全大写下划线的是**规划中的规范化名字**，还没有实现。
+
+                `/act` 的同意相关错误一律是 `E_*` 族，且三种失败**必须分开处理**：
+                拒绝不要重试，超时要补人，不可用要修环境。
               enum:
                 - INVALID_ARGUMENT
                 - UNAUTHORIZED
@@ -891,6 +947,12 @@ components:
                 - BROWSER_UNAVAILABLE
                 - CDP_COMMAND_TIMEOUT
                 - MODEL_TIMEOUT
+                - E_CONSENT_DENIED
+                - E_CONSENT_TIMEOUT
+                - E_CONSENT_UNAVAILABLE
+                - E_APPROVAL_REQUIRED
+                - E_MASK_INCOMPLETE
+                - E_BAD_ACTION
             message: { type: string }
             details: { type: object, additionalProperties: true }
             trace_id: { type: string }
@@ -1057,21 +1119,57 @@ components:
         started_at: { type: [integer, 'null'], format: int64 }
         ended_at: { type: [integer, 'null'], format: int64 }
 
+    ActionType:
+      type: string
+      description: |
+        动作类型。**唯一来源**是 `src/shared/protocol.ts` 的 `ActionType` 联合类型，
+        这里必须与它逐字一致 —— 契约比实现多一个类型，外部 SDK 会写出一调用就
+        400 的代码；少一个，则新能力对 SDK 不可见。
+
+        `screenshot` / `wait` / `submit` 曾经出现在这份契约里但实现中并不存在，
+        已删除；它们对应的能力是「取快照」（`GET /v1/profiles/{id}/snapshot`）、
+        「等页面稳定」（执行器内部行为）和「输入后回车」（`type` 动作的 `submit` 字段）。
+      enum: [click, type, press, scroll, navigate, extract, done]
+
+    Action:
+      type: object
+      required: [type]
+      properties:
+        type: { $ref: '#/components/schemas/ActionType' }
+        id:
+          type: string
+          description: 元素编号，必须是当轮快照 elements 里出现过的；click / type / press 必填
+        text: { type: string, description: type 动作要输入的文字 }
+        key: { type: string, description: press 动作的按键名，如 Enter }
+        submit: { type: boolean, description: type 之后是否回车提交 }
+        direction: { type: string, enum: [up, down, top, bottom] }
+        amount: { type: integer, description: scroll 的像素数 }
+        url: { type: string, description: navigate 的目标地址，只允许 http/https }
+        query: { type: string, description: extract 的取数指令 }
+        summary: { type: string, description: done 的收尾说明 }
+
+    ActionResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        message: { type: string, description: 给人看的一句话结果 }
+        failure:
+          type: string
+          enum: [not-found, exec]
+          description: |
+            仅 ok=false 时有值。`not-found` = 元素编号不在当轮快照里（页面变了，或
+            调用方看错了）；`exec` = 页面接了请求但没做成（脚本未就绪 / CDP 断开 / 页面抛错）。
+            只有这两个取值 —— 不要按 HTTP 语义去猜别的。
+        navigated: { type: boolean, description: 执行后 URL 是否变化 }
+        data: { description: extract 的产出，形状由动作决定 }
+
     Step:
       type: object
       properties:
         id: { type: string }
         seq: { type: integer }
         intent: { type: string }
-        action:
-          type: object
-          properties:
-            type:
-              type: string
-              enum: [navigate, click, type, scroll, extract, screenshot, wait, submit]
-            ref: { type: string }
-            url: { type: string }
-            text: { type: string }
+        action: { $ref: '#/components/schemas/Action' }
         expected: { type: string }
         status:
           type: string
@@ -1150,7 +1248,23 @@ components:
         url: { type: string }
         domain: { type: string }
         risk_level: { type: string, enum: [L0, L1, L2] }
-        policy_decision: { type: string }
+        consent:
+          type: string
+          enum: [granted, denied, timeout, unavailable, not-required]
+          description: |
+            **同意结果**，只描述决策点发生了什么，不描述执行结果。
+
+            - `granted` — 有人在系统原生确认窗口上点了「允许执行」，凭证已发出；
+            - `denied` — 有人在同一个窗口上点了「取消」；
+            - `timeout` — 120 秒内无人确认，按拒绝处理；
+            - `unavailable` — 确认窗口弹不出来，按拒绝处理；
+            - `not-required` — L1/L0 动作，不进闸门。
+
+            这里曾经是一个「策略决定」字段，取值里有一项叫「用户已确认」。
+            那个字段是错的：它由调用方声明，于是「用户确认过」和「调用方说
+            用户确认过」在审计里长得一模一样 —— 而审计的价值恰恰是能分开
+            这两件事。现在「同意」与「执行」各写一条记录：这一列证明凭证从哪来，
+            执行记录里另有一列说明凭证有没有被消费成功。
         model_call_id: { type: string }
         screenshot_hash: { type: string }
         operator: { type: string, enum: [agent, human] }
