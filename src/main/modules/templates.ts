@@ -176,7 +176,8 @@ function exportBundle(ctx: ModuleContext, profileIds: string[], rawPassword: unk
   const proxies = new Map<string, MigrationProxy>()
 
   ids.forEach((id, index) => {
-    const profile = ctx.stores.profiles.get(id)
+    // 导出必须拿内部形态：包里要封 seed
+    const profile = ctx.stores.profiles.getStored(id)
     if (profile === null) throw new Error(`第 ${index + 1} 个环境不存在：${id}`)
 
     let proxyKey: string | undefined
@@ -606,7 +607,7 @@ function importV1(ctx: ModuleContext, bundle: MigrationBundleV1): MigrationImpor
         name: created.name,
         ok: false,
         compared: [
-          { field: 'seed', from: '(v1 包不含 seed)', to: created.seed.slice(0, 8) + '…（本机新派生）' },
+          { field: 'seed', from: '(v1 包不含 seed)', to: created.seedHint + '…（本机新派生）' },
           { field: 'fingerprint 参数', from: '包内原值', to: '原样写回（未重算）' }
         ]
       })

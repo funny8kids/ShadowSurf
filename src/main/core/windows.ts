@@ -20,6 +20,7 @@ import type {
   MaskState,
   MaskStateRecord,
   Profile,
+  StoredProfile,
   TrackKind,
   WindowState
 } from '@shared/types'
@@ -169,7 +170,8 @@ interface WindowRecord {
 }
 
 interface WindowManagerOptions {
-  getProfile: (id: string) => Profile | null
+  /** 必须返回**内部形态**：注入脚本要 seed */
+  getProfile: (id: string) => StoredProfile | null
   onState: (state: WindowState) => void
   onProfileStopped: (profileId: string) => void
   /**
@@ -623,7 +625,7 @@ export class WindowManager {
     tab.canGoForward = wc.navigationHistory.canGoForward()
   }
 
-  private async injectFingerprint(wc: Electron.WebContents, profile: Profile): Promise<void> {
+  private async injectFingerprint(wc: Electron.WebContents, profile: StoredProfile): Promise<void> {
     // 同一个 webContents 只注入一次：addScriptToEvaluateOnNewDocument 是常驻的，
     // 重复注册会让噪声叠加（坐标被扰动两次、音量被加两次），指纹反而变得异常
     if (this.injected.has(wc)) return
@@ -722,7 +724,7 @@ export class WindowManager {
   private async attachChildTargets(
     bridge: CdpBridge,
     wc: Electron.WebContents,
-    profile: Profile
+    profile: StoredProfile
   ): Promise<void> {
     // 先订阅再开自动附着：顺序反了会漏掉第一个 target（它是同步抛出来的）
     bridge.on('Target.attachedToTarget', (params) => {
@@ -750,7 +752,7 @@ export class WindowManager {
   private async onChildTargetAttached(
     bridge: CdpBridge,
     wc: Electron.WebContents,
-    profile: Profile,
+    profile: StoredProfile,
     params: CdpParams
   ): Promise<void> {
     const info = (params['targetInfo'] ?? {}) as { type?: unknown }
@@ -823,7 +825,7 @@ export class WindowManager {
   /** Worker：只能 Runtime.evaluate，且必须显式检查 exceptionDetails */
   private async injectWorkerTarget(
     bridge: CdpBridge,
-    profile: Profile,
+    profile: StoredProfile,
     sessionId: string
   ): Promise<void> {
     const source = buildInjectionScript(profile, 'worker')
@@ -858,7 +860,7 @@ export class WindowManager {
   /** OOPIF：有 Page 域，用 addScriptToEvaluateOnNewDocument；此时还没有执行上下文 */
   private async injectIframeTarget(
     bridge: CdpBridge,
-    profile: Profile,
+    profile: StoredProfile,
     sessionId: string
   ): Promise<void> {
     await bridge.send('Page.enable', {}, sessionId).catch(() => undefined)
@@ -882,7 +884,7 @@ export class WindowManager {
    * 第三条是关键：读不到台账 = 无法证明伪装生效。把「读不到」判成 ok，
    * 就等于让「脚本根本没执行」和「脚本完美执行」得到同一个结论。
    */
-  private async checkPageMaskLedger(wc: Electron.WebContents, profile: Profile): Promise<void> {
+  private async checkPageMaskLedger(wc: Electron.WebContents, profile: StoredProfile): Promise<void> {
     let failed: Array<{ p: string; why: string }> | null
     try {
       const bridge = bridgeFor(wc)
@@ -953,7 +955,7 @@ export class WindowManager {
    * 这里优先读 `event.message`（带 frame，便于将来按 frame 区分主文档与 iframe），
    * 回落到第 3 个位置参数，两种形态都兼容。
    */
-  private watchMaskSignal(wc: Electron.WebContents, profile: Profile): void {
+  private watchMaskSignal(wc: Electron.WebContents, profile: StoredProfile): void {
     const onMessage = (
       event: { message?: unknown; frame?: unknown } | undefined,
       levelOrMessage?: unknown,
@@ -981,7 +983,7 @@ export class WindowManager {
   }
 
   /** 解析 `[ss-mask] rollback failed=a(b),c(d)` 并把状态置为 rolled-back */
-  private applyRollbackMarker(wc: Electron.WebContents, profile: Profile, message: string): void {
+  private applyRollbackMarker(wc: Electron.WebContents, profile: StoredProfile, message: string): void {
     const failed = parseRollbackMarker(message)
     // 标记到达 = 注入脚本自己判定失败并回滚了。这是**确定的**坏消息，
     // 即使状态已经是 degraded 也要升级成 rolled-back（后者更具体、更能定位）。
@@ -1014,7 +1016,7 @@ export class WindowManager {
    */
   private setMaskState(
     wc: Electron.WebContents,
-    profile: Profile,
+    profile: StoredProfile,
     state: MaskState,
     failed: Array<{ attr: string; reason: string }>,
     source: MaskSource
@@ -1091,7 +1093,7 @@ export class WindowManager {
   /** 记一条失败事实：进台账 + 打结构化日志 + 通知上层（如果有订阅者） */
   private reportInjectionIssue(
     wc: Electron.WebContents,
-    profile: Profile,
+    profile: StoredProfile,
     target: string,
     sessionId: string,
     reason: string
@@ -1246,7 +1248,7 @@ export class WindowManager {
     }
   }
 
-  private profileOf(rec: WindowRecord): Profile {
+  private profileOf(rec: WindowRecord): StoredProfile {
     const profile = this.opts.getProfile(rec.profileId)
     if (!profile) throw new Error(`环境不存在：${rec.profileId}`)
     return profile

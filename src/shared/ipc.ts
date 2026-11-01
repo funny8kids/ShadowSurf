@@ -9,6 +9,8 @@
 
 import type {
   Profile,
+  FingerprintConfig,
+  OSKind,
   CreateProfileInput,
   CloneOptions,
   Settings,
@@ -44,7 +46,8 @@ export const CH = {
     clone: 'ss:profiles:clone',
     launch: 'ss:profiles:launch',
     stop: 'ss:profiles:stop',
-    regenerate: 'ss:profiles:regenerate'
+    regenerate: 'ss:profiles:regenerate',
+    preview: 'ss:profiles:preview'
   },
   window: {
     open: 'ss:window:open',
@@ -160,6 +163,18 @@ export interface ProfilesAPI {
   stop(id: string): Promise<void>
   /** 重掷指纹种子并重新生成整套参数 */
   regenerate(id: string): Promise<Profile>
+  /**
+   * 用**盘上的种子** + 指定平台，算一套指纹出来给界面预览。
+   *
+   * 存在的理由：界面切平台时要把「换到那个平台会长什么样」显示出来，而完整
+   * 种子不出主进程（见 `Profile.seedHint`）。所以这件事只能在主进程做。
+   *
+   * 注意它调的是 `buildFingerprint` 而不是 `resolveFingerprint` —— 后者对
+   * macos/linux 不叠 seed 扰动，一批环境会退化成同一个分辨率。此前渲染层
+   * 直接调 `resolveFingerprint`，于是「预览看到的分辨率」和「保存后实际的」
+   * 不是同一个值：预览是模板默认值，保存后是扰动值。这条一起修了。
+   */
+  preview(id: string, patch: { platform?: OSKind }): Promise<FingerprintConfig>
 }
 
 export interface WindowAPI {

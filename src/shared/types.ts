@@ -131,8 +131,18 @@ export interface Profile {
   status: ProfileStatus
   platform: OSKind
   browserVersion: string
-  /** 指纹种子（hex）。由 masterKey + id 经 HKDF 派生，不可手工编辑 */
-  seed: string
+  /**
+   * 种子的**指纹**（`sha256(seed)` 前 8 位），不是种子本身。
+   *
+   * 用途只有一个：让人肉眼比对「这两个环境是不是同一个种子」——
+   * 备份恢复、跨机迁移之后需要这个判断。8 位十六进制足够区分，且不可逆。
+   *
+   * 完整种子**不出主进程**。渲染层曾经拿它做两件事：显示、以及
+   * `resolveFingerprint(platform, seed)` 预览。后者已改成
+   * `profiles.preview(id, { platform })` 由主进程算 —— 于是这个字段
+   * 变成唯一的对外形态，`seed` 从此没有跨进程的理由。
+   */
+  seedHint: string
   fingerprint: FingerprintConfig
   proxy: ProxyConfig | null
   tags: string[]
@@ -151,6 +161,31 @@ export interface Profile {
    */
   maskLast?: MaskLastRecord | null
 }
+
+/**
+ * 主进程内部的 Profile —— 多一个明文 `seed`。
+ *
+ * ── 为什么单独一个类型，而不是让 `Profile` 带一个可选 seed ──
+ *
+ * 可选字段挡不住泄漏：`seed?: string` 在类型上允许「有」，于是每个返回
+ * Profile 的地方都「可能」带着它，而没人会去看。去掉这个字段之后，
+ * 「Profile 有 seed」这句话在类型上就不成立，读 `profile.seed` 直接编译失败。
+ *
+ * ── 但类型系统只做到一半，必须说清 ──
+ *
+ * TS 的结构化类型对**多字段是宽容的**：把 `StoredProfile` 直接 return 给
+ * 一个声明为 `Profile` 的位置，编译器不会报错（多余字段只在对象字面量上检查）。
+ * 所以「seed 不出 IPC」真正的保证不是这个类型，而是两件事：
+ *   1. `toPublicProfile()` 是**唯一**构造 `Profile` 的地方（出口收口）；
+ *   2. `tests/structure.test.ts` 断言 `StoredProfile` 只出现在 `src/main/`。
+ * 类型负责「读到不存在的东西会报错」，结构断言负责「没人绕过出口」。
+ *
+ * ── 使用规则 ──
+ *
+ * 只允许出现在 `src/main/` 内。**任何 IPC 签名、preload、渲染层都不得出现
+ * 这个名字**。新增一个返回 Profile 的通道时，出口必须过 `toPublicProfile()`。
+ */
+export type StoredProfile = Omit<Profile, 'seedHint'> & { seed: string }
 
 export interface CreateProfileInput {
   name?: string

@@ -28,7 +28,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 // 只做类型标注，运行时会被完全擦除 —— 这是本文件保持零相对依赖的前提
-import type { Profile } from '@shared/types'
+import type { StoredProfile } from '@shared/types'
 
 /* ────────────────────────────── 版本 ────────────────────────────── */
 
@@ -313,13 +313,17 @@ export function isValidSeed(seed: unknown, schema: number): boolean {
  * 代价要说清楚：一条坏记录会让整个环境列表不可用。所以错误信息必须
  * 带上是第几条、哪个字段坏了 —— 否则用户只能看到一句「文件损坏」。
  */
-export function validateProfiles(data: unknown, schema: number, file: string): Profile[] {
+export function validateProfiles(
+  data: unknown,
+  schema: number,
+  file: string
+): StoredProfile[] {
   if (!Array.isArray(data)) {
     throw new StoreCorruptError('shape', file, `期望数组，实际是 ${describeType(data)}`)
   }
 
   const form = seedForm(schema)
-  const out: Profile[] = []
+  const out: StoredProfile[] = []
 
   for (let i = 0; i < data.length; i += 1) {
     const item: unknown = data[i]
@@ -348,7 +352,7 @@ export function validateProfiles(data: unknown, schema: number, file: string): P
       )
     }
 
-    out.push(item as unknown as Profile)
+    out.push(item as unknown as StoredProfile)
   }
 
   return out

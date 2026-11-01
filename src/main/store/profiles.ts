@@ -15,13 +15,16 @@ import type {
   FingerprintConfig,
   MaskLastRecord,
   OSKind,
-  Profile
+  Profile,
+  StoredProfile
 } from '@shared/types'
 import { buildFingerprint, deriveSeed } from '@main/core/fingerprint'
 import { JsonStore } from './db'
 import type { HealthStoreRef } from './health'
 import type { CorruptInfo } from './json-file'
 import { SCHEMA_CURRENT, SCHEMA_SEALED, seedForm, validateProfiles } from './json-file'
+import { createHash } from 'node:crypto'
+
 import { openSeed, sealAvailable, sealSeed } from './seed-seal'
 
 /** 去掉了 0/1/i/l/o —— 手抄、念读、日志里肉眼对齐时都不会认错 */
@@ -29,11 +32,36 @@ const ID_ALPHABET = '23456789abcdefghjkmnpqrstuvwxyz'
 const ID_LENGTH = 12
 const DEFAULT_GROUP = '默认'
 
-function deepCopy(p: Profile): Profile {
+/**
+ * 种子指纹：`sha256(seed)` 前 8 位。
+ *
+ * 为什么不是「前 8 位种子」：种子是 32 位 hex，前 8 位直接暴露了 1/4 的熵，
+ * 而且拿到它的人可以对着字典验证猜测。哈希之后只剩「能不能比对」，不能反推。
+ *
+ * 为什么需要它：用户要判断「备份恢复后是不是同一个身份」，靠的就是这个值。
+ * 完整种子不出主进程（见 `StoredProfile` 的注释），所以这个可比较的短串是必须的。
+ */
+export function seedHintOf(seed: string): string {
+  return createHash('sha256').update(seed).digest('hex').slice(0, 8)
+}
+
+/**
+ * 落盘形态 → 对外形态。**这是唯一的出口。**
+ *
+ * 新增任何返回环境数据的通道时，返回值都必须过这里。类型系统只保证
+ * 「读 `profile.seed` 会编译失败」，不保证「没人把 StoredProfile 直接 return」
+ * （结构化类型对多字段宽容），所以收口靠这个函数 + 结构断言。
+ */
+export function toPublicProfile(p: StoredProfile): Profile {
+  const { seed, ...rest } = p
+  return { ...rest, seedHint: seedHintOf(seed) }
+}
+
+function deepCopy(p: StoredProfile): StoredProfile {
   return structuredClone(p)
 }
 
-function newId(taken: Profile[]): string {
+function newId(taken: StoredProfile[]): string {
   for (let attempt = 0; attempt < 16; attempt += 1) {
     let body = ''
     for (let i = 0; i < ID_LENGTH; i += 1) {
@@ -84,7 +112,7 @@ function targetSchema(): number {
  * 所以两件事必须同时做：校验按来源版本（1 就该是明文），出参统一换成明文
  * （落盘时的密封交给 `sealProfiles`，那是唯一的密封点）。
  */
-function migrateProfiles(data: unknown, schema: number, file: string): Profile[] {
+function migrateProfiles(data: unknown, schema: number, file: string): StoredProfile[] {
   const list = validateProfiles(data, schema, file)
   if (seedForm(schema) === 'plain-hex') return list
   return list.map((p, i) => ({
@@ -101,7 +129,7 @@ function migrateProfiles(data: unknown, schema: number, file: string): Profile[]
  * 方法各自封一次，漏掉任何一个就是「明文 seed 混进 schema 2 文件」——
  * 而那正是下次启动 quarantine 的触发条件。
  */
-function sealProfiles(list: Profile[], schema: number): Profile[] {
+function sealProfiles(list: StoredProfile[], schema: number): StoredProfile[] {
   if (schema < SCHEMA_SEALED) return list
   return list.map((p, i) => ({
     ...p,
@@ -258,7 +286,7 @@ function safeOf(of: (fp: FingerprintConfig) => string, fp: FingerprintConfig): s
 }
 
 export class ProfileStore {
-  private readonly store = new JsonStore<Profile[]>('profiles.json', () => [], migrateProfiles, {
+  private readonly store = new JsonStore<StoredProfile[]>('profiles.json', () => [], migrateProfiles, {
     schema: targetSchema,
     serialize: sealProfiles,
     // 用目标 schema 校验即将写出的数据。少了它，「版本号说 2、seed 还是明文」
@@ -302,14 +330,30 @@ export class ProfileStore {
     }
   }
 
-  /** 按创建时间倒序：新环境永远在最上面，符合用户「刚建完就要用」的直觉 */
+  /**
+   * 对外列表。**返回值里没有 seed**（见 `toPublicProfile`）。
+   *
+   * 需要 seed 的内部调用方用 `getStored()` —— 那个名字本身就说明了「这是内部形态」。
+   */
   list(): Profile[] {
     const all = this.store.read().slice()
     all.sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
-    return all.map(deepCopy)
+    return all.map((p) => toPublicProfile(deepCopy(p)))
   }
 
   get(id: string): Profile | null {
+    const hit = this.getStored(id)
+    return hit === null ? null : toPublicProfile(hit)
+  }
+
+  /**
+   * 内部形态（含明文 seed）。**只给主进程用**：注入脚本、迁移导出、令牌派生。
+   *
+   * 单独一个方法而不是给 `get()` 加参数：加参数的话调用点写的是
+   * `get(id, true)`，读代码的人得去数第二个参数是什么；而 `getStored(id)`
+   * 在 grep 里就是一份「谁在用明文 seed」的完整清单。
+   */
+  getStored(id: string): StoredProfile | null {
     const hit = this.store.read().find((p) => p.id === id)
     return hit === undefined ? null : deepCopy(hit)
   }
@@ -327,7 +371,7 @@ export class ProfileStore {
     const fingerprint = input.fingerprint ?? buildFingerprint(platform, seed)
     const now = Date.now()
 
-    const profile: Profile = {
+    const profile: StoredProfile = {
       id,
       name: (input.name ?? '').trim() || '环境 ' + String(all.length + 1),
       group: (input.group ?? '').trim() || DEFAULT_GROUP,
@@ -348,7 +392,7 @@ export class ProfileStore {
     this.store.update((draft) => {
       draft.push(profile)
     })
-    return deepCopy(profile)
+    return toPublicProfile(deepCopy(profile))
   }
 
   /**
@@ -364,17 +408,22 @@ export class ProfileStore {
    * 拒绝而不是静默忽略 —— 静默忽略会让「我改了但没生效」变成一个更难查的问题。
    */
   update(id: string, patch: Partial<Profile>): Profile {
-    const existing = this.get(id)
+    const existing = this.getStored(id)
     if (existing === null) throw new Error('环境不存在：' + id)
 
-    // seed 永远不可经 update 修改：换身份的唯一入口是 regenerate（它重掷种子并重建指纹）
-    if (patch.seed !== undefined && patch.seed !== existing.seed) {
+    // seed 永远不可经 update 修改：换身份的唯一入口是 regenerate（它重掷种子并重建指纹）。
+    //
+    // 类型层已经挡了一道（`Partial<Profile>` 里没有 seed），但**类型不是运行时**：
+    // 渲染层被 XSS 之后发过来的是裸 JSON，TS 编译不过的代码它照样能发。
+    // 所以这里再判一次 —— 而且必须判，因为下面那个显式字段表会**静默忽略**
+    // 未知字段，那正好是注释里说的「我改了但没生效」这个更难查的问题。
+    if ((patch as Record<string, unknown>)['seed'] !== undefined) {
       throw new Error('seed 不可直接修改：要换一套指纹请用「重掷种子」（regenerate）')
     }
 
     // id / createdAt 是身份的锚点；platform / browserVersion 是 fingerprint 的投影，
     // 只能由下面的 fingerprint 分支推导，不接受调用方直接指定。
-    const next: Profile = {
+    const next: StoredProfile = {
       ...existing,
       name: patch.name ?? existing.name,
       group: patch.group ?? existing.group,
@@ -412,7 +461,7 @@ export class ProfileStore {
       const i = draft.findIndex((p) => p.id === id)
       if (i >= 0) draft[i] = next
     })
-    return deepCopy(next)
+    return toPublicProfile(deepCopy(next))
   }
 
   /**
@@ -456,7 +505,7 @@ export class ProfileStore {
     const id = newId(all)
     const now = Date.now()
 
-    const profile: Profile = {
+    const profile: StoredProfile = {
       id,
       name: (input.name ?? '').trim() || '导入的环境 ' + String(all.length + 1),
       group: (input.group ?? '').trim() || DEFAULT_GROUP,
@@ -480,7 +529,7 @@ export class ProfileStore {
     })
 
     // 读回来比，不是拿内存里的比
-    const stored = this.get(id)
+    const stored = this.getStored(id)
     const compared = compareFingerprint(source, stored === null ? null : stored.fingerprint)
     // 判据是整份 fingerprint 深比较；compared 只是诊断输出
     const identical = stored !== null && fingerprintEqual(source, stored.fingerprint)
@@ -492,7 +541,7 @@ export class ProfileStore {
       return { ok: false, profile: null, compared }
     }
 
-    return { ok: true, profile: stored, compared }
+    return { ok: true, profile: stored === null ? null : toPublicProfile(stored), compared }
   }
 
   /**
@@ -525,7 +574,7 @@ export class ProfileStore {
   }
 
   clone(id: string, opts: CloneOptions): Profile {
-    const src = this.get(id)
+    const src = this.getStored(id)
     if (src === null) throw new Error('环境不存在：' + id)
 
     const all = this.store.read()
@@ -535,7 +584,7 @@ export class ProfileStore {
     const fingerprint = opts.newFingerprint ? buildFingerprint(src.platform, seed) : structuredClone(src.fingerprint)
     const now = Date.now()
 
-    const copy: Profile = {
+    const copy: StoredProfile = {
       ...src,
       id: newProfileId,
       name: (opts.name ?? '').trim() || src.name + ' 副本',
@@ -552,7 +601,7 @@ export class ProfileStore {
     this.store.update((draft) => {
       draft.push(copy)
     })
-    return deepCopy(copy)
+    return toPublicProfile(deepCopy(copy))
   }
 
   /**
@@ -563,12 +612,12 @@ export class ProfileStore {
    * 但结果与旧值无关，等于换了一个身份。
    */
   regenerate(id: string): Profile {
-    const existing = this.get(id)
+    const existing = this.getStored(id)
     if (existing === null) throw new Error('环境不存在：' + id)
 
     const seed = deriveSeed(existing.id + '#' + Date.now().toString(36))
     const fingerprint = buildFingerprint(existing.platform, seed)
-    const next: Profile = {
+    const next: StoredProfile = {
       ...existing,
       seed,
       fingerprint,
@@ -580,6 +629,6 @@ export class ProfileStore {
       const i = draft.findIndex((p) => p.id === id)
       if (i >= 0) draft[i] = next
     })
-    return deepCopy(next)
+    return toPublicProfile(deepCopy(next))
   }
 }

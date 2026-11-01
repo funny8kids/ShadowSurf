@@ -130,7 +130,7 @@ app.whenReady().then(() => {
   }
 
   wm = new WindowManager({
-    getProfile: (id) => stores.profiles.get(id),
+    getProfile: (id) => stores.profiles.getStored(id),
     // 状态只推给拥有这个窗口的那一个渲染进程，不做广播：
     // 否则控制台也会收到别人的标签页状态，跟着切成浏览器视图。
     onState: (state) => {

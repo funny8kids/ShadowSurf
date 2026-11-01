@@ -61,7 +61,9 @@ const api: ShadowSurfAPI = {
     clone: (id, opts) => invoke(CH.profiles.clone, id, opts),
     launch: (id) => invoke(CH.profiles.launch, id),
     stop: (id) => invoke(CH.profiles.stop, id),
-    regenerate: (id) => invoke(CH.profiles.regenerate, id)
+    regenerate: (id) => invoke(CH.profiles.regenerate, id),
+    // 只传 platform：种子的其他用途必须走 update({ fingerprint })，那是可审计路径
+    preview: (id, patch) => invoke(CH.profiles.preview, id, patch)
   },
 
   window: {

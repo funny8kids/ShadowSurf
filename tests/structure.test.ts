@@ -738,3 +738,52 @@ test('dev-only 诊断通道不得出现在构建产物里', (t) => {
     `剥注释后只剩 ${codeOnly.length} / ${out.length} 字节 —— 剥多了，上面的断言不可信`
   )
 })
+
+/* ─────────────────── seed 不得跨 IPC（类型 + 出口双重） ─────────────────── */
+
+test('StoredProfile 只允许出现在 src/main/ 内', () => {
+  // 这条守的是「seed 不出主进程」。
+  //
+  // 类型系统只做了一半：`Profile` 里没有 seed，所以读 `profile.seed` 会编译失败。
+  // 但 TS 对**多字段是宽容的** —— 把 StoredProfile 直接 return 给声明为 Profile
+  // 的位置，编译器不报错。所以还要有一条结构断言：这个类型名不许出现在
+  // 共享层、preload、渲染层。出现在那里就意味着有人把明文种子带出了主进程。
+  const offenders: string[] = []
+  for (const file of sources()) {
+    const name = rel(file)
+    if (name.startsWith('src/main/')) continue
+    // types.ts 里是定义处，允许
+    if (name === 'src/shared/types.ts') continue
+    const text = stripComments(readFileSync(file, 'utf8'))
+    if (/\bStoredProfile\b/.test(text)) offenders.push(name)
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `以下文件引用了 StoredProfile（明文 seed 的内部形态）：${offenders.join(', ')}`
+  )
+})
+
+test('Profile 类型不得包含 seed 字段', () => {
+  const types = stripComments(read('src/shared/types.ts'))
+  const decl = /export interface Profile \{[\s\S]*?\n\}/.exec(types)
+  assert.ok(decl, '找不到 Profile 接口')
+  assert.doesNotMatch(
+    decl[0],
+    /^\s*seed\s*\??:/m,
+    'Profile 不得有 seed：它会被 profiles.list() 原样送到渲染层'
+  )
+  assert.match(decl[0], /^\s*seedHint\s*:/m, 'Profile 必须有 seedHint（界面对种子做等值比较要靠它）')
+})
+
+test('IPC 通道不得出现 preview 之外的种子计算入口', () => {
+  // `profiles.preview` 是唯一允许「用种子算东西」的通道，且它只接受 platform。
+  // 一旦有人加个 `preview(id, { screen, hardware })`，渲染层就获得了一个
+  // 「按任意参数试探指纹」的接口 —— 那比泄漏种子更容易被滥用（不需要种子本身）。
+  const handlers = stripComments(read('src/main/ipc/handlers.ts'))
+  const block = /handle\(CH\.profiles\.preview[\s\S]*?\n  \}\)/.exec(handlers)
+  assert.ok(block, '找不到 profiles.preview 的处理器')
+  const fields = block[0].match(/\b(platform|screen|hardware|webgl|fonts|languages|timezone)\b/g) ?? []
+  const extra = Array.from(new Set(fields)).filter((f) => f !== 'platform')
+  assert.deepEqual(extra, [], `preview 只允许接受 platform，实际还读了：${extra.join(', ')}`)
+})

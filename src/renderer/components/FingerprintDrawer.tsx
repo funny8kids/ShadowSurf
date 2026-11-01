@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import type { FingerprintConfig, Profile } from '@shared/types'
-import { OS_TEMPLATES, PROFILE_COLORS, TIMEZONE_GEO, resolveFingerprint } from '@shared/presets'
+import { OS_TEMPLATES, PROFILE_COLORS, TIMEZONE_GEO } from '@shared/presets'
 import { Button, Field, Icon, Toggle, cssVars, useToast } from './ui'
 import { bridge, errorMessage } from '@renderer/lib/api'
 import {
@@ -130,6 +130,34 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
     }
   }
 
+  /**
+   * 按平台重算一套指纹（「按平台模板重置」和「重置为默认」共用）。
+   *
+   * ── 为什么这件事必须问主进程 ──
+   *
+   * 重算需要种子，而种子不出主进程（`Profile` 里只有 `seedHint`）。
+   * 渲染层以前直接调 `resolveFingerprint(platform, seed)`，除了把种子摆到
+   * 进程里之外还有一个更隐蔽的问题：`resolveFingerprint` **只对 windows 叠
+   * seed 扰动**，macos/linux 会退化成模板默认值。而主进程保存时走的是
+   * `buildFingerprint`（对三个平台都叠扰动）。于是「预览看到的」和「保存后的」
+   * 不是同一个值 —— 用户以为自己换成了模板默认分辨率，实际落盘的是另一个。
+   * 走 `preview` 之后两处用的是同一个函数。
+   */
+  async function resetToPlatform(platform: Profile['platform']): Promise<void> {
+    if (!draft) return
+    setBusy(true)
+    try {
+      const fingerprint = await bridge().profiles.preview(draft.id, { platform })
+      setDraft((d) =>
+        d === null ? d : { ...d, platform, fingerprint, browserVersion: fingerprint.uaVersion }
+      )
+    } catch (err) {
+      toast.push(errorMessage(err), 'err')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <>
       <div className="mask on" onClick={onClose} />
@@ -243,7 +271,7 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                   <h4>指纹种子</h4>
                 </div>
                 <Field
-                  label="Seed"
+                  label="种子指纹"
                   action={
                     <button
                       type="button"
@@ -256,13 +284,14 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                     </button>
                   }
                 >
-                  <div className="val mono" title={draft.seed}>
-                    {draft.seed}
+                  <div className="val mono" title={draft.seedHint}>
+                    {draft.seedHint}
                   </div>
                 </Field>
                 <div className="note">
-                  种子由主密钥与环境 ID 经 HKDF 派生，不可手工编辑。同一个种子永远解析出同一套参数，
-                  因此备份恢复、跨机迁移后指纹完全一致。
+                  种子由主密钥与环境 ID 经 HKDF 派生，不可手工编辑，也**不出主进程** ——
+                  这里显示的是它的哈希前缀，用来核对「这两个环境是不是同一个种子」。
+                  同一个种子永远解析出同一套参数，因此备份恢复、跨机迁移后指纹完全一致。
                 </div>
               </div>
             </>
@@ -285,17 +314,8 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                       type="button"
                       className="dice"
                       title="按平台模板重置"
-                      onClick={() =>
-                        setDraft((d) =>
-                          d
-                            ? {
-                                ...d,
-                                fingerprint: resolveFingerprint(d.platform, d.seed),
-                                browserVersion: d.fingerprint.uaVersion
-                              }
-                            : d
-                        )
-                      }
+                      disabled={busy}
+                      onClick={() => void resetToPlatform(draft.platform)}
                     >
                       <Icon name="dice" size={12} strokeWidth={2} />
                     </button>
@@ -306,15 +326,7 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                     value={draft.platform}
                     onChange={(e) => {
                       const platform = e.target.value as Profile['platform']
-                      setDraft((d) =>
-                        d
-                          ? {
-                              ...d,
-                              platform,
-                              fingerprint: resolveFingerprint(platform, d.seed)
-                            }
-                          : d
-                      )
+                      void resetToPlatform(platform)
                     }}
                   >
                     <option value="windows">Windows</option>
@@ -894,9 +906,7 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
           <Button
             variant="ghost"
             disabled={busy}
-            onClick={() =>
-              setDraft((d) => (d ? { ...d, fingerprint: resolveFingerprint(d.platform, d.seed) } : d))
-            }
+            onClick={() => void resetToPlatform(draft.platform)}
           >
             重置为默认
           </Button>

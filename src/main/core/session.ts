@@ -13,6 +13,16 @@ import { app, session } from 'electron'
 import type { Session } from 'electron'
 import type { Profile, ProxyConfig } from '@shared/types'
 
+/**
+ * 只依赖「会话需要的那部分」Profile。
+ *
+ * 写成 `Profile` 会让内部形态（`StoredProfile`，带 seed 但不带 seedHint）传不进来；
+ * 写成 `StoredProfile` 又会让对外形态传不进来。会话既不需要 seed 也不需要 seedHint，
+ * 所以按能力收窄 —— 两种形态都能进，且以后 Profile 加字段不会连带改这里。
+ */
+type SessionProfile = Omit<Profile, 'seedHint'>
+
+
 const PARTITION_PREFIX = 'persist:ss_'
 
 /** Chromium 的 session 身份由 partition 字符串决定，profileId 本身是安全的 base32，无需转义 */
@@ -24,7 +34,7 @@ export function sessionFor(profileId: string): Session {
   return session.fromPartition(partitionFor(profileId))
 }
 
-export async function applyProfileToSession(ses: Session, profile: Profile): Promise<void> {
+export async function applyProfileToSession(ses: Session, profile: SessionProfile): Promise<void> {
   const fp = profile.fingerprint
 
   // UA 与 Accept-Language 必须同时设置：只改 UA 不改语言头是最常见的指纹破绽。
@@ -48,7 +58,7 @@ export async function applyProfileToSession(ses: Session, profile: Profile): Pro
  *
  * 没有代理时不动（`real` 是用户明确要真实 WebRTC 的选项）。
  */
-function applyWebRtcPolicy(ses: Session, profile: Profile): void {
+function applyWebRtcPolicy(ses: Session, profile: SessionProfile): void {
   const webrtc = profile.fingerprint.webrtc
   // 注意：`proxy` 模式下**不管当前有没有配代理**都要关掉非代理 UDP。
   // 早先写成 `webrtc === 'proxy' && profile.proxy`，等于「先配环境、后挂代理」时

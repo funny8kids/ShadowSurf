@@ -15,7 +15,7 @@ import * as fs from 'node:fs'
 import { safeStorage } from 'electron'
 import { filePath } from '@main/store/db'
 import { TIMEZONE_GEO, resolveFingerprint } from '@shared/presets'
-import type { FingerprintConfig, OSKind, Profile } from '@shared/types'
+import type { FingerprintConfig, OSKind, Profile, StoredProfile } from '@shared/types'
 
 /* ────────────────────────────── 主密钥 ────────────────────────────── */
 
@@ -409,8 +409,14 @@ function injectionConfig(fp: FingerprintConfig, seed: string): InjectionConfig {
  */
 export type InjectionTarget = 'page' | 'worker' | 'iframe'
 
-/** 契约名。与 Profile 同构，单独导出只是让调用方不必依赖 store 层类型 */
-export type FingerprintProfile = Profile
+/**
+ * 注入脚本要的那个 Profile —— 必须带明文 seed（脚本里要拿它做扰动）。
+ *
+ * 曾经直接写成 `Profile`，而 `Profile` 现在不含 seed 了（seed 不出主进程），
+ * 于是这个别名必须指到内部形态，否则 `buildInjectionScript(profile)` 会在
+ * 调用点报「缺 seed」—— 那个报错是对的，它说明调用方手里拿的是对外形态。
+ */
+export type FingerprintProfile = StoredProfile
 
 /**
  * Worker 专用注入源。
@@ -836,13 +842,13 @@ export function buildInjectionScript(
   target?: InjectionTarget
 ): string
 export function buildInjectionScript(
-  a: Profile | FingerprintConfig,
+  a: StoredProfile | FingerprintConfig,
   b?: InjectionTarget | string,
   c?: InjectionTarget
 ): string {
   // Profile 一定带 fingerprint + seed；FingerprintConfig 两者都没有。
   if (a && typeof a === 'object' && 'fingerprint' in a && 'seed' in a) {
-    const p = a as Profile
+    const p = a as StoredProfile
     return dispatchScript(p.fingerprint, p.seed, (b as InjectionTarget | undefined) ?? 'page')
   }
   // 这里必须炸，不能静默降级。

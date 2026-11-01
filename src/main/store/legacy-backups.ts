@@ -34,7 +34,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import type { Profile } from '@shared/types'
+import type { StoredProfile } from '@shared/types'
 import {
   SCHEMA_CURRENT,
   SCHEMA_LEGACY,
@@ -76,7 +76,7 @@ function isBackupOf(name: string, mainName: string): boolean {
 }
 
 /** 把盘上读到的东西拆成「声明的版本 + 条目」，与 json-file.ts 的 decodeEnvelope 同义 */
-function decode(raw: unknown): { schema: number; list: Profile[] } {
+function decode(raw: unknown): { schema: number; list: StoredProfile[] } {
   if (Array.isArray(raw)) {
     // 裸数组 = 旧格式（schema 0）。这是历史备份最常见的样子。
     return { schema: SCHEMA_LEGACY, list: validateProfiles(raw, SCHEMA_LEGACY, '(备份)') }
@@ -89,7 +89,7 @@ function decode(raw: unknown): { schema: number; list: Profile[] } {
 }
 
 /** 有没有需要处理的明文 seed。已密封的备份返回 false，从而被跳过 */
-function hasPlainSeed(list: Profile[]): boolean {
+function hasPlainSeed(list: StoredProfile[]): boolean {
   return list.some((p) => isValidSeed(p.seed, SCHEMA_CURRENT))
 }
 
@@ -169,7 +169,7 @@ export function sealLegacyBackups(dir: string, mainName = 'profiles.json'): Lega
  * 少了它，一个把 seed 写错位的 bug 会安静地把用户的身份换掉，而且要等到某天
  * 用户发现「指纹变了」才暴露。
  */
-function verifyRoundTrip(tmp: string, original: Profile[]): void {
+function verifyRoundTrip(tmp: string, original: StoredProfile[]): void {
   const raw: unknown = JSON.parse(fs.readFileSync(tmp, 'utf8'))
   const env = raw as { schema: number; data: unknown }
   if (env.schema !== SCHEMA_SEALED) {

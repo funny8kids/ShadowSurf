@@ -23,6 +23,7 @@ import type { WindowManager } from '@main/core/windows'
 import type { ContentInsets } from '@main/core/windows'
 import type { ProfileRuntime } from '@main/core/profiles'
 import { bridgeFor } from '@main/core/cdp'
+import { buildFingerprint } from '@main/core/fingerprint'
 import { captureSnapshot } from '@main/agent/snapshot'
 import { runAgent } from '@main/agent/loop'
 import { setConsentAuditSink } from '@main/agent/consent'
@@ -141,6 +142,24 @@ export function registerHandlers(ctx: HandlerContext): void {
     const profile = stores.profiles.update(id as string, patch as Partial<Profile>)
     pushProfiles()
     return profile
+  })
+
+  /**
+   * 用盘上的种子算一套指纹给界面预览。**种子不出这个函数。**
+   *
+   * 只接受 `platform` 一个输入：种子的其他用途（改分辨率、改核数）都必须走
+   * `update({ fingerprint })`，那才是可审计的路径。这里做宽了，
+   * 就等于给渲染层一个「按任意参数试探指纹」的接口。
+   */
+  handle(CH.profiles.preview, (_e, id, patch) => {
+    const stored = stores.profiles.getStored(String(id))
+    if (stored === null) throw new Error(`环境不存在：${String(id)}`)
+    const raw = (patch ?? {}) as { platform?: unknown }
+    const platform = raw.platform === undefined ? stored.platform : raw.platform
+    if (platform !== 'windows' && platform !== 'macos' && platform !== 'linux') {
+      throw new Error(`不支持的平台：${String(platform)}`)
+    }
+    return buildFingerprint(platform, stored.seed)
   })
 
   handle(CH.profiles.remove, (_e, id) => {
