@@ -42,7 +42,8 @@ var R = function () {
     platform: d.platform,
     mobile: d.mobile,
     brands: (d.brands || []).map(function (b) { return b.brand + ' ' + b.version }).join('|'),
-    ua: navigator.userAgent
+    ua: navigator.userAgent,
+    webdriver: navigator.webdriver
   };
 };
 var HE = function (cb) {
@@ -277,6 +278,17 @@ try {
 
   /* platformVersion 单独一条：它是**高熵值**，走的是另一个返回路径，
      `platform` 对了不代表它也对。creepjs 读的就是这个。 */
+  /* 主世界必须是 false；worker 里必须是 **undefined** —— `navigator.webdriver` 是
+     [Exposed=Window]，真 Chrome 的 worker 里没有这个属性。把 worker 也要求 false，
+     等于要求我们造一个真 Chrome 没有的属性 —— 那是**新的 tell**，比漏掉更糟。 */
+  const wdOk = (x) => x && x.webdriver === false
+  const wdAbsent = (x) => x && x.webdriver === undefined
+  gate('wd', '主世界 navigator.webdriver=false，三个 worker 里必须**没有**这个属性',
+    { main: false, ded: undefined, shared: undefined, swc: undefined },
+    { main: mainR.webdriver, ded: ded.now && ded.now.webdriver, shared: shared.now && shared.now.webdriver, swc: swc.now && swc.now.webdriver },
+    wdOk(mainR) && wdAbsent(ded.now) && wdAbsent(shared.now) && wdAbsent(swc.now),
+    'webdriver=true 是最硬的自动化信号，一处为真就够了')
+
   const pvSame = (x) => x && x.platformVersion === mainR.platformVersion
   gate('ded-pv', 'dedicated worker 事件期 platformVersion = 主世界', mainR.platformVersion,
     ded.now ? ded.now.platformVersion : null, pvSame(ded.now),
@@ -294,7 +306,7 @@ try {
     const flag = x.platform === mainR.platform ? '' : '   ← 与主世界矛盾'
     console.log(
       '  ' + name.padEnd(26) + 'platform=' + String(x.platform).padEnd(8) +
-      ' platformVersion=' + String(x.platformVersion).padEnd(8) + flag
+      ' platformVersion=' + String(x.platformVersion).padEnd(8) + ' webdriver=' + String(x.webdriver).padEnd(6) + flag
     )
   }
 

@@ -7,11 +7,9 @@
  * 会「量得出来」，而 Canvas2D 量不出来 —— 两条路给出两个答案，
  * 后者才是 creepjs 的 `platform hints: Arial,"Microsoft YaHei UI"` 的来源。
  *
- * 这不是 gate，是**测量**：读数目前是红的（OffscreenCanvas 那条路漏），
- * 所以不进 verify:all —— 一条注定红的断言只会变成背景噪音。
- * 修好之后再把两条读数升成 gate。
+ * 修好之后已经升成门禁（两条判据，见文件末尾），并进了 verify:all。
  *
- * 跑法：npm run probe:fonts
+ * 跑法：npm run verify:fonts（先 electron-vite build）
  */
 import { _electron as electron } from 'playwright-core'
 import { resolve } from 'node:path'
@@ -82,5 +80,53 @@ for (const row of (r.rows || [])) {
 console.log('\n两条路答案不同的字体：' + JSON.stringify((r.diff || []).map((x) => x.font)))
 if (r.error) console.log('错误：' + r.error)
 
+/* ── 门禁 ──
+ *
+ * 两条判据，各自防一种失败方式：
+ *
+ * ① **两条通道必须给同一个答案**。只判「宿主字体读不到」是不够的：
+ *    将来有人把 Canvas2D 那条包坏了、两条都读不到，判据照样绿，
+ *    但真实浏览器里 Arial 是存在的 —— 那就从「泄漏」变成「缺字体」，同样可判定。
+ * ② **宿主专属字体必须读不到**。这是这次要修的那条。
+ *
+ * 刻意**不判**「macOS 字体必须读得到」：那需要真的字体文件，宿主没有就是没有，
+ * 靠偏移量假装是另一个问题（见 fingerprint.ts 里的 `_miss` 分支）。
+ * 判了就是一条永远红的断言。 */
+const HOST_ONLY = ['Microsoft YaHei UI', 'Segoe UI Emoji', 'Cambria Math', 'Ink Free']
+const rows = r.rows || []
+const leaks = rows.filter((x) => HOST_ONLY.includes(x.font) && (x.canvas2d === true || x.offscreen === true))
+const diff = r.diff || []
+
+const gates = [
+  {
+    label: '两条测量通道必须给同一个答案（Canvas2D vs OffscreenCanvas）',
+    expected: [],
+    actual: diff.map((x) => x.font),
+    pass: diff.length === 0,
+    note: '两条路不一致 = 只包了其中一条。OffscreenCanvas 是独立原型，不受 CanvasRenderingContext2D 影响'
+  },
+  {
+    label: '宿主专属字体在两条通道上都必须读不到',
+    expected: [],
+    actual: leaks.map((x) => x.font + '(c2d=' + x.canvas2d + ',off=' + x.offscreen + ')'),
+    pass: leaks.length === 0,
+    note: '读得到 = 宿主字体表泄漏，macOS 环境里能量出 Windows 字体'
+  }
+]
+
+console.log('\n[结论]')
+let bad = 0
+for (const g of gates) {
+  if (!g.pass) bad += 1
+  console.log('  ' + (g.pass ? '成立' : '不成立').padEnd(4) + ' ' + g.label +
+    '  期望 ' + JSON.stringify(g.expected) + ' 实得 ' + JSON.stringify(g.actual))
+  if (!g.pass && g.note) console.log('        ↳ ' + g.note)
+}
+if (!rows.length) {
+  bad += 1
+  console.log('  不成立 没读到任何字体读数（未测量，不是通过）')
+}
+
 try { await app.close() } catch (e) {}
-process.exit(0)
+console.log(bad > 0 ? `\n${gates.length - bad}/${gates.length} 成立，${bad} 条不成立` : `\n全部 ${gates.length} 条成立`)
+process.exit(bad > 0 ? 1 : 0)

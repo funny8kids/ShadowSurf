@@ -1626,6 +1626,46 @@ function buildPageScript(fp: FingerprintConfig, seed: string): string {
   L.push('            return _mt.apply(this, arguments);')
   L.push('          };')
   L.push('        }')
+
+  /* ── OffscreenCanvas：第二条测量通道 ──
+   *
+   * 上面只包了 `CanvasRenderingContext2D.prototype.measureText`。但同一台机器上
+   * 还有一条路：`new OffscreenCanvas(1,1).getContext("2d")` 拿到的是
+   * **`OffscreenCanvasRenderingContext2D`**，它是另一个原型，一行都不受上面影响。
+   *
+   * 实测（`npm run probe:fonts`，宿主 Windows / 环境 macOS）：
+   *   字体                 Canvas2D   OffscreenCanvas
+   *   Microsoft YaHei UI   false      **true**
+   *   Segoe UI Emoji       false      **true**
+   *   Cambria Math         false      **true**
+   *   Ink Free             false      **true**
+   * 也就是说：只包 Canvas2D 时，用 OffscreenCanvas 量一次就把宿主的字体表全读走了。
+   * creepjs 的 `platform hints: Arial,"Microsoft YaHei UI"` 正是这么读出来的 ——
+   * 两个环境（Windows / macOS）报的是**同一串**，因为读的是宿主。
+   *
+   * 修法刻意**不复制**上面那套白名单 / 回退 / 宽度偏移的逻辑（复制就是第三份，
+   * 三份迟早会分叉）。这里只做一件事：把 OffscreenCanvas 的 font 搬到已经包好的
+   * 2D 通道上量，判定完全交给那一份实现。
+   *
+   * 为什么不用 `new OffscreenCanvas` 自己建探针：worker 里建 OffscreenCanvas 曾经
+   * 在**暂停态**下把渲染进程搞崩（见本文件 buildWorkerScript 的注释）。这条路径
+   * 一次都不新建 context，只借用已经存在的 `_probe`。
+   */
+  L.push('')
+  L.push('        try {')
+  L.push('          if (_probe && typeof OffscreenCanvasRenderingContext2D !== "undefined" &&')
+  L.push('              OffscreenCanvasRenderingContext2D.prototype &&')
+  L.push('              OffscreenCanvasRenderingContext2D.prototype.measureText) {')
+  L.push('            var _omt = OffscreenCanvasRenderingContext2D.prototype.measureText;')
+  L.push('            OffscreenCanvasRenderingContext2D.prototype.measureText = function (text) {')
+  L.push('              try {')
+  L.push('                _probe.font = this.font;')
+  L.push('                return CanvasRenderingContext2D.prototype.measureText.call(_probe, text);')
+  L.push('              } catch (e) {}')
+  L.push('              return _omt.apply(this, arguments);')
+  L.push('            };')
+  L.push('          }')
+  L.push('        } catch (e) {}')
   L.push('      }')
   L.push('    } catch (e) {}')
 

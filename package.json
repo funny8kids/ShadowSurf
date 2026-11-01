@@ -25,7 +25,7 @@
     "preverify:anticheat:nightly": "electron-vite build",
     "verify:anticheat:stale": "node tools/check-build-fresh.mjs --allow-stale && node tools/verify-anticheat.mjs",
     "verify:seed-at-rest": "node tools/verify-seed-at-rest.mjs --self-test && node tools/verify-seed-at-rest.mjs",
-    "verify:all": "npm run typecheck && npm run build && npm run test:gate && npm run verify:seed-at-rest && npm run verify:seed-ipc && npm run verify:mask-ui && npm run verify:mask-exemption && npm run verify:injection && npm run verify:worker && npm run verify:shared-worker && npm run verify:uach && npm run verify:anticheat",
+    "verify:all": "npm run typecheck && npm run build && npm run test:gate && npm run verify:seed-at-rest && npm run verify:seed-ipc && npm run verify:mask-ui && npm run verify:mask-exemption && npm run verify:injection && npm run verify:worker && npm run verify:shared-worker && npm run verify:fonts && npm run verify:uach && npm run verify:anticheat",
     "test:gate": "node tools/run-tests.mjs --gate",
     "verify:worker": "node tools/verify-worker-inject.mjs",
     "preverify:worker": "electron-vite build",
@@ -41,7 +41,8 @@
     "probe:shared-worker": "node tools/run-electron.mjs tools/probe-shared-worker.mjs",
     "verify:uach": "node tools/verify-uach.mjs",
     "preverify:uach": "electron-vite build",
-    "probe:fonts": "node tools/probe-font-channels.mjs"
+    "verify:fonts": "node tools/verify-fonts.mjs",
+    "preverify:fonts": "electron-vite build"
   },
   "dependencies": {
     "react": "^19.3.1",
