@@ -722,6 +722,67 @@
   text-overflow: ellipsis;
 }
 
+/*
+  伪装状态点。
+  ── 为什么异常才写字 ──
+  绝大多数环境都正常，每张卡片都写「已伪装」只是噪音，而噪音会让人不再看
+  这个位置 —— 等到真出问题那天，那个位置也一样被忽略。所以正常时只有一个点，
+  降级/被拦才补两个字的标签。
+
+  ── 颜色不是随便挑的 ──
+  绿/黄/红分别对应「放行」「放行但降级」「拒绝」，与 `MASK_DECISION_TABLE`
+  的 tone 列一一对应，`tests/mask-gate.test.ts` 逐行核对。这里换颜色之前
+  先去改那张表，否则界面与门禁就分家了。
+*/
+.mask-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  cursor: help;
+}
+
+.mask-dot i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.mask-dot em {
+  font-style: normal;
+}
+
+.mask-dot.ok {
+  color: var(--green);
+}
+
+.mask-dot.ok i {
+  background: var(--green);
+}
+
+.mask-dot.warn {
+  color: var(--amber);
+}
+
+.mask-dot.warn i {
+  background: var(--amber);
+  box-shadow: 0 0 0 3px var(--amber-2);
+}
+
+.mask-dot.block {
+  color: var(--red);
+}
+
+.mask-dot.block i {
+  background: var(--red);
+  box-shadow: 0 0 0 3px var(--red-2);
+}
+
 .env-more {
   margin-left: auto;
   color: var(--ink-4);

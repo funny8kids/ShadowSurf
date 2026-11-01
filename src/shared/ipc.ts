@@ -32,6 +32,7 @@ import type {
   DownloadItem,
   HistoryItem,
   LocalApiState,
+  MaskRow,
   StoreHealth
 } from './types'
 import type { AgentEvent, RunRequest, PageSnapshot } from './protocol'
@@ -122,6 +123,16 @@ export const CH = {
     list: 'ss:audit:list',
     verify: 'ss:audit:verify'
   },
+  mask: {
+    /**
+     * 当前所有窗口的伪装状态。
+     *
+     * 单独一组而不是塞进 `profiles.list()`：状态按**窗口**存在（一个环境可以有
+     * 多个窗口），而且它是进程内实时读数，跟落盘的 Profile 不是一回事。
+     * 塞进 Profile 会让人以为它是持久化字段，然后有一天拿它当门禁判据。
+     */
+    list: 'ss:mask:list'
+  },
   selfcheck: {
     run: 'ss:selfcheck:run'
   },
@@ -146,7 +157,16 @@ export const CH = {
     profileState: 'ss:push:profile-state',
     taskUpdate: 'ss:push:task-update',
     download: 'ss:push:download',
-    localApiState: 'ss:push:local-api-state'
+    localApiState: 'ss:push:local-api-state',
+    /**
+     * 伪装状态变化时推送整份行列表。
+     *
+     * 为什么推「整份」而不是「变的那一条」：状态是按窗口存的，一个环境可能
+     * 同时有两个窗口、各自不同的读数；推单条会让渲染层不得不自己维护
+     * 「同 profileId 的旧行要不要替换」。整份只有几十条，重发一遍比让界面
+     * 去合并便宜得多，也不会合并错。
+     */
+    maskState: 'ss:push:mask-state'
   }
 } as const
 
@@ -352,6 +372,26 @@ export interface SelfCheckAPI {
   run(profileId: string): Promise<ConsistencyReport>
 }
 
+/**
+ * 伪装状态（只读）。
+ *
+ * 这里**没有**任何写接口：状态由注入流程测量得出，渲染层不能声明
+ * 「这个环境现在是好的」。曾经有人提过加 `ack()` 让用户「点掉告警」——
+ * 那等于把测量结果变成一次点击的结果。
+ */
+export interface MaskAPI {
+  /**
+   * 当前所有有读数的窗口，每个窗口一行。
+   *
+   * 注意：**只含有读数的窗口**。环境在跑但还没回读时，这个环境不会出现在
+   * 返回值里 —— 渲染层必须把它画成 `block`（门禁此刻就是拒绝的），
+   * 不能因为「没查到这个环境」就当作正常。见 `shared/mask-ui.ts` 的 `maskToneOf`。
+   */
+  list(): Promise<MaskRow[]>
+  /** 状态变化推送（整份行列表） */
+  onState(cb: (rows: MaskRow[]) => void): () => void
+}
+
 export interface DataAPI {
   cookies(profileId: string): Promise<CookieItem[]>
   clearCookies(profileId: string): Promise<number>
@@ -391,6 +431,7 @@ export interface ShadowSurfAPI {
   scripts: ScriptsAPI
   audit: AuditAPI
   selfcheck: SelfCheckAPI
+  mask: MaskAPI
   data: DataAPI
   localApi: LocalApiAPI
 }

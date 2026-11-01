@@ -164,6 +164,11 @@ const api: ShadowSurfAPI = {
     run: (profileId) => invoke(CH.selfcheck.run, profileId)
   },
 
+  mask: {
+    list: () => invoke(CH.mask.list),
+    onState: (cb) => subscribe(CH.push.maskState, cb)
+  },
+
   data: {
     cookies: (profileId) => invoke(CH.data.cookies, profileId),
     clearCookies: (profileId) => invoke(CH.data.clearCookies, profileId),

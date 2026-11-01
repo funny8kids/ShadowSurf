@@ -121,6 +121,40 @@ export interface MaskStateRecord {
  */
 export type MaskLastRecord = Omit<MaskStateRecord, 'webContentsId'>
 
+/**
+ * 拒绝原因的判别字段。
+ *
+ * 放在 `shared` 而不是 `main/core/mask-gate.ts` 里，是因为界面要按它选文案 ——
+ * 而界面选出来的颜色必须能与门禁的判定表**逐行核对**（见 `tests/mask-gate.test.ts`
+ * 的「判定表与界面色调逐行一致」）。类型放在主进程里，渲染层就只能复制一份字符串
+ * 联合，复制出来的那份不会跟着门禁改。
+ */
+export type MaskBlockKind = 'missing' | 'unknown' | 'rolled-back' | 'page-degraded'
+
+/**
+ * 环境页每一行伪装状态点的数据。
+ *
+ * ── 为什么不直接把 `MaskStateRecord` 给渲染层 ──
+ *
+ * 因为那样界面就得自己判「这个状态算不算拦」。判据一旦在渲染层复写一份，
+ * 就会出现「界面显示绿、门禁在拦」—— 比不显示更坏：用户会按界面去把机制关掉。
+ *
+ * 所以 `allow` / `kind` 由主进程用**同一个** `judgeMask` 算好一起下发，
+ * 渲染层只做「颜色 + 文案」的映射，不做判断。
+ */
+export interface MaskRow {
+  profileId: string
+  state: MaskState
+  at: number
+  /** 截断后的失败清单，只用于 tooltip */
+  failed: MaskFailure[]
+  /** 门禁此刻的结论。渲染层不得重新推导这个字段 */
+  allow: boolean
+  kind: MaskBlockKind | null
+  /** 给用户看的一句话，同样由 `judgeMask` 产出 */
+  reason: string
+}
+
 export interface Profile {
   /** prf_ 前缀 + 12 位 base32 */
   id: string

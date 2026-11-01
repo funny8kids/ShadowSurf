@@ -1081,8 +1081,13 @@ export class WindowManager {
    * （`modules/audit.ts` 的 `runSelfCheck`，用同一个 `judgeMask` 定 severity，
    * 不另设阈值）。
    *
-   * 本方法（连同 `listInjectionIssues()` 与 `opts.onInjectionIssue`）目前**零调用方**：
-   * 界面还没有「全部窗口的伪装状态」列表。要用就先接读者，别在注释里假装已经接了。
+   * 本方法的读者是环境页的状态点：`ipc/handlers.ts` 的 `CH.mask.list`
+   * → `maskRowOf()`（同一张 `judgeMask` 表）→ 渲染层 `shared/mask-ui.ts` 选颜色。
+   * 也就是说界面拿到的 `allow/kind/reason` 是门禁算的，界面自己不算。
+   *
+   * `listInjectionIssues()` 与 `opts.onInjectionIssue` 仍然**零调用方**：
+   * 它们记录的是「注入过程中报过什么」，与「此刻状态如何」不是一回事。
+   * 要用就先接读者，别在注释里假装已经接了。
    */
   listMaskStates(webContentsId?: number): MaskStateRecord[] {
     return webContentsId === undefined

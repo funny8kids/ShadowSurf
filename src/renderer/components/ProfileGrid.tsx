@@ -6,16 +6,24 @@
  */
 
 import { useMemo, useState } from 'react'
-import type { Profile, TaskRecord } from '@shared/types'
+import type { MaskRow, Profile, TaskRecord } from '@shared/types'
 import { ProfileCard } from './ProfileCard'
 import { Button, Icon, Modal, cssVars } from './ui'
 import { formatPercent, isToday } from '@renderer/lib/format'
+import { pickWorstMaskRow } from '@shared/mask-ui'
 
 export type BatchAction = 'start' | 'stop' | 'move' | 'proxy' | 'remove'
 
 interface ProfileGridProps {
   profiles: Profile[]
   tasks: TaskRecord[]
+  /**
+   * 每个窗口此刻的伪装读数，由主进程用 `judgeMask` 判完下发。
+   *
+   * 只含有读数的窗口：环境在跑但还没回读时这里查不到 —— 卡片必须按
+   * 「不可逆动作被拦」显示（门禁此刻就是拒绝的），不能当成正常。
+   */
+  maskRows: MaskRow[]
   selected: string[]
   query: string
   group: string
@@ -34,6 +42,7 @@ interface ProfileGridProps {
 export function ProfileGrid({
   profiles,
   tasks,
+  maskRows,
   selected,
   query,
   group,
@@ -96,6 +105,27 @@ export function ProfileGrid({
 
   const allFilteredSelected =
     filtered.length > 0 && filtered.every((p) => selected.includes(p.id))
+
+  /**
+   * profileId → 这个环境最坏的一条读数。
+   *
+   * 一个环境可以有多个窗口，各自状态不同。挑最坏的那条显示：
+   * 画绿点等于把另一个窗口的回滚藏起来，而用户看到绿点就不会去点开它。
+   */
+  const maskByProfile = useMemo(() => {
+    const grouped = new Map<string, MaskRow[]>()
+    for (const row of maskRows) {
+      const bucket = grouped.get(row.profileId)
+      if (bucket === undefined) grouped.set(row.profileId, [row])
+      else bucket.push(row)
+    }
+    const map = new Map<string, MaskRow>()
+    for (const [profileId, rows] of grouped) {
+      const worst = pickWorstMaskRow(rows)
+      if (worst !== null) map.set(profileId, worst as MaskRow)
+    }
+    return map
+  }, [maskRows])
 
   const taskByProfile = useMemo(() => {
     const map = new Map<string, TaskRecord>()
@@ -250,6 +280,7 @@ export function ProfileGrid({
               key={p.id}
               profile={p}
               task={taskByProfile.get(p.id)}
+              mask={maskByProfile.get(p.id) ?? null}
               selected={selected.includes(p.id)}
               onSelect={onSelect}
               onOpen={onOpen}

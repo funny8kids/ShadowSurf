@@ -14,6 +14,7 @@ import { WindowManager, guardShellNavigation } from '@main/core/windows'
 import { ProfileRuntime } from '@main/core/profiles'
 import { registerHandlers } from '@main/ipc/handlers'
 import { setMaskStateLookup } from '@main/agent/actions'
+import { maskRowOf } from '@main/core/mask-gate'
 import { appendAudit } from '@main/modules/audit'
 
 /** 只允许单实例：两个进程同时写 profiles.json 会互相覆盖 */
@@ -23,6 +24,25 @@ if (!app.requestSingleInstanceLock()) {
 
 let consoleWindow: BrowserWindow | null = null
 let wm: WindowManager | null = null
+
+/**
+ * 把「所有窗口的伪装状态」推给每个渲染进程。
+ *
+ * 走 `maskRowOf` 而不是直接发 `MaskStateRecord`：行里的 allow/kind/reason
+ * 是 `judgeMask` 算的，与拦 L2 同一个函数。渲染层拿到的是**结论**，
+ * 它没有机会自己判一遍然后跟门禁分家。
+ *
+ * 两个触发点：
+ *   1. `onMaskState` —— 某个窗口的读数变了
+ *   2. `onProfileStopped` —— 窗口关了，`maskStates` 里那一条被删掉，
+ *      界面必须跟着消失；否则关掉环境之后那个红点会永远留在卡片上
+ */
+function pushMaskRows(): void {
+  const rows = wm === null ? [] : wm.listMaskStates().map(maskRowOf)
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(CH.push.maskState, rows)
+  }
+}
 
 function preloadPath(): string | undefined {
   const candidate = join(__dirname, '../preload/index.js')
@@ -160,6 +180,11 @@ app.whenReady().then(() => {
         console.error('[boot] 伪装状态落盘失败 profile=' + record.profileId, err)
       }
 
+      // 界面上的状态点要跟着动。放在审计判据**之前**：
+      // 下面的 `if (!worth) return` 会把常态（unknown / worker 停用）挡掉，
+      // 而那些恰恰是界面最该显示的 —— 拦在审计前面就等于「界面只在坏事时更新」。
+      pushMaskRows()
+
       // ── 审计只记「值得事后追责」的那两类 ──
       //
       // 闸门前缀的记录**永不淘汰**（`AUDIT_RETAIN`），所以这里每写一条就是永久占一行。
@@ -190,6 +215,9 @@ app.whenReady().then(() => {
       for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed()) win.webContents.send(CH.push.profileState, stores.profiles.list())
       }
+      // 窗口销毁时 `WindowManager.maskStates` 里那一条已经被删了，
+      // 不推一次的话界面上的红点会一直挂在这个环境上
+      pushMaskRows()
     }
   })
 

@@ -24,6 +24,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { judgeMask, MASK_DECISION_TABLE } from '../src/main/core/mask-gate.ts'
+import { MASK_TONE_LABEL, maskToneOf, pickWorstMaskRow } from '../src/shared/mask-ui.ts'
 import type { MaskSource, MaskState, MaskStateRecord } from '../src/shared/types.ts'
 
 function rec(
@@ -116,4 +117,72 @@ test('rolled-back 的理由带未生效属性清单', () => {
   const reason = v.allow === false ? v.reason : ''
   assert.match(reason, /canvas/)
   assert.match(reason, /audio/)
+})
+
+/* ─────────────────── 界面色调：必须与门禁同一张表 ─────────────────── */
+
+/**
+ * 为什么这条断言比「界面有没有那个点」重要得多：
+ *
+ * 界面画绿、门禁在拦 —— 用户会按界面去把整套机制关掉，因为它看起来在骗人。
+ * 反过来「界面红、门禁放行」则会让人去关掉闸门。两种都比不显示更坏。
+ *
+ * 所以色调不另设阈值，只做 (allow, state) → 颜色的翻译，并在这里逐行核对。
+ * 判定表加了行而 `mask-ui.ts` 没跟上，这条就红。
+ */
+test('判定表每一行过 judgeMask 后的色调，必须等于表里写死的 tone 列', () => {
+  assert.equal(MASK_DECISION_TABLE.length, 10, '表必须正好十格，少一格就是没覆盖到')
+  for (const row of MASK_DECISION_TABLE) {
+    const record =
+      row.input === 'missing'
+        ? null
+        : rec(
+            row.input,
+            row.input === 'degraded'
+              ? [{ attr: 'canvas', reason: '注入失败', source: row.source as MaskSource }]
+              : []
+          )
+    const verdict = judgeMask(record)
+    const tone = maskToneOf(verdict, true)
+    assert.equal(
+      tone,
+      row.tone,
+      `${row.input} × ${row.source}：门禁 allow=${String(verdict.allow)} state=${verdict.state}，` +
+        `界面却画成 ${tone}（表里写的是 ${row.tone}）`
+    )
+  }
+})
+
+test('每种色调都有标签 —— 否则界面上那个点没有可读的名字', () => {
+  for (const tone of ['idle', 'ok', 'warn', 'block'] as const) {
+    assert.ok(
+      MASK_TONE_LABEL[tone].length > 0,
+      `${tone} 没有标签：读屏软件会念出一个空字符串`
+    )
+  }
+})
+
+/**
+ * `verdict === null` 有两种含义，画错哪一个都会误导：
+ *   - 环境没跑 → 灰（idle）：没有窗口就没有可测的东西，不是「测了没问题」
+ *   - 在跑但没读数 → 红（block）：门禁此刻就是拒绝的
+ */
+test('没有读数时：没在跑画灰，在跑画红', () => {
+  assert.equal(maskToneOf(null, false), 'idle', '环境没启动不该画成告警')
+  assert.equal(maskToneOf(null, true), 'block', '窗口开着却没有读数，门禁在拦，界面不能画灰')
+})
+
+/**
+ * 一个环境可以有多个窗口。挑「最新」会藏掉另一个窗口的回滚 ——
+ * 用户看到绿点就不会去点开那个窗口，而那个窗口恰恰不能用。
+ */
+test('同一环境多窗口时取最坏的一条', () => {
+  const okRow = { profileId: 'prf_a', allow: true, state: 'ok' as const }
+  const warnRow = { profileId: 'prf_a', allow: true, state: 'degraded' as const }
+  const blockRow = { profileId: 'prf_a', allow: false, state: 'rolled-back' as const }
+
+  assert.equal(pickWorstMaskRow([okRow, warnRow])?.state, 'degraded')
+  assert.equal(pickWorstMaskRow([warnRow, blockRow, okRow])?.state, 'rolled-back')
+  assert.equal(pickWorstMaskRow([okRow])?.state, 'ok')
+  assert.equal(pickWorstMaskRow([]), null, '空数组必须返回 null，不能编一条出来')
 })

@@ -18,10 +18,15 @@
  * 四种都不是「成功」，所以都不能放行不可逆动作。
  */
 
-import type { MaskSource, MaskStateRecord } from '@shared/types'
+import type { MaskBlockKind, MaskRow, MaskSource, MaskStateRecord } from '@shared/types'
 
-/** 拒绝原因。`kind` 是给界面和审计用的判别字段，不是给人读的文案 */
-export type MaskBlockKind = 'missing' | 'unknown' | 'rolled-back' | 'page-degraded'
+/**
+ * 拒绝原因判别字段。
+ *
+ * 类型本体在 `shared/types.ts` —— 渲染层要按它选文案，而两份字符串联合
+ * 迟早会不一致。这里只 re-export，让既有 import 路径不变。
+ */
+export type { MaskBlockKind }
 
 export type MaskVerdict =
   | { allow: true; state: MaskStateRecord['state'] }
@@ -104,15 +109,53 @@ export const MASK_DECISION_TABLE: ReadonlyArray<{
   source: MaskSource | '—'
   allow: boolean
   kind: MaskBlockKind | '—'
+  /**
+   * 界面上这个格子该是什么颜色。
+   *
+   * 这一列存在的理由：判定表原来只描述「拦不拦」，而界面还要表达
+   * 「拦了 / 降级但放行 / 一切正常」三档。三档如果各写各的，就会出现
+   * 「界面绿、门禁红」。写成同一张表的一列之后，加一行就必须同时回答
+   * 「拦不拦」和「显示什么」，`tests/mask-gate.test.ts` 逐行核对这两列。
+   */
+  tone: 'ok' | 'warn' | 'block'
 }> = [
-  { input: 'ok', source: 'page', allow: true, kind: '—' },
-  { input: 'ok', source: 'worker', allow: true, kind: '—' },
-  { input: 'unknown', source: 'page', allow: false, kind: 'unknown' },
-  { input: 'unknown', source: 'worker', allow: false, kind: 'unknown' },
-  { input: 'degraded', source: 'page', allow: false, kind: 'page-degraded' },
-  { input: 'degraded', source: 'worker', allow: true, kind: '—' },
-  { input: 'rolled-back', source: 'page', allow: false, kind: 'rolled-back' },
-  { input: 'rolled-back', source: 'worker', allow: false, kind: 'rolled-back' },
-  { input: 'missing', source: 'page', allow: false, kind: 'missing' },
-  { input: 'missing', source: 'worker', allow: false, kind: 'missing' }
+  { input: 'ok', source: 'page', allow: true, kind: '—', tone: 'ok' },
+  { input: 'ok', source: 'worker', allow: true, kind: '—', tone: 'ok' },
+  { input: 'unknown', source: 'page', allow: false, kind: 'unknown', tone: 'block' },
+  { input: 'unknown', source: 'worker', allow: false, kind: 'unknown', tone: 'block' },
+  { input: 'degraded', source: 'page', allow: false, kind: 'page-degraded', tone: 'block' },
+  { input: 'degraded', source: 'worker', allow: true, kind: '—', tone: 'warn' },
+  { input: 'rolled-back', source: 'page', allow: false, kind: 'rolled-back', tone: 'block' },
+  { input: 'rolled-back', source: 'worker', allow: false, kind: 'rolled-back', tone: 'block' },
+  { input: 'missing', source: 'page', allow: false, kind: 'missing', tone: 'block' },
+  { input: 'missing', source: 'worker', allow: false, kind: 'missing', tone: 'block' }
 ]
+
+/**
+ * 把一条实时状态压成界面要的行。
+ *
+ * 存在的意义是**别让渲染层自己判**：`allow` / `kind` / `reason` 三个字段
+ * 全部由 `judgeMask` 产出，与拦 L2 走的是同一个函数、同一张表。渲染层只
+ * 剩下「按色调选颜色」这一件纯展示的事。
+ *
+ * `failed` 里的字符串来自注入脚本的失败项，可能带上页面里的属性名。
+ * 这里截断，和审计 detail 的收口规则一致 —— 界面的 tooltip 不是越详细越好，
+ * 一个 4KB 的属性名会把整行撑爆。
+ */
+export function maskRowOf(record: MaskStateRecord): MaskRow {
+  const verdict = judgeMask(record)
+  return {
+    profileId: record.profileId,
+    state: record.state,
+    at: record.at,
+    failed: record.failed.map((f) => ({
+      attr: f.attr.slice(0, 40),
+      reason: f.reason.slice(0, 120),
+      source: f.source
+    })),
+    allow: verdict.allow,
+    kind: verdict.allow ? null : verdict.kind,
+    reason: verdict.allow ? '' : verdict.reason
+  }
+}
+

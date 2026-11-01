@@ -25,12 +25,14 @@
     "preverify:anticheat:nightly": "electron-vite build",
     "verify:anticheat:stale": "node tools/check-build-fresh.mjs --allow-stale && node tools/verify-anticheat.mjs",
     "verify:seed-at-rest": "node tools/verify-seed-at-rest.mjs --self-test && node tools/verify-seed-at-rest.mjs",
-    "verify:all": "npm run typecheck && npm run test && npm run verify:seed-at-rest && npm run verify:seed-ipc && npm run verify:injection && npm run verify:worker && npm run verify:anticheat",
+    "verify:all": "npm run typecheck && npm run test && npm run verify:seed-at-rest && npm run verify:seed-ipc && npm run verify:mask-ui && npm run verify:injection && npm run verify:worker && npm run verify:anticheat",
     "test:gate": "node tools/run-tests.mjs --gate",
     "verify:worker": "node tools/verify-worker-inject.mjs",
     "preverify:worker": "electron-vite build",
     "verify:seed-ipc": "node tools/verify-seed-ipc.mjs",
-    "preverify:seed-ipc": "electron-vite build"
+    "preverify:seed-ipc": "electron-vite build",
+    "verify:mask-ui": "node --experimental-strip-types tools/verify-mask-ui.mjs",
+    "preverify:mask-ui": "electron-vite build"
   },
   "dependencies": {
     "react": "^19.3.1",

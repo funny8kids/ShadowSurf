@@ -11,7 +11,7 @@
 
 import type { ShadowSurfAPI } from '@shared/ipc'
 import type { AgentEvent } from '@shared/protocol'
-import type { IpcError, WindowState } from '@shared/types'
+import type { IpcError, MaskRow, WindowState } from '@shared/types'
 
 /* ────────────────────────────── 桥接 ────────────────────────────── */
 
@@ -54,6 +54,21 @@ export function onAgentEvent(cb: (e: AgentEvent) => void): () => void {
   if (!hasBridge()) return () => {}
   try {
     return bridge().agent.onEvent(cb)
+  } catch {
+    return () => {}
+  }
+}
+
+/**
+ * 伪装状态推送。
+ *
+ * 拿不到桥时返回 noop 而不是抛错：控制台在没有主进程的预览环境里也要能渲染，
+ * 而「没有伪装状态」在界面上显示为灰点，不会误导成「一切正常」。
+ */
+export function onMaskState(cb: (rows: MaskRow[]) => void): () => void {
+  if (!hasBridge()) return () => {}
+  try {
+    return bridge().mask.onState(cb)
   } catch {
     return () => {}
   }

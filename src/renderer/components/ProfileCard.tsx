@@ -6,7 +6,8 @@
  * 底部状态行区分「影子正在干活」与「影子待命」，进度条只在进行中出现。
  */
 
-import type { TaskRecord, Profile } from '@shared/types'
+import type { MaskRow, TaskRecord, Profile } from '@shared/types'
+import { MASK_TONE_LABEL, MASK_TONE_SHORT, maskHintOf, maskToneOf } from '@shared/mask-ui'
 import { Button, Icon, cssVars } from './ui'
 import {
   chromeMajor,
@@ -23,6 +24,13 @@ import {
 interface ProfileCardProps {
   profile: Profile
   task?: TaskRecord
+  /**
+   * 这个环境此刻最坏的一条伪装读数（主进程 `judgeMask` 判完下发）。
+   *
+   * `null` 有两种含义，由 `running` 区分：没在跑 = 没东西可测；
+   * 在跑但没读数 = 门禁此刻拒绝。这里不自己判，交给 `maskToneOf`。
+   */
+  mask?: MaskRow | null
   selected: boolean
   /** 代理延迟（ms）。契约里没有这个字段，主进程探测后由上层传入 */
   latency?: number | null
@@ -34,6 +42,7 @@ interface ProfileCardProps {
 export function ProfileCard({
   profile,
   task,
+  mask = null,
   selected,
   latency = null,
   onSelect,
@@ -59,6 +68,12 @@ export function ProfileCard({
     statusClass = 'status warn'
     statusLabel = starting ? '启动中' : '启动失败'
   }
+
+  // 启动中也要算「有窗口」：此刻门禁已经在拦，界面不能还是灰的
+  const maskTone = maskToneOf(mask, running || starting)
+  const maskHint = maskHintOf(mask, running || starting)
+  const maskLabel = MASK_TONE_LABEL[maskTone]
+  const maskShort = MASK_TONE_SHORT[maskTone]
 
   const barWidth = running && progress.total > 0 ? (progress.done / progress.total) * 100 : 0
 
@@ -93,6 +108,21 @@ export function ProfileCard({
         </button>
         <span className="env-id">{profileNo(profile.id)}</span>
         <span className="env-name">{profile.name}</span>
+        {/*
+          伪装状态点。只在有东西可说的时候出现：
+          idle（环境没启动）什么都不画 —— 那时候没有窗口，也就没有可测的状态，
+          画个灰点会让人以为「测过了，没问题」。
+        */}
+        {maskTone !== 'idle' ? (
+          <span
+            className={`mask-dot ${maskTone}`}
+            title={maskHint}
+            aria-label={`伪装状态：${maskLabel}`}
+          >
+            <i />
+            {maskShort !== '' ? <em>{maskShort}</em> : null}
+          </span>
+        ) : null}
         <button
           type="button"
           className="env-more"

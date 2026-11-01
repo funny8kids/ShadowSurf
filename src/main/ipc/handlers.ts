@@ -24,6 +24,7 @@ import type { ContentInsets } from '@main/core/windows'
 import type { ProfileRuntime } from '@main/core/profiles'
 import { bridgeFor } from '@main/core/cdp'
 import { buildFingerprint } from '@main/core/fingerprint'
+import { maskRowOf } from '@main/core/mask-gate'
 import { captureSnapshot } from '@main/agent/snapshot'
 import { runAgent } from '@main/agent/loop'
 import { setConsentAuditSink } from '@main/agent/consent'
@@ -188,6 +189,20 @@ export function registerHandlers(ctx: HandlerContext): void {
     await ctx.runtime.stop(id as string)
     pushProfiles()
   })
+
+  /* ── 伪装状态 ── */
+
+  /**
+   * 环境页每一行状态点的数据源。
+   *
+   * 走 `wm.listMaskStates()`（枚举）而不是 `maskStateOf()`（单个）：
+   * 这里要的是「所有窗口」，而门禁要的是「这一个窗口，查不到就拒绝」。
+   * 两个用途本来就不该共用一个方法 —— 门禁拿数组分不清「没窗口」和「编号错」。
+   *
+   * `maskRowOf` 在 `core/mask-gate.ts` 里，用的是拦 L2 的同一个 `judgeMask`。
+   * 这一层不重新判断任何东西。
+   */
+  handle(CH.mask.list, () => ctx.wm.listMaskStates().map(maskRowOf))
 
   /* ── 窗口 ── */
 

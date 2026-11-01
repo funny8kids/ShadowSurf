@@ -787,3 +787,61 @@ test('IPC 通道不得出现 preview 之外的种子计算入口', () => {
   const extra = Array.from(new Set(fields)).filter((f) => f !== 'platform')
   assert.deepEqual(extra, [], `preview 只允许接受 platform，实际还读了：${extra.join(', ')}`)
 })
+
+/* ────────────────── 伪装状态点：界面不得自己判 ────────────────── */
+
+/**
+ * 为什么这条是结构断言而不是行为断言：
+ *
+ * 「界面画绿、门禁在拦」不会让任何测试变红 —— 两边各自都对，只是不一致。
+ * 而它的后果是用户按界面去把整套机制关掉，因为它看起来在骗人。
+ *
+ * 所以从两个方向钉住：
+ *   1. 渲染层不许碰门禁模块，也不许自己写 kind / 状态字面量；
+ *   2. 那个点必须真的用 `maskToneOf` 上色，不能是硬编码的 class。
+ */
+test('渲染层不得自己判伪装严重度', () => {
+  const offenders: string[] = []
+  for (const file of sources()) {
+    const name = rel(file)
+    if (!name.startsWith('src/renderer/')) continue
+    const text = stripComments(readFileSync(file, 'utf8'))
+    if (/mask-gate/.test(text)) offenders.push(`${name}：import 了主进程判定模块`)
+    // 只钉「伪装独有的词」和「拿 mask 行的 state/kind 去比对」两种。
+    //
+    // 不把 'degraded' / 'unknown' / 'missing' 一律封杀：`StoreHealthBanner`
+    // 就有一个 `health.degraded`（存储降级），`latencyTier` 有 `'unknown'`。
+    // 一条会误报的断言最后一定被加 skip，等于没有 —— 所以宁可窄。
+    if (/'page-degraded'|"page-degraded"|'rolled-back'|"rolled-back"/.test(text)) {
+      offenders.push(`${name}：自己写了伪装状态字面量（这是门禁独有的词）`)
+    }
+    if (/\bmask\w*\.(?:state|kind)\s*===|\brow\.(?:state|kind)\s*===/.test(text)) {
+      offenders.push(`${name}：拿 mask 行的 state/kind 自己比对，应该用 maskToneOf`)
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `渲染层不得复写严重度判断（allow/kind/reason 一律由主进程的 judgeMask 给出）：${offenders.join('；')}`
+  )
+})
+
+test('环境卡片的状态点必须由 maskToneOf 上色', () => {
+  const card = read('src/renderer/components/ProfileCard.tsx')
+  assert.match(card, /maskToneOf\s*\(/, 'ProfileCard 没用 maskToneOf：颜色就成了硬编码，跟门禁分家')
+  assert.match(
+    card,
+    /mask-dot \$\{maskTone\}/,
+    'ProfileCard 的 class 必须由 maskTone 拼出来，否则 CSS 里的 .ok/.warn/.block 和判定表无关'
+  )
+})
+
+/**
+ * 有读者才算接上了。这条防的是「加了 IPC 通道、界面没调」——
+ * 那种情况下 `listMaskStates` 又变回零调用方，而注释里还写着已接。
+ */
+test('mask.list 必须有渲染层调用方', () => {
+  const app = stripComments(read('src/renderer/App.tsx'))
+  assert.match(app, /bridge\(\)\.mask\.list\(\)/, 'App.tsx 没调 mask.list()，状态点永远是空的')
+  assert.match(app, /onMaskState\(/, 'App.tsx 没订阅伪装状态推送，点会停在首屏那一刻')
+})

@@ -9,7 +9,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { Profile, ProxyConfig, Settings, TaskRecord, WindowState } from '@shared/types'
+import type { MaskRow, Profile, ProxyConfig, Settings, TaskRecord, WindowState } from '@shared/types'
 import { DEFAULT_SETTINGS } from '@shared/presets'
 import { Sidebar } from '@renderer/components/Sidebar'
 import type { NavKey } from '@renderer/components/Sidebar'
@@ -27,7 +27,7 @@ import { ApiPanel } from '@renderer/components/tools/ApiPanel'
 import { AuditPanel } from '@renderer/components/tools/AuditPanel'
 import { DataPanel } from '@renderer/components/tools/DataPanel'
 import { StoreHealthBanner } from '@renderer/components/StoreHealthBanner'
-import { bridge, errorMessage, hasBridge, onWindowState } from './lib/api'
+import { bridge, errorMessage, hasBridge, onMaskState, onWindowState } from './lib/api'
 
 type View = NavKey | 'browser'
 
@@ -63,6 +63,14 @@ function Shell() {
   const [group, setGroup] = useState('全部')
   const [drawerId, setDrawerId] = useState<string | null>(null)
   const [windowState, setWindowState] = useState<WindowState | null>(null)
+  /**
+   * 每个窗口此刻的伪装读数（主进程用 `judgeMask` 判定后下发）。
+   *
+   * 存在这个 state 里而不是塞进 Profile：它是进程内实时量，跟落盘的
+   * `Profile.maskLast`（上次会话的结论）不是一回事 —— 混在一起迟早有人
+   * 拿上一次会话的结论去拦这一次的操作。
+   */
+  const [maskRows, setMaskRows] = useState<MaskRow[]>([])
 
   const bridgeOk = useMemo(() => hasBridge(), [])
 
@@ -75,15 +83,17 @@ function Shell() {
     }
     void (async () => {
       try {
-        const [list, history, conf] = await Promise.all([
+        const [list, history, conf, masks] = await Promise.all([
           bridge().profiles.list(),
           bridge().tasks.list(),
-          bridge().settings.get()
+          bridge().settings.get(),
+          bridge().mask.list()
         ])
         if (!alive) return
         setProfiles(list)
         setTasks(history)
         setSettings(conf)
+        setMaskRows(masks)
       } catch (err) {
         if (alive) toast.push(errorMessage(err), 'err')
       } finally {
@@ -102,6 +112,12 @@ function Shell() {
       // 只有浏览器窗口才需要切视图；控制台收到别人的状态不该跟着跳
       if (isBrowserWindow && next.tabs.length > 0) setView('browser')
     })
+    return off
+  }, [])
+
+  /* ── 伪装状态推送：环境卡片上的状态点靠它更新 ── */
+  useEffect(() => {
+    const off = onMaskState((rows) => setMaskRows(rows))
     return off
   }, [])
 
@@ -305,6 +321,7 @@ function Shell() {
               <ProfileGrid
                 profiles={profiles}
                 tasks={tasks}
+                maskRows={maskRows}
                 selected={selected}
                 query={query}
                 group={group}
