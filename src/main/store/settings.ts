@@ -10,7 +10,7 @@
 
 import { safeStorage } from 'electron'
 import { DEFAULT_SETTINGS } from '@shared/presets'
-import type { Settings } from '@shared/types'
+import type { Settings, ThemeMode } from '@shared/types'
 import { JsonStore } from './db'
 import type { HealthStoreRef } from './health'
 
@@ -55,6 +55,18 @@ function asNumber(v: unknown, fallback: number): number {
 
 function asBoolean(v: unknown, fallback: boolean): boolean {
   return typeof v === 'boolean' ? v : fallback
+}
+
+/**
+ * 主题模式的白名单校验。
+ *
+ * 必须显式判，不能用 `as ThemeMode`：配置文件是用户可以手改的，
+ * 手写一个 `theme: "drak"` 之后 `data-theme` 会变成一个没有对应样式表的字符串，
+ * 界面直接掉回 `:root` 亮色而**没有任何报错**——表现是「主题设置失灵」，
+ * 而代码里看不出问题。非法值一律回落到默认（跟随系统）。
+ */
+function asThemeMode(v: unknown): ThemeMode {
+  return v === 'light' || v === 'dark' || v === 'system' ? v : DEFAULT_SETTINGS.theme
 }
 
 /**
@@ -116,6 +128,7 @@ function migrateSettings(data: unknown): StoredSettings {
     maxSteps: asNumber(rec.maxSteps, DEFAULT_SETTINGS.maxSteps),
     autoRun: asBoolean(rec.autoRun, DEFAULT_SETTINGS.autoRun),
     panelWidth: asNumber(rec.panelWidth, DEFAULT_SETTINGS.panelWidth),
+    theme: asThemeMode(rec.theme),
     // 注意：这一项是**白名单里唯一不可再生的东西**（见上面 auditHead 的注释）。
     // 丢掉它不会报错，只会让尾部删除检测静默失效 —— 所以这里宁可判成 null 并让
     // 校验报「未锚定」，也不要猜一个值出来。
@@ -181,6 +194,7 @@ export class SettingsStore {
       maxSteps: stored.maxSteps,
       autoRun: stored.autoRun,
       panelWidth: stored.panelWidth,
+      theme: stored.theme,
       apiKey: decryptKey(stored.apiKey)
     }
   }
@@ -204,6 +218,7 @@ export class SettingsStore {
       maxSteps: patch.maxSteps ?? current.maxSteps,
       autoRun: patch.autoRun ?? current.autoRun,
       panelWidth: patch.panelWidth ?? current.panelWidth,
+      theme: patch.theme ?? current.theme,
       auditHead: current.auditHead
     }
     // 传了打码值 = 用户没动 Key，保持原密文不动（避免每存一次设置就重写一次密钥）

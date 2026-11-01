@@ -13,6 +13,7 @@ import { BrowserWindow, WebContentsView, shell } from 'electron'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { windowBackground } from './theme'
 import type {
   BrowserTab,
   InjectionIssue,
@@ -276,7 +277,7 @@ export class WindowManager {
       minHeight: 560,
       frame: false,
       titleBarStyle: 'hidden',
-      backgroundColor: '#F6F5F2',
+      backgroundColor: windowBackground(),
       ...(icon ? { icon } : {}),
       show: false,
       webPreferences: {

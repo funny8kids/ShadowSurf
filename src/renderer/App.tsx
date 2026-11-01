@@ -9,7 +9,15 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { MaskRow, Profile, ProxyConfig, Settings, TaskRecord, WindowState } from '@shared/types'
+import type {
+  MaskRow,
+  Profile,
+  ProxyConfig,
+  Settings,
+  TaskRecord,
+  ThemeMode,
+  WindowState
+} from '@shared/types'
 import { DEFAULT_SETTINGS } from '@shared/presets'
 import { Sidebar } from '@renderer/components/Sidebar'
 import type { NavKey } from '@renderer/components/Sidebar'
@@ -28,6 +36,7 @@ import { AuditPanel } from '@renderer/components/tools/AuditPanel'
 import { DataPanel } from '@renderer/components/tools/DataPanel'
 import { StoreHealthBanner } from '@renderer/components/StoreHealthBanner'
 import { bridge, errorMessage, hasBridge, onMaskState, onWindowState } from './lib/api'
+import { applyTheme, onSystemThemeChange, resolveTheme } from './lib/theme'
 
 type View = NavKey | 'browser'
 
@@ -121,6 +130,40 @@ function Shell() {
     return off
   }, [])
 
+  /* ── 主题 ──
+   *
+   * 三个来源，缺一个就会出现「某个窗口不跟着变」：
+   *   1. 落盘的模式（settings.theme）—— 首帧与用户改设置后
+   *   2. 主进程推送（settings.onTheme）—— 别的窗口改了设置时
+   *   3. 系统偏好变化 —— 模式为 'system' 时
+   *
+   * 第 1 条不能省：推送只在变化时发，冷启动没有「变化」可言。
+   * 第 2 条不能省：'system' 之外的显式模式下系统偏好不会变，
+   * 媒体查询也不会动，别的窗口就永远收不到通知。
+   */
+  useEffect(() => {
+    applyTheme(resolveTheme(settings.theme))
+  }, [settings.theme])
+
+  useEffect(() => {
+    if (!hasBridge()) return
+    const offPush = bridge().settings.onTheme((theme) => {
+      applyTheme(theme)
+      // 推送只带解析结果、不带模式，所以本地 settings.theme 可能是旧的
+      // （别的窗口改了设置）。不刷新的话，下一次系统偏好变化会拿旧模式重算，
+      // 把刚推来的主题又改回去。一次往返换一个不可能不一致的状态，值。
+      void bridge()
+        .settings.get()
+        .then(setSettings)
+        .catch(() => undefined)
+    })
+    const offSystem = onSystemThemeChange(() => applyTheme(resolveTheme(settings.theme)))
+    return () => {
+      offPush()
+      offSystem()
+    }
+  }, [settings.theme])
+
   /* ── 任务完成推送：控制台的统计与列表要跟着动 ── */
   useEffect(() => {
     if (!hasBridge()) return
@@ -184,6 +227,21 @@ function Shell() {
       /* 同上 */
     }
   }, [])
+
+  /* ── 主题切换 ── */
+  const changeTheme = useCallback(
+    async (mode: ThemeMode): Promise<void> => {
+      // 先本地生效：主题是纯展示状态，等 IPC 回来再变色会让点击有明显迟滞
+      setSettings((prev) => ({ ...prev, theme: mode }))
+      if (!hasBridge()) return
+      try {
+        setSettings(await bridge().settings.set({ theme: mode }))
+      } catch (err) {
+        toast.push(errorMessage(err), 'err')
+      }
+    },
+    [toast]
+  )
 
   /* ── 打开 / 启动环境 ── */
   async function openProfile(id: string): Promise<void> {
@@ -257,6 +315,8 @@ function Shell() {
         profileCount={profiles.length}
         runningCount={runningCount}
         hasRunningTask={hasRunningTask}
+        theme={settings.theme}
+        onTheme={(mode: ThemeMode) => void changeTheme(mode)}
         onNavigate={(key: NavKey) => {
           setView(key)
           setSelected([])

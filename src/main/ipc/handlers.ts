@@ -25,6 +25,7 @@ import type { ProfileRuntime } from '@main/core/profiles'
 import { bridgeFor } from '@main/core/cdp'
 import { buildFingerprint } from '@main/core/fingerprint'
 import { maskRowOf } from '@main/core/mask-gate'
+import { applyThemeMode } from '@main/core/theme'
 import { captureSnapshot } from '@main/agent/snapshot'
 import { runAgent } from '@main/agent/loop'
 import { setConsentAuditSink } from '@main/agent/consent'
@@ -398,7 +399,10 @@ export function registerHandlers(ctx: HandlerContext): void {
 
   handle(CH.settings.get, () => stores.settings.get())
   handle(CH.settings.set, (_e, patch) => {
+    const prev = stores.settings.get()
     const next: Settings = stores.settings.set((patch ?? {}) as Partial<Settings>)
+    // 主题变化要落到 nativeTheme 上，否则只有发起改动的那个窗口知道
+    if (next.theme !== prev.theme) applyThemeMode(next.theme)
     broadcast(CH.push.profileState, stores.profiles.list())
     return next
   })

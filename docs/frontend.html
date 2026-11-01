@@ -123,7 +123,7 @@
   <div class="sw"><div class="c" style="background:#111417"></div><div class="m"><b>Ink 900</b><span>#111417</span></div></div>
   <div class="sw"><div class="c" style="background:#454d54"></div><div class="m"><b>Ink 600</b><span>#454D54</span></div></div>
   <div class="sw"><div class="c" style="background:#767e86"></div><div class="m"><b>Ink 400</b><span>#767E86</span></div></div>
-  <div class="sw"><div class="c" style="background:#a4abb2"></div><div class="m"><b>Ink 300</b><span>#A4ABB2</span></div></div>
+  <div class="sw"><div class="c" style="background:#868d94"></div><div class="m"><b>Ink 300</b><span>#868D94</span></div></div>
   <div class="sw"><div class="c" style="background:#e3e0d9"></div><div class="m"><b>Line</b><span>#E3E0D9</span></div></div>
   <div class="sw"><div class="c" style="background:#eeece6"></div><div class="m"><b>Surface 2</b><span>#EEECE6</span></div></div>
   <div class="sw"><div class="c" style="background:#f6f5f2"></div><div class="m"><b>Canvas</b><span>#F6F5F2</span></div></div>
@@ -139,7 +139,25 @@
   <div class="sw"><div class="c" style="background:#a6b0ba"></div><div class="m"><b>Ink 600</b><span>#A6B0BA</span></div></div>
   <div class="sw"><div class="c" style="background:#232a32"></div><div class="m"><b>Line</b><span>#232A32</span></div></div>
   <div class="sw"><div class="c" style="background:#2dd4bf"></div><div class="m"><b>Accent</b><span>#2DD4BF</span></div></div>
+  <div class="sw"><div class="c" style="background:#04211e"></div><div class="m"><b>On Accent</b><span>#04211E</span></div></div>
+  <div class="sw"><div class="c" style="background:#4ade80"></div><div class="m"><b>Success</b><span>#4ADE80</span></div></div>
+  <div class="sw"><div class="c" style="background:#fbbf24"></div><div class="m"><b>Warning</b><span>#FBBF24</span></div></div>
+  <div class="sw"><div class="c" style="background:#f87171"></div><div class="m"><b>Danger</b><span>#F87171</span></div></div>
+  <div class="sw"><div class="c" style="background:#a78bfa"></div><div class="m"><b>Exempt</b><span>#A78BFA</span></div></div>
 </div>
+
+<div class="note info">
+  <div class="lbl">为什么强调色要拆成两个令牌</div>
+  <p>同一个 <code>--accent</code> 既要当按钮填充底、又要当链接文字色。亮色主题下 <code>#0F766E</code> 两件事都成立；暗色主题下<strong>数学上不可能</strong>：当文字要在近黑底上够亮（需要高明度），当填充底又要让上面的字够亮（需要低明度）。所以拆成 <code>--accent</code>（填充/边框/图标）与 <code>--on-accent</code>（压在上面的文字）。暗色下强调色取亮青 <code>#2DD4BF</code>，配深墨 <code>#04211E</code> 约 9:1；若沿用白字只有 2.1:1。</p>
+</div>
+
+<div class="note info">
+  <div class="lbl">主题怎么切</div>
+  <p>亮色是 <code>:root</code> 默认值，暗色是 <code>[data-theme='dark']</code> 的整套覆盖，属性挂在 <code>&lt;html&gt;</code> 上。组件里<strong>不写</strong> <code>@media (prefers-color-scheme)</code>：两套机制并存时，「用户手动选亮色 + 系统是深色」会同时命中两个分支，谁赢取决于样式表顺序，这种 bug 读代码看不出来。系统偏好只在 <code>src/renderer/lib/theme.ts</code> 里读一次。</p>
+  <p>模式的解析（含「跟随系统」）在主进程 <code>src/main/core/theme.ts</code> 做，窗口底色与令牌由同一处铺开；渲染层只消费 <code>'light' | 'dark'</code>。用户的 <code>ThemeMode</code> 三档（<code>system</code> / <code>light</code> / <code>dark</code>）原样落盘，<strong>不折成具体亮暗</strong>——折了之后用户就再也回不到「跟随系统」。</p>
+</div>
+
+<p>对比度由 <code>npm run verify:theme</code> 在真实应用里量：遍历所有可见叶子文本节点、合成实际背景色、算 WCAG 比值，非装饰文本低于 3.0 判失败。渐变背景无法解析，记为「未测量」而不是「通过」。</p>
 
 <h3>2.2 语义色</h3>
 <div class="swatches">

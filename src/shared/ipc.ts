@@ -178,7 +178,16 @@ export const CH = {
      * 「同 profileId 的旧行要不要替换」。整份只有几十条，重发一遍比让界面
      * 去合并便宜得多，也不会合并错。
      */
-    maskState: 'ss:push:mask-state'
+    maskState: 'ss:push:mask-state',
+    /**
+     * 主题解析结果（'light' | 'dark'）。
+     *
+     * 单独一条推送而不是搭 profileState 的车：主题变更的来源有三种
+     * （用户改设置、系统偏好变化、启动时首次应用），只有第一种会顺带
+     * 触发 profileState。混在一起会让「系统切到深色」这个最需要即时生效的
+     * 场景恰好不发。
+     */
+    theme: 'ss:push:theme'
   }
 } as const
 
@@ -280,6 +289,15 @@ export interface SettingsAPI {
   get(): Promise<Settings>
   set(s: Partial<Settings>): Promise<Settings>
   test(s: Partial<Settings>): Promise<TestResult>
+  /**
+   * 订阅「最终生效的亮/暗」。
+   *
+   * 推的是解析结果（'light' | 'dark'），不是 `ThemeMode` ——
+   * 解析（含跟随系统）只在主进程做一次。渲染层各自去算的话，
+   * 每个窗口都会自己读一次系统偏好，`nativeTheme` 变更事件到达顺序
+   * 不一致时会出现两个窗口一明一暗。
+   */
+  onTheme(cb: (mode: 'light' | 'dark') => void): () => void
 }
 
 export interface SystemAPI {

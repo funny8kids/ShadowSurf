@@ -117,7 +117,8 @@ const api: ShadowSurfAPI = {
   settings: {
     get: () => invoke(CH.settings.get),
     set: (patch) => invoke(CH.settings.set, patch),
-    test: (patch) => invoke(CH.settings.test, patch)
+    test: (patch) => invoke(CH.settings.test, patch),
+    onTheme: (cb) => subscribe(CH.push.theme, cb)
   },
 
   system: {

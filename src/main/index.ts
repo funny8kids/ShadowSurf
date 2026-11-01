@@ -11,6 +11,7 @@ import { CH } from '@shared/ipc'
 import { getStores, dataDir, sealLegacyBackups, GATE_ACTION_PREFIX } from '@main/store'
 import { masterKey } from '@main/core/fingerprint'
 import { WindowManager, guardShellNavigation } from '@main/core/windows'
+import { applyThemeMode, applyThemeToWindows, windowBackground } from '@main/core/theme'
 import { ProfileRuntime } from '@main/core/profiles'
 import { registerHandlers } from '@main/ipc/handlers'
 import { setMaskStateLookup, setMaskExemptionLookup } from '@main/agent/actions'
@@ -65,7 +66,7 @@ function createConsoleWindow(): BrowserWindow {
     height: 900,
     minWidth: 1080,
     minHeight: 700,
-    backgroundColor: '#F6F5F2',
+    backgroundColor: windowBackground(),
     // 控制台保留系统标题栏：无边框窗口在 Windows 上会丢失窗口控制按钮，
     // 而控制台没有自绘的关闭/最大化，保留 frame 是最省事也最不容易出错的方案。
     frame: true,
@@ -92,7 +93,10 @@ function createConsoleWindow(): BrowserWindow {
 }
 
 app.whenReady().then(() => {
-  nativeTheme.themeSource = 'light'
+  // 主题必须在开窗之前定下来：开窗后再设 themeSource，首帧已经用错底色画完了
+  applyThemeMode(getStores().settings.get().theme)
+  // 系统偏好变化（且模式是 'system'）时，Electron 会发这条事件
+  nativeTheme.on('updated', applyThemeToWindows)
 
   /**
    * 启动时就把主密钥封装一次。

@@ -6,6 +6,7 @@
  */
 
 import type { ReactElement } from 'react'
+import type { ThemeMode } from '@shared/types'
 import { Icon } from './ui'
 import type { IconName } from './ui'
 
@@ -36,7 +37,16 @@ interface SidebarProps {
   hasRunningTask: boolean
   proxyCount?: number
   scriptCount?: number
+  theme: ThemeMode
+  onTheme: (mode: ThemeMode) => void
 }
+
+/** 三档主题。顺序固定为「跟随系统 / 亮 / 暗」，切换时位置不跳 */
+const THEME_OPTIONS: ReadonlyArray<{ mode: ThemeMode; icon: IconName; label: string }> = [
+  { mode: 'system', icon: 'auto', label: '跟随系统' },
+  { mode: 'light', icon: 'sun', label: '亮色' },
+  { mode: 'dark', icon: 'moon', label: '暗色' }
+]
 
 export function Sidebar({
   view,
@@ -46,7 +56,9 @@ export function Sidebar({
   runningCount,
   hasRunningTask,
   proxyCount,
-  scriptCount
+  scriptCount,
+  theme,
+  onTheme
 }: SidebarProps) {
   const primary: NavItem[] = [
     { key: 'workbench', label: '环境', icon: 'grid', count: profileCount },
@@ -108,6 +120,21 @@ export function Sidebar({
       </div>
 
       <div className="side-foot">
+        <div className="theme-switch" role="group" aria-label="主题">
+          {THEME_OPTIONS.map((opt) => (
+            <button
+              key={opt.mode}
+              type="button"
+              className="theme-opt"
+              aria-pressed={theme === opt.mode}
+              aria-label={opt.label}
+              title={opt.label}
+              onClick={() => onTheme(opt.mode)}
+            >
+              <Icon name={opt.icon} size={14} strokeWidth={1.7} />
+            </button>
+          ))}
+        </div>
         <button type="button" className="nav-item" onClick={() => onUnavailable('设置')}>
           <Icon name="settings" size={15} />
           设置

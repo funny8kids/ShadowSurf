@@ -59,6 +59,9 @@ export type IconName =
   | 'arrowRight'
   | 'square'
   | 'hand'
+  | 'sun'
+  | 'moon'
+  | 'auto'
 
 const ICON_PATHS: Record<IconName, ReactNode> = {
   wave: <path d="M3 12h4l2.5-7 3.5 14 2.5-7H21" />,
@@ -185,6 +188,20 @@ const ICON_PATHS: Record<IconName, ReactNode> = {
     <>
       <path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V11M11 11V4.5a1.5 1.5 0 0 1 3 0V11M14 11V6.5a1.5 1.5 0 0 1 3 0V13" />
       <path d="M17 11.5a1.5 1.5 0 0 1 3 0V15a6 6 0 0 1-6 6h-2a6 6 0 0 1-6-6v-3l-1.6-2.4a1.5 1.5 0 0 1 2.4-1.8L8 10" />
+    </>
+  ),
+  sun: (
+    <>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.1 5.1l1.4 1.4M17.5 17.5l1.4 1.4M18.9 5.1l-1.4 1.4M6.5 17.5l-1.4 1.4" />
+    </>
+  ),
+  moon: <path d="M20 14.2A8.2 8.2 0 1 1 9.8 4a6.6 6.6 0 0 0 10.2 10.2z" />,
+  // 跟随系统：半明半暗的圆，比「齿轮」「显示器」更直接
+  auto: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none" />
     </>
   )
 }

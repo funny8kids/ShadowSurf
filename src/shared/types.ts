@@ -326,6 +326,15 @@ export interface TaskRecord {
 
 /* ────────────────────────────── 设置 ────────────────────────────── */
 
+/**
+ * 主题模式。
+ *
+ * `'system'` 不是「第三种外观」，而是「把决定权交给操作系统」——
+ * 它必须作为一个独立取值存盘，不能折成 light/dark 存：折成具体值之后，
+ * 用户选了「跟随系统」就再也回不去了（下次系统换主题，应用不会跟）。
+ */
+export type ThemeMode = 'system' | 'light' | 'dark'
+
 export interface Settings {
   provider: string
   baseUrl: string
@@ -337,6 +346,8 @@ export interface Settings {
   autoRun: boolean
   /** 面板宽度，渲染层用 */
   panelWidth: number
+  /** 主题模式。解析成 light/dark 由主进程做，渲染层只收结果 */
+  theme: ThemeMode
 }
 
 export interface TestResult {

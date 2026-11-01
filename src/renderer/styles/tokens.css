@@ -3,6 +3,20 @@
  *
  * 唯一来源：docs/prototype.html 的 :root 与 docs/frontend.html 第 2 章。
  * 渲染层所有颜色、圆角、阴影、尺寸都必须走这里的变量，禁止在组件里写死色值。
+ *
+ * ── 主题机制 ──
+ * 亮色是默认值（`:root`），暗色是 `[data-theme='dark']` 上的一整套覆盖。
+ * 属性挂在 `<html>` 上，由 src/renderer/lib/theme.ts 统一写入；
+ * 组件里不要写 `@media (prefers-color-scheme)` —— 那会让「跟随系统」和
+ * 「用户手动选亮色」打架，系统偏好只在一个地方读。
+ *
+ * ── 为什么强调色不能只用一个变量 ──
+ * 同一个 `--accent` 既要当填充底（按钮），又要当文字色（链接）。亮色主题下
+ * `#0f766e` 两件事都成立；暗色主题下不可能：文字要在深底上够亮（需要高明度），
+ * 填充底要让上面的文字够亮（需要低明度）。数学上无解，所以拆成两个角色：
+ *   --accent      填充底 / 边框 / 图标
+ *   --on-accent   压在 --accent 上的文字
+ * 暗色下 --accent 取中明度青、--on-accent 取深墨，两边都过 4.5:1。
  */
 
 :root {
@@ -12,6 +26,16 @@
   --accent-2: #e4efed;
   --accent-3: #4d938c;
   --accent-line: #cfe0dc;
+  /* 压在 --accent / 语义色填充上的文字 */
+  --on-accent: #ffffff;
+  /* 强调色系的极淡底（比 --accent-2 更淡，用于悬停/条纹） */
+  --accent-wash: rgba(228, 239, 237, 0.55);
+
+  /* ── 品牌渐变块（侧栏图标、AI 头像、发送键） ── */
+  --brand-a: #1c6360;
+  --brand-b: #0f3d3b;
+  --brand-a-bright: #14a396;
+  --brand-b-bright: #0a4a45;
 
   /* ── 画布与表面 ── */
   --stage: #e9e7e2;
@@ -19,27 +43,53 @@
   --surface: #ffffff;
   --surface-2: #f6f5f2;
   --surface-3: #f4f2ee;
+  /* 窗口 chrome（标题条 / 标签栏）与卡片内嵌表头 */
+  --surface-4: #efede7;
+  /* 白卡上的轻微暖白，避免大片纯白 */
+  --surface-card: #fcfbf9;
+  /* 影子轨预览区的极淡青底 */
+  --surface-shadow: #f7faf9;
   --surface-hover: #faf9f7;
+  /* 骨架条 / 占位条 / 进度条底 */
+  --skeleton: #e6e3dd;
   --line: #e3e0d9;
   --line-2: #efebe4;
+  --line-soft: #e0dbd2;
   --line-strong: #d5d0c7;
+  /* 虚线（强调色系） */
+  --line-dash: #bcd3ce;
 
-  /* ── 文本三级 ── */
+  /* ── 文本三级 + 弱化级 ── */
   --ink: #111417;
   --ink-2: #454d54;
   --ink-3: #767e86;
-  --ink-4: #a4abb2;
+  /* --ink-4 原来是 #a4abb2，在白底上只有 2.32:1、在 --bg 上 2.13:1。
+     它不是纯装饰：分组标题、环境 ID、空状态说明、地址栏「直连 · 未配置代理」
+     都用它，属于要读的信息。tools/verify-theme.mjs 的对比度审计把它抓出来了，
+     所以调到 3.08:1 / 3.36:1（WCAG 非装饰文本下限 3.0）。
+     想调回去请先跑 npm run verify:theme，别凭观感改。 */
+  --ink-4: #868d94;
+  /* 禁用态文字 / 极弱图标 / 斜杠分隔符 */
+  --ink-5: #c9c4bb;
 
   /* ── 语义色 ── */
   --green: #15803d;
   --green-2: #e8f3ec;
+  --green-soft: #f4fbf9;
   --green-line: #cbe3d6;
+  --green-ink: #205c41;
+  --green-ink-2: #4d7d66;
   --amber: #9a5b06;
   --amber-2: #fbf1e2;
   --amber-line: #ecdcbf;
+  --amber-ink: #7a5a26;
   --red: #b3261e;
   --red-2: #fbeceb;
+  --red-soft: #fdf7f6;
+  --red-soft-2: #f8dedb;
   --red-line: #f0d5d1;
+  --red-ink: #8a4a45;
+  --red-ink-2: #7d3a35;
   /* 第四种语义色：只用于「环境级豁免伪装闸门」。
      绿/黄/红已经分别表示「伪装好了 / 降级 / 被拦」，豁免是另一类事实
      （闸门被配置成不拦了）。借用其中任何一色都会误导：用绿像「伪装好了」，
@@ -47,6 +97,31 @@
   --violet: #6d4aa8;
   --violet-2: rgba(109, 74, 168, 0.18);
   --blue: #1d4ed8;
+
+  /* ── 深色浮层（toast / 批量条）上的语义色。
+     这两个浮层两套主题下都是深底，所以这几个值不随主题变 —— 单独起名是为了
+     标明「它们只能用在深底上」，不是为了换值。 ── */
+  --on-dark-green: #6ee7a8;
+  --on-dark-red: #f0a99f;
+  --on-dark-red-2: #ffc9c2;
+  --on-dark-teal: #8fd0c8;
+
+  /* ── 浮层与遮罩 ── */
+  --overlay: rgba(25, 27, 29, 0.94);
+  --scrim-soft: rgba(28, 30, 32, 0.32);
+  --scrim-ghost: rgba(17, 20, 23, 0.18);
+  /* 浅色底上的「提亮 / 压暗」两层，暗色主题下方向相反 */
+  --wash-lift: rgba(255, 255, 255, 0.6);
+  --wash-dim: rgba(0, 0, 0, 0.07);
+
+  /* ── 环境标识：窗口灯点与状态点 ── */
+  --dot-red: #e0a49b;
+  --dot-amber: #e0c48f;
+  --dot-green: #a8c4a0;
+
+  /* ── 头像占位渐变 ── */
+  --avatar-a: #c9b8a4;
+  --avatar-b: #8f7a63;
 
   /* ── 圆角 ── */
   --r-xs: 5px;
@@ -58,6 +133,15 @@
   --sh-1: 0 1px 2px rgba(24, 26, 28, 0.05);
   --sh-2: 0 1px 2px rgba(24, 26, 28, 0.04), 0 8px 22px -14px rgba(24, 26, 28, 0.18);
   --sh-3: 0 2px 6px rgba(24, 26, 28, 0.06), 0 24px 48px -24px rgba(24, 26, 28, 0.28);
+  /* 带品牌青的阴影：品牌块、发送键、开关 */
+  --sh-brand-1: 0 1px 3px rgba(15, 61, 59, 0.3);
+  --sh-brand-2: 0 2px 6px rgba(15, 61, 59, 0.24);
+  --sh-brand-3: 0 1px 2px rgba(20, 81, 78, 0.24);
+  /* 焦点环 */
+  --ring-accent: 0 0 0 4.5px rgba(44, 122, 85, 0.1);
+  /* 浮层阴影 */
+  --sh-overlay: 0 12px 32px -12px rgba(0, 0, 0, 0.5);
+  --sh-drawer: -16px 0 48px -20px rgba(0, 0, 0, 0.28);
 
   /* ── 布局尺寸（改这里必须同步 BrowserShell 的 inset 上报） ── */
   --side-w: 196px;
@@ -85,4 +169,120 @@
     rgba(20, 81, 78, 0.075) 0 7px,
     transparent 7px 15px
   );
+
+  /* 原生控件跟随主题（下拉、滚动条、光标） */
+  color-scheme: light;
+}
+
+/**
+ * 暗色主题。
+ *
+ * 底色不是纯黑也不是纯灰，而是带一点青的暖中性 —— 和品牌青同色系，
+ * 纯 #000 / #111 会让青色调的强调色显得发脏。
+ *
+ * 强调色取中明度青 `#12a094`：对 `--bg` 约 5.4:1（能当文字），
+ * 配 `--on-accent: #04201d` 约 4.9:1（能当按钮底）。两者同时成立靠的是
+ * 把「填充上的文字」从白色换成深墨，而不是硬把强调色调亮。
+ */
+[data-theme='dark'] {
+  --accent: #2dd4bf;
+  --accent-hover: #5ee0cf;
+  --accent-2: #0e2e2a;
+  --accent-3: #5ee0cf;
+  --accent-line: #1b4b46;
+  /* 强调色是亮青，所以压在上面的文字必须是深色。
+     白字压在 #2dd4bf 上只有 2.1:1 —— 这正是「一个 --accent 兼两种角色」在暗色下
+     不可能成立的原因，拆成两个令牌不是为了好看。 */
+  --on-accent: #04211e;
+  --accent-wash: rgba(45, 212, 191, 0.1);
+
+  --brand-a: #1c6360;
+  --brand-b: #0f3d3b;
+  --brand-a-bright: #14a396;
+  --brand-b-bright: #0a4a45;
+
+  --stage: #06080a;
+  --bg: #0a0c0f;
+  --surface: #12161b;
+  --surface-2: #0f1318;
+  --surface-3: #171c22;
+  --surface-4: #1b2128;
+  --surface-card: #141a20;
+  /* 影子轨预览区。亮色下它比 --bg 略亮一点（#f7faf9 vs #f6f5f2），
+     暗色下必须保持同样的「略亮」关系 —— 一开始写成比底色更暗的值，
+     结果整条影子轨变成一块黑洞，和旁边的 --bg 形成硬边。 */
+  --surface-shadow: #0f1519;
+  --surface-hover: #1d242c;
+  --skeleton: #232a32;
+  --line: #232a32;
+  --line-2: #1a2027;
+  --line-soft: #262e37;
+  --line-strong: #303a45;
+  --line-dash: #2c5a54;
+
+  --ink: #e8ecf0;
+  --ink-2: #a6b0ba;
+  --ink-3: #78848f;
+  --ink-4: #6b7885;
+  --ink-5: #4c5661;
+
+  --green: #4ade80;
+  --green-2: #0e2a1b;
+  --green-soft: #0c1f16;
+  --green-line: #1e4a31;
+  --green-ink: #7fe0a6;
+  --green-ink-2: #6fbf95;
+
+  --amber: #fbbf24;
+  --amber-2: #2a2110;
+  --amber-line: #4a3a17;
+  --amber-ink: #f5ce7a;
+
+  --red: #f87171;
+  --red-2: #2c1618;
+  --red-soft: #241314;
+  --red-soft-2: #3d1d1f;
+  --red-line: #4a2528;
+  --red-ink: #f7a6a6;
+  --red-ink-2: #ef9a9a;
+
+  --violet: #a78bfa;
+  --violet-2: rgba(167, 139, 250, 0.2);
+  --blue: #60a5fa;
+
+  --overlay: rgba(10, 12, 15, 0.96);
+  --scrim-soft: rgba(0, 0, 0, 0.55);
+  --scrim-ghost: rgba(0, 0, 0, 0.4);
+  --wash-lift: rgba(255, 255, 255, 0.06);
+  --wash-dim: rgba(255, 255, 255, 0.08);
+
+  --dot-red: #7a4a45;
+  --dot-amber: #7a6240;
+  --dot-green: #47603f;
+
+  --avatar-a: #6a5a48;
+  --avatar-b: #453729;
+
+  --sh-1: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --sh-2: 0 1px 2px rgba(0, 0, 0, 0.45), 0 8px 22px -14px rgba(0, 0, 0, 0.7);
+  --sh-3: 0 2px 6px rgba(0, 0, 0, 0.55), 0 24px 48px -24px rgba(0, 0, 0, 0.8);
+  --sh-brand-1: 0 1px 3px rgba(0, 0, 0, 0.55);
+  --sh-brand-2: 0 2px 6px rgba(0, 0, 0, 0.5);
+  --sh-brand-3: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --ring-accent: 0 0 0 4.5px rgba(45, 212, 191, 0.18);
+  --sh-overlay: 0 12px 32px -12px rgba(0, 0, 0, 0.8);
+  --sh-drawer: -16px 0 48px -20px rgba(0, 0, 0, 0.65);
+
+  --stripe: repeating-linear-gradient(
+    45deg,
+    rgba(45, 212, 191, 0.05) 0 7px,
+    transparent 7px 15px
+  );
+  --stripe-strong: repeating-linear-gradient(
+    45deg,
+    rgba(45, 212, 191, 0.09) 0 7px,
+    transparent 7px 15px
+  );
+
+  color-scheme: dark;
 }

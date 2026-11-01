@@ -103,7 +103,8 @@ export const DEFAULT_SETTINGS: Settings = {
   temperature: 0.2,
   maxSteps: 12,
   autoRun: true,
-  panelWidth: 380
+  panelWidth: 380,
+  theme: 'system'
 }
 
 /* ────────────────────────────── 环境标识色 ────────────────────────────── */
