@@ -78,7 +78,14 @@ export const ACTION_LABEL: Record<ActionType, string> = {
 }
 
 /**
- * 把一个动作拆成「给人看的目标列」和「给复盘用的技术标识」。
+ * 把一个动作拆成「审计的目标列」和「给复盘用的技术标识」。
+ *
+ * **这不是 `describeAction`。** 两者输出不同、用途不同、稳定性要求也不同：
+ *   - 本函数的 `target` 会**参与审计哈希**（`digest` 的输入含 target），
+ *     改一个字，历史链就全部验不过 —— 所以它只依赖 `action` 本身，且措辞冻结；
+ *   - `describeAction` 是给人读的当场文案，会用快照里的元素名，措辞可以改。
+ *
+ * 曾经两者同名，于是「改一句界面文案」和「改审计哈希」看起来是同一件事。
  *
  * 原先审计里是把协议原文直接拼进去的：
  *     [action.type, action.id ? `#${action.id}` : '', action.url ?? ''].join(' ')
@@ -95,7 +102,7 @@ export const ACTION_LABEL: Record<ActionType, string> = {
  * 放在 shared 里（而不是 `modules/audit.ts` 内部）是为了能被 Node 单测：
  * `audit.ts` 静态 import 了 electron，纯 Node 里连模块都求值不了。
  */
-export function describeAction(action: Action): { target: string; marker: string } {
+export function describeAuditTarget(action: Action): { target: string; marker: string } {
   const verb = ACTION_LABEL[action.type] ?? action.type
   const target = [verb, action.id ? '某个元素' : '', action.url ?? '']
     .filter((v) => v.length > 0)
@@ -189,6 +196,74 @@ export function findElement(snapshot: PageSnapshot, id?: string): SnapshotElemen
  */
 export function actionSemantic(action: Action, snapshot: PageSnapshot, note?: string): string {
   return semanticOf(findElement(snapshot, action.id)?.name ?? '', note ?? '')
+}
+
+/* ────────────────────── 动作的人话描述（全仓唯一一份） ────────────────────── */
+
+/**
+ * 把一个动作翻译成给人读的一句中文。
+ *
+ * ── 为什么在这里，而不是在 `main/agent/actions.ts` ──
+ *
+ * 这句话有三个消费方：agent 的步骤流、主进程的系统原生确认窗口、
+ * 以及渲染层的步骤面板。渲染层手里**没有快照**，所以它原先自己写了一份
+ * 「某个页面元素」的兜底文案 —— 于是同一句话有两个版本，改一处忘一处。
+ * 放到 `shared/` 之后，`snapshot` 是可选的：有就带元素名，没有就说「某个元素」。
+ *
+ * ── 一条硬规则：绝不把协议字段吐进这句话 ──
+ *
+ * 元素编号（`e12`）是每轮快照里临时分配的，对用户没有任何意义，
+ * 而且它出现在确认窗口里会让人误以为那是页面上的某个东西。
+ * 拿不到可读名时就说「某个元素」—— 模糊但诚实，比一个假的可读标识强。
+ *
+ * ── 为什么不是 `describeAuditTarget` ──
+ *
+ * 那个的输出会进审计哈希，措辞冻结、不能依赖快照。这个可以改措辞、可以读快照。
+ * 两者同名过一次，结果是「改一句界面文案」看起来像「改审计哈希」。
+ */
+export function describeAction(action: Action, snapshot?: PageSnapshot): string {
+  const el = snapshot === undefined ? undefined : findElement(snapshot, action.id)
+  // 只有真的有可读名时才用它；空名字不算「可读」
+  const name = el?.name && el.name.trim().length > 0 ? el.name.trim() : ''
+  const label = name ? `「${name}」` : ''
+
+  switch (action.type) {
+    case 'click': {
+      return name ? `点击${label}` : '点击某个元素'
+    }
+    case 'type': {
+      const text = action.text ?? ''
+      const submit = action.submit ? '并提交' : ''
+      if (!name) return `在某个输入框输入「${text}」${submit}`
+      const suffix = el?.role === 'textbox' ? '输入框' : ''
+      return `在${label}${suffix}输入「${text}」${submit}`
+    }
+    case 'press': {
+      const key = action.key ?? 'Enter'
+      return name ? `在${label}上按下 ${key} 键` : `按下 ${key} 键`
+    }
+    case 'scroll': {
+      const amount = typeof action.amount === 'number' && action.amount > 0 ? action.amount : 0
+      switch (action.direction) {
+        case 'top':
+          return '滚动到页面顶部'
+        case 'bottom':
+          return '滚动到页面底部'
+        case 'up':
+          return amount > 0 ? `向上滚动 ${amount}px` : '向上滚动一屏'
+        default:
+          return amount > 0 ? `向下滚动 ${amount}px` : '向下滚动一屏'
+      }
+    }
+    case 'navigate':
+      return `打开 ${action.url ?? '目标地址'}`
+    case 'extract':
+      return `提取：${action.query ?? '页面内容'}`
+    case 'done':
+      return `完成：${action.summary ?? '任务结束'}`
+    default:
+      return `执行 ${String(action.type)}`
+  }
 }
 
 /**

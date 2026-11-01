@@ -20,10 +20,10 @@ import type {
   RunRequest
 } from '@shared/protocol'
 import type { Settings, TaskRecord } from '@shared/types'
-import { actionSemantic } from '@shared/protocol'
+import { actionSemantic, describeAction } from '@shared/protocol'
 
 import { captureSnapshot } from '@main/agent/snapshot'
-import { describeAction, executeAction } from '@main/agent/actions'
+import { executeAction } from '@main/agent/actions'
 import { assessRisk } from '@main/agent/risk'
 import { requestConsent, type ConsentOutcome } from '@main/agent/consent'
 import { auditGate } from '@main/modules/audit'

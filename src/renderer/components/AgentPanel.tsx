@@ -11,6 +11,17 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Action, AgentStep, StepStatus } from '@shared/protocol'
+/*
+ * 动作文案**没有**本地实现。
+ *
+ * 这句话原来在这里有第三份：渲染层没有快照，就自己写了一套「某个页面元素」的措辞。
+ * 于是同一句话有三个版本，改一处忘一处 —— 而且那份的 scroll 分支把英文的
+ * `direction` 直接拼进了中文（「向down滚动 300」）。
+ *
+ * 现在统一用 `shared/protocol.ts` 的 `describeAction(action)`：
+ * snapshot 缺省时它自己退化成「某个元素」，且**永不**把 `action.id` 印出来。
+ */
+import { describeAction } from '@shared/protocol'
 import type { Settings, TestResult } from '@shared/types'
 import { PROVIDERS } from '@shared/presets'
 import { Button, Icon, Modal, cx, useToast } from './ui'
@@ -52,32 +63,6 @@ function upsertStep(list: AgentStep[], next: AgentStep): AgentStep[] {
   return copy
 }
 
-/**
- * 把动作翻译成一句人话。
- *
- * 渲染层手里**没有快照**，所以拿不到元素的可读名 —— 那就说「某个元素」，
- * 绝不把 `action.id`（协议里的 `e12`）印出来：那是每轮临时分配的编号，
- * 对用户没有意义，出现在界面上只会让人以为页面上真有个叫 e12 的东西。
- * 主进程侧有快照，那边由 `describeAction(action, snapshot)` 给出带名字的版本。
- */
-function describeAction(action: Action): string {
-  switch (action.type) {
-    case 'click':
-      return '点击某个页面元素'
-    case 'type':
-      return `在某个输入框输入「${action.text ?? ''}」${action.submit ? ' 并回车提交' : ''}`
-    case 'press':
-      return `按下 ${action.key ?? '（未指定）'} 键`
-    case 'scroll':
-      return `向${action.direction ?? '下'}滚动 ${action.amount ?? ''}`
-    case 'navigate':
-      return `导航到 ${action.url ?? '（未指定地址）'}`
-    case 'extract':
-      return `提取：${action.query ?? '（未指定内容）'}`
-    default:
-      return action.summary ?? '结束任务'
-  }
-}
 
 function stepIcon(status: StepStatus): 'check' | 'close' | 'alert' | 'play' | null {
   if (status === 'ok') return 'check'

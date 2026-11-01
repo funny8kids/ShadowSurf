@@ -13,7 +13,7 @@
  */
 
 import { CH } from '@shared/ipc'
-import { describeAction } from '@shared/protocol'
+import { describeAuditTarget } from '@shared/protocol'
 import type {
   AuditEntry,
   AuditVerifyResult,
@@ -126,7 +126,7 @@ const ORIGIN_LABEL: Record<string, string> = {
  */
 export function auditGate(stores: Stores, event: GateEvent): void {
   const action = event.action
-  const { target, marker } = describeAction(action)
+  const { target, marker } = describeAuditTarget(action)
 
   // matched 是从判定语义串里正则匹配出来的，而那段串由 `[元素名, thought]` 拼成：
   // 元素名被 `nameOf()` 截到 90（页面那半有界），`thought` 是模型写的、无长度限制。
@@ -185,7 +185,7 @@ const CONSENT_TEXT: Record<ConsentOutcome['kind'], string> = {
  */
 export function auditConsent(stores: Stores, outcome: ConsentOutcome, req: ConsentRequest): void {
   const action = req.action
-  const { target, marker } = describeAction(action)
+  const { target, marker } = describeAuditTarget(action)
   const matched = boundMatched(req.matched)
 
   appendAudit(

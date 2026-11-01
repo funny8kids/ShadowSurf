@@ -845,3 +845,54 @@ test('mask.list 必须有渲染层调用方', () => {
   assert.match(app, /bridge\(\)\.mask\.list\(\)/, 'App.tsx 没调 mask.list()，状态点永远是空的')
   assert.match(app, /onMaskState\(/, 'App.tsx 没订阅伪装状态推送，点会停在首屏那一刻')
 })
+
+/* ────────────── 动作文案：全仓只允许一份 ────────────── */
+
+/**
+ * 这句话有过三份实现：`actions.ts`（带快照）、`protocol.ts`（审计前缀，
+ * 返回 `{target, marker}`）、`AgentPanel.tsx`（渲染层兜底）。
+ *
+ * 三份的差别不只是措辞 —— 渲染层那份的 scroll 分支把英文 `direction`
+ * 直接拼进中文（「向down滚动 300」），press 的默认键一处写 'Enter'
+ * 一处写 '（未指定）'。这类分叉不会让任何测试变红，只会让界面和确认窗口
+ * 对同一个动作说两种话。
+ *
+ * 现在 `describeAction` 只有一份（`shared/protocol.ts`，snapshot 可选）。
+ * 审计那份改名为 `describeAuditTarget` —— 它的输出参与哈希、措辞冻结，
+ * 本来就不是同一件事，同名才是问题。
+ */
+test('describeAction 只允许有一个 export function', () => {
+  const offenders: string[] = []
+  for (const file of sources()) {
+    const text = stripComments(readFileSync(file, 'utf8'))
+    const hits = text.match(/export\s+(?:async\s+)?function\s+describeAction\b/g) ?? []
+    if (hits.length > 0) offenders.push(`${rel(file)}（${String(hits.length)} 处）`)
+  }
+  assert.deepEqual(
+    offenders,
+    ['src/shared/protocol.ts（1 处）'],
+    `describeAction 只允许在 shared/protocol.ts 定义一次，实际出现在：${offenders.join('、')}`
+  )
+})
+
+test('渲染层不得自己实现动作文案', () => {
+  const offenders: string[] = []
+  for (const file of sources()) {
+    const name = rel(file)
+    if (!name.startsWith('src/renderer/')) continue
+    const text = stripComments(readFileSync(file, 'utf8'))
+    // 本地再写一份 describeAction（function 或 const）就算违规
+    if (/(?:function|const)\s+describeAction\b/.test(text)) {
+      offenders.push(`${name}：本地实现了 describeAction`)
+    }
+  }
+  assert.deepEqual(offenders, [], offenders.join('；'))
+
+  // 用了它，就必须从 shared 拿 —— 不能既不用、又保留一份「备用」实现
+  const panel = stripComments(read('src/renderer/components/AgentPanel.tsx'))
+  assert.match(
+    panel,
+    /import\s*\{[^}]*describeAction[^}]*\}\s*from\s*'@shared\/protocol'/,
+    'AgentPanel 必须从 @shared/protocol 导入 describeAction'
+  )
+})
