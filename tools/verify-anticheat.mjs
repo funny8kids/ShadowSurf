@@ -1542,6 +1542,25 @@ function powerCheck(what, host, prof, differs, how) {
   }
 }
 
+/**
+ * 是不是 en-* 语言（`en` / `en-US` / `en-GB` …）。
+ *
+ * 抽成一个函数是因为「哪些轮次能判 locale」这件事在三个地方要用：
+ * 选轮、判定、以及退出码的前置条件。三处各写一遍正则，迟早会有一处写成
+ * `startsWith('en')` —— 那会把 `enochian` 之类也算进来（虽然现在没有这种语言码，
+ * 但把「前缀」当「语言标签」用本身就是这类 bug 的温床）。
+ */
+const isEnLang = (lang) => typeof lang === 'string' && /^en(?:$|[-_])/i.test(lang)
+
+/**
+ * 这一次运行里，locale 子判据到底用了哪一轮、结论是什么。
+ *
+ * 由 `judge()` 填、主流程读。为什么不用返回值：`judge` 的产物直接进
+ * `results`，而 payload 在 `judge` 外面拼 —— 没有别的通道把
+ * 「用哪个 profile 判的 locale」带出来，而这一条恰恰是要写进报告的读数。
+ */
+let localeRoundReport = null
+
 function judge(fp, d, runs, ctx = {}) {
   /* 1 —— toString 外观 */
   const notNative = d.mask.filter((m) => m.missing || !m.native).map((m) => m.name + (m.missing ? '(缺失)' : ':' + (m.src || '').slice(0, 48)))
@@ -2478,12 +2497,56 @@ function judge(fp, d, runs, ctx = {}) {
     if (tz.unmeasured > 0) unmeasured.push('timezone')
     if (tz.mismatch > 0) problems.push('timezone')
     if (tz.halfGuard && tz.halfGuard.required && tz.halfGuard.ok === false) problems.push('timezone(half-guard)')
-    if (loc.power === false || loc.ok === null) unmeasured.push('locale')
-    else if (loc.ok === false) problems.push('locale')
+    /* locale 只在**非 en-\*** 轮上判。
+     *
+     * 宿主是 en-* 时，en-* profile 与宿主渲染出的都是英文日期 ——
+     * 「输出语言来自 profile」在那一轮无论注入有没有生效都成立。
+     * 它最多能区分 en-US 与 en-GB 的**格式**（1/1/1970 vs 01/01/1970），
+     * 区分不了**语言**。把这种轮次记成 unmeasured，AC-14 在默认配置下永远红；
+     * 记成 pass 就是假绿。所以：不参与判定，由专门的非 en 轮来判（见下面的
+     * `localeRef` 与 `pageOkAll`）。 */
+    const locLang = loc && typeof loc.cfg === 'string' ? loc.cfg : null
+    if (locLang !== null && !isEnLang(locLang)) {
+      if (loc.power === false || loc.ok === null) unmeasured.push('locale')
+      else if (loc.ok === false) problems.push('locale')
+    }
     if (co.power === false || co.ok === null) unmeasured.push('cores')
     else if (co.ok === false) problems.push('cores')
     return { ok: problems.length === 0 && unmeasured.length === 0, problems, unmeasured }
   }
+  /* 哪一轮能判 locale：必须是**非 en-\*** 的 profile。
+   * 找不到就是「locale 没测到」—— 不是「通过」，也不是「不成立」。 */
+  const localeRoundIdx = evaluated.findIndex(
+    (r) => r.ref.locale && typeof r.ref.locale.cfg === 'string' && !isEnLang(r.ref.locale.cfg)
+  )
+  const localeRef = localeRoundIdx >= 0 ? evaluated[localeRoundIdx].ref.locale : null
+  const localeJudged = localeRef !== null && localeRef.power === true && localeRef.ok === true
+
+  /* 把「用哪一轮判的 locale」带出 `judge` —— payload 与退出码都要读它。
+   * 这里**不猜**：找不到非 en 轮就如实写 null 和原因，不退回 primary。 */
+  localeRoundReport = {
+    note: ctx.localeRoundNote || '',
+    hostDateString: ctx.hostDateStr === undefined ? null : ctx.hostDateStr,
+    hostLang: (() => {
+      try {
+        return new Intl.DateTimeFormat().resolvedOptions().locale
+      } catch (e) {
+        return null
+      }
+    })(),
+    usedProfileLabel: localeRef === null ? null : evaluated[localeRoundIdx].label,
+    usedProfileLang: localeRef === null ? null : localeRef.cfg,
+    judged: localeJudged,
+    why:
+      localeRef === null
+        ? '没有任何一轮的 profile 语言是非 en-* —— 「输出语言来自 profile」在 en-* 上只能验到格式，验不到语言'
+        : localeJudged
+          ? ''
+          : localeRef.power === false
+            ? '非 en 轮的 locale 子判据无鉴别力（宿主渲染与 profile 语言相同）'
+            : '非 en 轮的 locale 子判据不成立：' + String(localeRef.why || '')
+  }
+
   const okAll = evaluated.every(
     (r) =>
       !r.fatal &&
@@ -2534,13 +2597,20 @@ function judge(fp, d, runs, ctx = {}) {
   const workerDisabled = workerFlag === 'false'
   // 页面侧：只看「主世界 vs profile 配置」那三条参考值 + 跨 OS。
   // 20 项主世界/Worker 对比属于 Worker 侧，不参与这里。
-  const pageOkAll = crossOsOk && evaluated.every((r) => refVerdict(r).ok === true)
+  const pageOkAll =
+    crossOsOk && localeJudged && evaluated.every((r) => refVerdict(r).ok === true)
   const pageSide = pageOkAll ? 'PASS' : 'FAIL'
   const workerSide = workerDisabled ? '未测量（停用）' : okAll ? 'PASS' : 'FAIL'
 
   let ac14Pass = null
   let ac14Unmeasured = false
-  if (!pageOkAll) {
+  /* 「没有一轮非 en-* 的 profile」是**前提条件不成立**，不是「测了不成立」。
+   * 判成 FAIL 会让人去查实现，而真正该做的是补一轮非 en 的 profile。 */
+  const localeUnmeasured = localeRef === null
+  if (localeUnmeasured) {
+    ac14Pass = null
+    ac14Unmeasured = true
+  } else if (!pageOkAll) {
     // 页面侧就不成立 —— 这是真失败，与 Worker 开关无关，必须红
     ac14Pass = false
   } else if (workerDisabled) {
@@ -2561,6 +2631,15 @@ function judge(fp, d, runs, ctx = {}) {
     )
   }
   if (ctx.localeRoundNote) workerNote.push('locale 轮次：' + ctx.localeRoundNote)
+  if (localeRef === null) {
+    workerNote.push(
+      '【locale 没测到】本次没有任何一轮的 profile 语言是**非 en-***。' +
+        '宿主语言 ' + JSON.stringify(localeRoundReport ? localeRoundReport.hostLang : null) + '，' +
+        '各轮 profile 语言 ' + JSON.stringify(evaluated.map((r) => (r.ref.locale ? r.ref.locale.cfg : null))) + '。' +
+        'en-* profile 只能验到「日期格式来自 profile」，验不到「语言来自 profile」—— ' +
+        '所以 locale 子判据记「没测到」，AC-14 记未测量（exit 3），不是通过。'
+    )
+  }
   if (primary.fatal) {
     workerNote.push('Worker 探针本身失败，这条判红而不是「只记录」。先修探针再谈注入：' + primary.fatal)
   } else if (!crossOsOk) {
@@ -2730,7 +2809,21 @@ function judge(fp, d, runs, ctx = {}) {
               points: primary.ref.timezone.points
             }
           : null,
-        locale: primary.ref.locale,
+        /* 用 `localeRef`（非 en-* 那一轮）而不是 `primary.ref.locale`。
+         *
+         * 这条改动是「AC-14 在非 en-US profile 上复跑」的落地：报告的读数里
+         * `refChecks.locale.cfg` 从此不以 `en` 开头 —— 看到它就知道这一条
+         * 真的有语言级鉴别力，而不是又一次 en-US vs en-GD 的格式差。 */
+        locale: localeRef,
+        localeRound:
+          localeRef === null
+            ? null
+            : {
+                label: evaluated[localeRoundIdx].label,
+                platform: evaluated[localeRoundIdx].platform,
+                cfg: localeRef.cfg,
+                judged: localeJudged
+              },
         cores: primary.ref.cores
       },
       diag: primary.diag,
@@ -3001,13 +3094,22 @@ try {
       : p && p.fingerprint && p.fingerprint.locale
         ? p.fingerprint.locale
         : null
+  /* 能不能判 locale —— 两个条件，缺一不可：
+   *   1. 语言必须**非 en-\***：en-* profile 在 en-* 宿主上，「输出语言来自 profile」
+   *      这句话无论注入有没有生效都成立（两边都是英文）。它最多能区分
+   *      en-US 与 en-GB 的**日期格式**，区分不了**语言**。
+   *   2. 渲染结果还必须与宿主默认不同，否则连格式都没有鉴别力。
+   *
+   * 这一条原来只有条件 2，于是在 en-GD 宿主上 en-US profile 也算「有鉴别力」——
+   * 报告的 `refChecks.locale.cfg` 一直是 `en-US`，看起来测了，实际只测到格式。 */
   const hasLocalePower = (p) => {
     const lang = langOfProfile(p)
     if (!lang || hostDateStr === null) return false
+    if (isEnLang(lang)) return false
     const s = dateStrOf(lang)
     return s !== null && s !== hostDateStr
   }
-  let localeRoundNote = '现有轮次里已有 profile 语言与宿主默认渲染不同 —— 复用，不额外启动'
+  let localeRoundNote = '现有轮次里已有**非 en-*** 的 profile 语言，且渲染与宿主默认不同 —— 复用，不额外启动'
   // `SS_FORCE_LOCALE_ROUND=1`：强制走「另建非 en-US profile」那条分支。
   // 为什么留这个开关：在 en-US 宿主上这条分支是常态，在中文/en-GD 宿主上它默认不走 ——
   // 于是「创建专用 profile」这段代码在大多数机器上一次都不会被执行到。
@@ -3016,7 +3118,11 @@ try {
   if (FORCE_LOCALE_ROUND || !picked.some(hasLocalePower)) {
     // 候选语言里挑第一个「渲染结果与宿主默认不同」的。全部用拉丁数字的语言：
     // ar-EG 这类会把数字本地化成阿拉伯-印度数字，与宿主 ICU 的差异会被误读成注入问题。
-    const LOCALE_CANDIDATES = ['de-DE', 'ja-JP', 'ru-RU', 'fr-FR', 'zh-CN', 'pt-BR', 'ko-KR', 'en-GB']
+    /* 候选里**不能有 en-\***：那正是要排除的那一类。
+     * ja-JP 放第一位：汉字日期（1970/1/1）与任何拉丁语系的日期串都不相交，
+     * 是「语言级鉴别力」最稳的一种，也不会像 ar-EG 那样把数字本地化成
+     * 阿拉伯-印度数字（那种差异会被误读成注入问题）。 */
+    const LOCALE_CANDIDATES = ['ja-JP', 'de-DE', 'ru-RU', 'fr-FR', 'zh-CN', 'pt-BR', 'ko-KR']
     const cand = LOCALE_CANDIDATES.find((c) => {
       const s = dateStrOf(c)
       return s !== null && s !== hostDateStr
@@ -3032,12 +3138,12 @@ try {
         picked.push(created)
         localeRoundNote = FORCE_LOCALE_ROUND
           ? '（SS_FORCE_LOCALE_ROUND=1 强制）已另建 ' + cand + ' 专用 profile，用来验证「创建非 en-US 轮」这条分支本身能跑通'
-          : '现有轮次全都没有 locale 鉴别力（宿主与 profile 语言渲染相同），已另建 ' + cand + ' 专用 profile'
+          : '现有轮次里没有能判 locale 的（要么是 en-*，要么渲染与宿主相同），已另建 ' + cand + ' 专用 profile'
       } else {
-        localeRoundNote = '需要一轮非 en-US 才能验 locale，但创建 profile 失败 —— locale 子判据将记「没测到」'
+        localeRoundNote = '需要一轮非 en-* 才能验 locale，但创建 profile 失败 —— locale 子判据记「没测到」，整轮按未测量退出'
       }
     } else {
-      localeRoundNote = '需要一轮非 en-US 才能验 locale，但找不到与宿主渲染不同的候选语言 —— locale 子判据将记「没测到」'
+      localeRoundNote = '需要一轮非 en-* 才能验 locale，但找不到与宿主渲染不同的候选语言 —— locale 子判据记「没测到」，整轮按未测量退出'
     }
   }
   // nightly 需要两个不同平台，上面已经保证平台不同；不足两个时保持原逻辑
@@ -3182,7 +3288,7 @@ try {
       languages: r.profile.fingerprint ? r.profile.fingerprint.languages : null,
       timezone: r.profile.fingerprint ? r.profile.fingerprint.timezone : null
     })),
-    localeRound: { note: localeRoundNote, hostDateString: hostDateStr },
+    localeRound: localeRoundReport || { note: localeRoundNote, hostDateString: hostDateStr },
     results,
     raw: runs.map((r) => ({ label: r.profile.name, platform: r.profile.platform, data: r.data }))
   }
@@ -3215,7 +3321,26 @@ try {
   // 实测遇到过一次：进程正常退出、表格正常打印、汇总行是「门禁 0/0 通过」——
   // 在 CI 里这一行和「17/17 通过」长得一样，都只有「通过」两个字。
   // 零条检查等于什么都没验，必须比失败更响：它是「不知道」而不是「没问题」。
-  exitCode = judged.length === 0 ? 3 : failed.length > 0 ? 1 : 0
+  /* 前置条件不成立 → 未测量（3），不是通过。
+   *
+   * 「locale 只有 en-* 轮可判」这件事不是某条 AC 的实现问题，而是**这一轮
+   * 读数不足以支撑结论**。判 0 等于说「都验过了」，判 1 会让人去查注入实现；
+   * 两者都错。所以单列一档：读数写出来了，但有一项该有的前提没满足。
+   *
+   * 优先级：真失败（1）压过未测量（3）—— 已经确定坏掉的东西不能被
+   * 「还有一项没测」盖过去。 */
+  const preconditionUnmet = []
+  if (localeRoundReport !== null && localeRoundReport.judged !== true) {
+    preconditionUnmet.push(
+      'locale 轮次：' + String(localeRoundReport.why || '没有可判 locale 的非 en-* 轮次')
+    )
+  }
+  exitCode =
+    failed.length > 0 ? 1 : judged.length === 0 || preconditionUnmet.length > 0 ? 3 : 0
+  if (preconditionUnmet.length > 0 && exitCode === 3) {
+    console.error('\n读数已产出，但前置条件不成立 —— 本次记「未测量」（exit 3），不是通过：')
+    for (const p of preconditionUnmet) console.error('  · ' + p)
+  }
   if (judged.length === 0) {
     console.error('\n没有执行到任何门禁检查（judged=0）。这不是通过 —— 是没验。')
     console.error('常见原因：Electron 启动后页面未就绪、探针页 evaluate 抛错、out/ 与 src/ 不匹配。')
@@ -3355,7 +3480,12 @@ if (payload) {
   if (lastGroup) console.log('└─'.padEnd(104, '─'))
   console.log('─'.repeat(112))
   const gated = payload.results.filter((r) => r.gate && !r.skipped)
-  const failed = gated.filter((r) => r.pass !== true)
+  /* 三态必须分开数。原来只按 `pass !== true` 判失败，于是「没测到」（pass=null）
+   * 被印成「失败：AC-14」—— 而这两件事的修法完全不同：一个去查注入实现，
+   * 一个去补一轮非 en-* 的 profile。混在一起说，读的人一定修错方向。 */
+  const unmeasured = gated.filter((r) => r.unmeasured === true)
+  const failed = gated.filter((r) => r.unmeasured !== true && r.pass !== true)
+  const passed = gated.filter((r) => r.unmeasured !== true && r.pass === true)
   /* 零读数**绝不能**渲染成「通过」。
    * 早先的写法是「门禁 0/0 通过」—— 在 CI 日志里和「19/19 通过」长得一样，
    * 都只有「通过」两个字。零条检查不是「没问题」，是「不知道」，必须单独一种措辞。 */
@@ -3364,20 +3494,23 @@ if (payload) {
       ? '未测量 —— 没有任何检查被执行（0 条），这不是通过，是「不知道」。' +
         '常见原因：Electron 未就绪 / 探针抛错 / out 与 src 不匹配'
       : '门禁 ' +
-        (gated.length - failed.length) +
+        passed.length +
         '/' +
         gated.length +
         ' 通过' +
-        (failed.length ? '，失败：' + failed.map((r) => r.id).join(', ') : '')
+        (failed.length ? '，失败：' + failed.map((r) => r.id).join(', ') : '') +
+        (unmeasured.length ? '，未测量：' + unmeasured.map((r) => r.id).join(', ') : '')
   console.log(headline + '    读数已写入 artifacts/anticheat-' + sha + '.json')
   // 分组汇总：一条组里有几条红，看一行就知道
   const groupNames = [...new Set(payload.results.filter((r) => r.group).map((r) => r.group))]
   for (const g of groupNames) {
     const rows = payload.results.filter((r) => r.group === g && r.gate && !r.skipped)
-    const bad = rows.filter((r) => r.pass !== true)
+    const um = rows.filter((r) => r.unmeasured === true)
+    const bad = rows.filter((r) => r.unmeasured !== true && r.pass !== true)
     console.log(
-      '  组「' + g + '」：' + (rows.length - bad.length) + '/' + rows.length + ' 通过' +
-        (bad.length ? '（' + bad.map((r) => r.id).join(', ') + '）' : '')
+      '  组「' + g + '」：' + (rows.length - bad.length - um.length) + '/' + rows.length + ' 通过' +
+        (bad.length ? '，失败：' + bad.map((r) => r.id).join(', ') : '') +
+        (um.length ? '，未测量：' + um.map((r) => r.id).join(', ') : '')
     )
   }
   if (payload.localeRound && payload.localeRound.note) console.log('  locale 轮次：' + payload.localeRound.note)
