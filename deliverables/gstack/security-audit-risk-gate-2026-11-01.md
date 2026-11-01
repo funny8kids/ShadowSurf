@@ -1,8 +1,8 @@
 # 风险闸门与指纹覆盖 —— 残余项清零交付（第五轮）
 
 **日期**：2026-11-01
-**HEAD**：`435b0cd`（工作区 **0 个未提交改动**，`build.dirty = false`，`outSha1 = 36c5177fd6b0`）
-　　（本报告自身是随后的一次 docs-only 提交，不改任何源码；所有读数仍归属 `435b0cd`，
+**HEAD**：`c8d81fb`（工作区 **0 个未提交改动**，`build.dirty = false`，`outSha1` 见 artifacts/anticheat-c8d81fb.json）
+　　（本报告自身是随后的一次 docs-only 提交，不改任何源码；所有读数归属 `c8d81fb`，
 　　　并用 `outSha1` 钉住当时那一份构建产物 —— 只认 commit 不认产物的读数会被「重新构建」骗过去。）
 **参与**：安全官 · 质量门神 ×3 · 排障手 ×3 · 产品评审员 · 设计顾问
 **本轮目标**：把 `remediation-plan-2026-11-01.md` 的 3 条 🟠 + 5 条 🟡 **全部**落地 —— 包括计划里标了「建议不修」的 `#22 4.4`，和两条标了「必须先测」的 B 档项。
@@ -28,12 +28,13 @@
 
 | 项目 | 内容 |
 |------|------|
-| Go / No-Go | 🟢 **Go**（残余项 8/8 已处置；剩余的是**边界**不是欠账，见 §8） |
+| Go / No-Go | 🟢 **内部一致性 Go** · 🟡 **对外可判定性未达标**（见 §10） |
 | 处置结果 | 修复 6 · 按读数改判 2 |
-| 实测读数 | typecheck 双绿 · **176 tests / 175 pass / 0 fail / 1 skip** · seed-at-rest exit 0（反向 7/7）· seed-ipc 成立 · mask-ui 成立 · mask-exemption **8/8** · injection **25/25** · worker exit 0 · shared-worker **5/5** · anticheat **21/21** |
+| 实测读数 | typecheck 双绿 · **176 tests / 175 pass / 0 fail / 1 skip** · seed-at-rest exit 0（反向 7/7）· seed-ipc 成立 · mask-ui 成立 · mask-exemption **8/8** · injection **25/25** · worker exit 0 · shared-worker **5/5** · **uach 7/7** · anticheat **21/21** |
 | 唯一 skip | 「注入脚本不得改写 `Function.prototype.toString`」—— **已知代价，不是欠账**，§3 有矩阵支撑 |
-| 读数归属 | `435b0cd`，工作区干净，`build.dirty=false` |
-| 提交数 | 11（`2d19963` → `435b0cd`） |
+| 读数归属 | `c8d81fb`，工作区干净，`build.dirty=false` |
+| 提交数 | 12（`2d19963` → `c8d81fb`） |
+| **外部视角** | creepjs：两个环境各 **11 条 lies**；字体通道泄宿主；UA-CH 泄漏**已修**（§10） |
 
 ---
 
@@ -243,10 +244,11 @@ npm run verify:mask-exemption 8/8 成立
 npm run verify:injection      25/25 成立
 npm run verify:worker         exit 0（GL 4/4 对上配置，崩溃 0，[inject-issue] 0）
 npm run verify:shared-worker  5/5 成立
+npm run verify:uach           7/7 成立（四种上下文 × platform/platformVersion）
 npm run verify:anticheat      21/21 通过（AC-14 三轮 0 mismatch，crossOs=true，AC-23 measured=true）
 ```
 
-`verify:all` 现在是 10 段：`typecheck → build → test:gate → seed-at-rest → seed-ipc → mask-ui → mask-exemption → injection → worker → shared-worker → anticheat`。
+`verify:all` 现在是 11 段：`typecheck → build → test:gate → seed-at-rest → seed-ipc → mask-ui → mask-exemption → injection → worker → shared-worker → uach → anticheat`。
 
 **唯一 skip**：`Function.prototype.toString`（§3，已知代价）。
 **AC-12**（两个环境必须互不相同）标 `skip`，需要 `--nightly`（两次启动）—— 它在 `verify:anticheat:nightly` 里跑，不在 `verify:all` 里。这是**明确的门禁分工**，不是漏测。
@@ -330,3 +332,95 @@ assert.match(drawer, /bridge\(\)\.injection\.list\(\)/, '抽屉没调 injection.
 - 三条 🟠 里，**两条修完了**（seed、service/shared worker），**一条被读数否掉了**（WebRTC 在 worker 里不存在，改成一条会自己变红的断言）。
 - 五条 🟡 全部处置：四条修复，一条（4.4）按计划做成**环境级配置**而不是失败弹窗里的按钮。
 - 本轮真正的收获不是那 8 条，而是**两个旧缺陷**：一个零读者的台账，和一个用开发模式跑单测的门禁段。**它们都在报告里看起来是绿的。**
+
+---
+
+## 10. 第三方交叉验证（补记，同日）
+
+上面 9 节全部是**自建探针**的读数。它们能证明「我们改的地方确实改了」，
+证明不了「改得像不像」。`tools/audit-creepjs.mjs` 早就在仓库里，但
+`artifacts/` 里**一次产物都没有** —— 也就是说，这一轮之前，**从来没有对过外部视角**。
+
+补跑之后（宿主 Windows，两个环境各跑一遍 creepjs），得到三件事：
+
+### 10.1 一条实证的矛盾：UA-CH 在 shared / service worker 露宿主 —— 已修
+
+creepjs 的 Worker 段对一个 **macOS** 环境读到 `Windows 11 [19.0.0]`，
+而同一页主世界读到 `macOS 15.0.0`。AC-14 声称 20 项全等、0 mismatch，
+两者不可能同时为真。
+
+差别在**采了什么**：AC-14 的 worker 探针只采 `userAgentData.brands` / `.platform`；
+creepjs 读 `getHighEntropyValues(['platformVersion'])`，且读在**顶层**。
+
+`tools/verify-uach.mjs`（新，7 条 gate）把两个维度摊开。修复前：
+
+```
+主世界           platform=macOS   [15.0.0]
+dedicated 事件期  platform=macOS   [15.0.0]   ← 会话级副作用，不是注入的功劳
+shared    事件期  platform=Windows [19.0.0]   ← 宿主真值
+swc       事件期  platform=Windows [19.0.0]   ← 宿主真值
+```
+
+**根因**：`navigator.userAgentData` 不是 JS 注入的那一段，它由 CDP 的
+`Network.setUserAgentOverride` 下发，而 CDP override 是**按 target** 生效的。
+页面那次调用覆盖了页面与它派生的 dedicated worker，shared / sw 是独立 target，拿不到。
+
+**修法**：`applyWorkerScript` 里对每个 worker session 补发一次
+`Network.setUserAgentOverride`，用同一个 `uaMetadata`。**不新增 JS 面** ——
+JS 层伪造 `userAgentData` 会在实例上留 own property，那是更便宜的 tell。
+
+修复后 7/7 成立；连 shared / swc 的**顶层**也变成 macOS（CDP override 是 target 级的），
+而 cores/tz 的顶层仍覆盖不到（JS 注入，结构性边界没变）。
+回归：`verify:shared-worker` 5/5（resume→注入完成 3ms，没挤掉竞态）。
+
+**这条的意义不在修了什么，在于「20 项全等」这个结论是怎么来的**：
+其中 `uaData` 这一项之所以绿，靠的是 CDP 的会话级副作用，
+**不是** worker 注入生效 —— 它管不到 shared / sw。
+
+### 10.2 字体：两条测量通道给出两个答案 —— **未修**
+
+```
+字体                  Canvas2D    OffscreenCanvas
+  Microsoft YaHei UI  false       true      ← 宿主 Windows 的字体，macOS 环境里量得出来
+  Segoe UI Emoji      false       true
+  Cambria Math        false       true
+  Ink Free            false       true
+  Helvetica Neue      false       false     ← 真 macOS 一定有，这里量不出来
+```
+
+- **`OffscreenCanvasRenderingContext2D.prototype.measureText` 没有 hook** ——
+  只挂了 `CanvasRenderingContext2D` 的。用 OffscreenCanvas 量一次字体，
+  就拿到宿主的字体表。creepjs 的 `platform hints: Arial,"Microsoft YaHei UI"`
+  就是这么读出来的（两个环境都报同一串 = 读的是宿主）。
+- **字体白名单只做减法不做加法** —— macOS 环境里 `Helvetica Neue` 量不出来。
+  这是架构问题（不能凭空造字体文件），不是漏了个 hook。
+
+复跑：`npm run probe:fonts`。**没有升成 gate**：读数目前是红的，
+一条注定红的断言只会变成背景噪音。修好之后再升。
+
+### 10.3 两个环境的 `FP ID` 完全相同 —— 待查，不下结论
+
+```
+Windows 11  FP ID: d448d98c02e5e50f52e91eeb6f972764af4e93919c59be55a4672c64b3ab2154
+macOS 15    FP ID: d448d98c02e5e50f52e91eeb6f972764af4e93919c59be55a4672c64b3ab2154
+```
+
+各分项 hash 全部不同（Timezone / Intl / WebGL / Canvas / Audio / Fonts 都不一样），
+唯独 FP ID 相同。**这个组合本身需要一个解释**，而现在有两个可能：
+
+1. creepjs 把 FP ID 存在 origin 的 localStorage 里，两个环境共用了同一个 storage
+   partition —— 那就是**环境隔离失效**，比指纹问题严重得多；
+2. FP ID 由某个两边都相同的子集算出 —— 那是个信息量问题，不是隔离问题。
+
+在拿到「两个环境的 `localStorage` 是不是同一个」这个读数之前，不下结论。
+
+### 10.4 因此，本报告的结论要分两层读
+
+| 层面 | 结论 | 依据 |
+|---|---|---|
+| **内部一致性** | 🟢 Go | 11 段门禁全绿，21 项 AC，四条上下文 × 两个时刻都有读数 |
+| **对外可判定性** | 🟡 **未达标** | creepjs 对两个环境各判 **11 条 lies**；字体通道泄宿主；§10.3 未解释 |
+
+自建探针结构性看不到「跨维度矛盾」—— 它只比「我采的那几项」。
+creepjs 比的是「这些值放在一起合不合理」。**这两件事只有后者决定能不能过检测。**
+

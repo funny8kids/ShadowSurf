@@ -40,7 +40,8 @@
     "probe:tostring": "node tools/run-electron.mjs tools/probe-tostring.mjs",
     "probe:shared-worker": "node tools/run-electron.mjs tools/probe-shared-worker.mjs",
     "verify:uach": "node tools/verify-uach.mjs",
-    "preverify:uach": "electron-vite build"
+    "preverify:uach": "electron-vite build",
+    "probe:fonts": "node tools/probe-font-channels.mjs"
   },
   "dependencies": {
     "react": "^19.3.1",
