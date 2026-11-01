@@ -277,6 +277,25 @@ try {
   const hasSharedNote = issueLines.some((l) => l.includes('shared_worker'))
   const hasSwcNote = issueLines.some((l) => l.includes('service_worker'))
 
+  /* 同一条台账还要能**经 IPC 读到**。
+   * 只查 stderr 是不够的：日志是给终端看的，界面拿到的是 `injection.list()`。
+   * 这两条路若有一条断着，「记录下来了」就只是半句话 —— 上一轮那个
+   * 「listInjectionIssues 零读者」的缺陷正是这么来的。 */
+  let viaIpc = []
+  try {
+    viaIpc = await main.evaluate(async () => await window.ss.injection.list())
+  } catch (err) {
+    out.notes.push('injection.list() 调用失败：' + String((err && err.message) || err))
+  }
+  const ipcRows = Array.isArray(viaIpc) ? viaIpc : []
+  out.issuesViaIpc = {
+    count: ipcRows.length,
+    targets: [...new Set(ipcRows.map((r) => String(r.target)))],
+    profileIds: [...new Set(ipcRows.map((r) => String(r.profileId)))]
+  }
+  const ipcHasShared = ipcRows.some((r) => r.target === 'shared_worker')
+  const ipcHasSwc = ipcRows.some((r) => r.target === 'service_worker')
+
   const gate = (id, label, expected, actual, pass, note) => {
     out.gates.push({ id, label, expected, actual, pass, note })
   }
@@ -321,6 +340,19 @@ try {
     hasSharedNote && hasSwcNote
       ? ''
       : '注入过程没有记账 —— 「顶层未覆盖」会变成一句没人能核对的话'
+  )
+
+  /* 台账必须**经 IPC 读得到**：日志是给终端看的，界面拿的是 `injection.list()`。
+     上一轮那个「listInjectionIssues 零读者」的缺陷就是只有前者没有后者。 */
+  gate(
+    'ledger-ipc',
+    '同一条台账必须能经 IPC 读到（injection.list）',
+    'shared_worker 与 service_worker 两条都能读到',
+    out.issuesViaIpc,
+    ipcHasShared && ipcHasSwc,
+    ipcHasShared && ipcHasSwc
+      ? ''
+      : 'stderr 里有记录但 IPC 读不到 —— 界面永远看不到这条事实（这正是「零读者」那个缺陷）'
   )
 
   /* ── 打印 ── */

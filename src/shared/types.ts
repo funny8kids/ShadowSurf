@@ -155,6 +155,29 @@ export interface MaskRow {
   reason: string
 }
 
+/**
+ * 一条「某个执行环境没能伪装」的事实。
+ *
+ * 与 `MaskRow` 的分工：那个是「此刻的状态」（会被后来的测量覆盖），
+ * 这个是「过程中发生过什么」（追加、不覆盖）。两者不能合并 ——
+ * 合并之后「现在好了」会把「刚才坏过」抹掉，而「刚才坏过」正是要追的那条线。
+ *
+ * 记录的是**主进程侧的外部测量**，不是页面自报。页面可以删掉自己的诊断全局，
+ * 删不掉这条。
+ */
+export interface InjectionIssue {
+  /** webContents.id，用于把事实绑回具体标签页 */
+  webContentsId: number
+  profileId: string
+  /** 出问题的目标类型：worker / shared_worker / service_worker / iframe / page */
+  target: string
+  /** CDP session id；page 级失败为空串 */
+  sessionId: string
+  /** 人类可读的原因，含 CDP 返回的原始错误文本 */
+  reason: string
+  at: number
+}
+
 export interface Profile {
   /** prf_ 前缀 + 12 位 base32 */
   id: string

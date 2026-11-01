@@ -15,6 +15,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type {
   BrowserTab,
+  InjectionIssue,
   MaskFailure,
   MaskSource,
   MaskState,
@@ -210,19 +211,11 @@ interface WindowManagerOptions {
  * 存在的理由：Worker 注入失败时页面侧不降级（页面仍是伪装值、Worker 是宿主值），
  * 这个组合本身就是可被检测的矛盾。如果只 console.warn，上层拿不到，
  * 最终表现就是「AC-14 红但没人知道为什么」。
+ *
+ * 类型本体在 `shared/types.ts` —— 渲染层要显示它，而两份字符串联合迟早会不一致。
+ * 这里只 re-export，让既有 import 路径不变。
  */
-export interface InjectionIssue {
-  /** webContents.id，用于把事实绑回具体标签页 */
-  webContentsId: number
-  profileId: string
-  /** 出问题的目标类型：worker / service_worker / iframe / page */
-  target: string
-  /** CDP session id；page 级失败为空串 */
-  sessionId: string
-  /** 人类可读的原因，含 CDP 返回的原始错误文本 */
-  reason: string
-  at: number
-}
+export type { InjectionIssue }
 
 /** 渲染层还没上报真实布局前的兜底值，避免第一帧网页盖住标签栏 */
 const DEFAULT_INSETS: ContentInsets = { top: 92, bottom: 0, left: 0, right: 0, panelWidth: 0 }
@@ -1309,9 +1302,11 @@ export class WindowManager {
    * → `maskRowOf()`（同一张 `judgeMask` 表）→ 渲染层 `shared/mask-ui.ts` 选颜色。
    * 也就是说界面拿到的 `allow/kind/reason` 是门禁算的，界面自己不算。
    *
-   * `listInjectionIssues()` 与 `opts.onInjectionIssue` 仍然**零调用方**：
-   * 它们记录的是「注入过程中报过什么」，与「此刻状态如何」不是一回事。
-   * 要用就先接读者，别在注释里假装已经接了。
+   * `listInjectionIssues()` 的读者是环境抽屉里的诊断区（`CH.injection.list`
+   * → `FingerprintDrawer` 的「本次会话的注入问题」）。它记录的是「注入过程中
+   * 报过什么」，与「此刻状态如何」不是一回事 —— 所以是两条通道，不是一条。
+   * `opts.onInjectionIssue` 仍然零订阅者：没有「需要实时推送」的调用方，
+   * 那就别假装有。要接的时候先接读者。
    */
   listMaskStates(webContentsId?: number): MaskStateRecord[] {
     return webContentsId === undefined

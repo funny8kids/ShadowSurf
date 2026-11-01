@@ -7,7 +7,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react'
-import type { FingerprintConfig, Profile } from '@shared/types'
+import type { FingerprintConfig, InjectionIssue, Profile } from '@shared/types'
 import { OS_TEMPLATES, PROFILE_COLORS, TIMEZONE_GEO } from '@shared/presets'
 import { Button, Field, Icon, Toggle, cssVars, useToast } from './ui'
 import { bridge, errorMessage } from '@renderer/lib/api'
@@ -74,6 +74,31 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
   const [pendingExempt, setPendingExempt] = useState(false)
   const [exemptName, setExemptName] = useState('')
   const [exemptBusy, setExemptBusy] = useState(false)
+
+  /* 本次会话的注入失败台账。
+   *
+   * 为什么在这里：这些记录以前**没有任何读者**（`listInjectionIssues` 零调用方），
+   * 而它们记的正是「哪个子目标没伪装住」—— 环境卡片上的状态点只说明「此刻怎么样」，
+   * 说不出「刚才是什么没装上」。抽屉是看单个环境的地方，放在这里不打扰主界面。
+   *
+   * 拉取失败就当作空：这条通道是诊断用的，读不到不该让整个抽屉打不开。 */
+  const [issues, setIssues] = useState<InjectionIssue[]>([])
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      try {
+        const all = await bridge().injection.list()
+        if (!alive) return
+        const mine = Array.isArray(all) ? all.filter((i) => i.profileId === profile?.id) : []
+        setIssues(mine)
+      } catch {
+        if (alive) setIssues([])
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [profile?.id])
 
   useEffect(() => {
     setDraft(profile ? cloneProfile(profile) : null)
@@ -988,6 +1013,34 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                   ClientRects 噪声会让元素边界产生亚像素级抖动，抵御基于布局测量的指纹；
                   代价是极少数依赖精确坐标的站点可能出现 1px 偏移。
                 </div>
+              </div>
+
+              <div className="fieldset">
+                <div className="fs-head">
+                  <h4>本次会话的注入问题</h4>
+                </div>
+                {issues.length === 0 ? (
+                  <div className="note">
+                    没有记录。这只说明本次会话没有报过问题 —— 伪装是否完整看卡片上的状态点，
+                    两者不是一回事。
+                  </div>
+                ) : (
+                  <>
+                    {issues
+                      .slice(-5)
+                      .reverse()
+                      .map((it, i) => (
+                        <Field key={String(it.at) + '-' + String(i)} label={it.target}>
+                          <div className="val">{it.reason.slice(0, 140)}</div>
+                        </Field>
+                      ))}
+                    <div className="note">
+                      共 {issues.length} 条，上面是最近 5 条。这些是**过程中报过的**事实，
+                      不会被后来的成功覆盖；重启应用后清空。
+                      {issues.length > 5 ? ' 更早的记录未显示。' : ''}
+                    </div>
+                  </>
+                )}
               </div>
 
               <div className="fieldset">

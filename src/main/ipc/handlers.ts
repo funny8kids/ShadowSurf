@@ -231,6 +231,15 @@ export function registerHandlers(ctx: HandlerContext): void {
    */
   handle(CH.mask.list, () => ctx.wm.listMaskStates().map(maskRowOf))
 
+  /**
+   * 注入失败台账。
+   *
+   * 直接把 `InjectionIssue` 原样返回，不裁剪：它的 `reason` 已经是人写的一句话
+   * （带上 CDP 的原始错误），不是页面内容；而 `webContentsId` / `sessionId`
+   * 对排查是必要信息。渲染层显示时自己截断 —— 那里才知道一行能放多少字。
+   */
+  handle(CH.injection.list, () => ctx.wm.listInjectionIssues())
+
   /* ── 窗口 ── */
 
   handle(CH.window.open, async (_e, profileId) => {

@@ -33,6 +33,7 @@ import type {
   HistoryItem,
   LocalApiState,
   MaskRow,
+  InjectionIssue,
   StoreHealth
 } from './types'
 import type { AgentEvent, RunRequest, PageSnapshot } from './protocol'
@@ -123,6 +124,16 @@ export const CH = {
   audit: {
     list: 'ss:audit:list',
     verify: 'ss:audit:verify'
+  },
+  injection: {
+    /**
+     * 本次会话里「某个执行环境没能伪装」的事实清单（最多 200 条，主进程内存）。
+     *
+     * 与 `mask.list` 的分工：那个是**此刻的状态**（会被后来的测量覆盖），
+     * 这个是**过程中发生过什么**（追加、不覆盖）。
+     * 两者不能合并 —— 合并之后「现在好了」会把「刚才坏过」抹掉。
+     */
+    list: 'ss:injection:list'
   },
   mask: {
     /**
@@ -404,6 +415,17 @@ export interface MaskAPI {
   onState(cb: (rows: MaskRow[]) => void): () => void
 }
 
+export interface InjectionAPI {
+  /**
+   * 本次会话的注入失败台账（最多 200 条，主进程内存，重启即清空）。
+   *
+   * 与 `mask.list()` 分开两条通道的理由：一个是「此刻状态」，一个是「发生过什么」。
+   * 前者的读者是卡片上的状态点，后者的读者是环境抽屉里的诊断区 ——
+   * 把两者塞进同一个返回值，界面就必须自己分辨哪些是当前状态、哪些是历史事件。
+   */
+  list(): Promise<InjectionIssue[]>
+}
+
 export interface DataAPI {
   cookies(profileId: string): Promise<CookieItem[]>
   clearCookies(profileId: string): Promise<number>
@@ -444,6 +466,7 @@ export interface ShadowSurfAPI {
   audit: AuditAPI
   selfcheck: SelfCheckAPI
   mask: MaskAPI
+  injection: InjectionAPI
   data: DataAPI
   localApi: LocalApiAPI
 }

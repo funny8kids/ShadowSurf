@@ -173,6 +173,12 @@ const api: ShadowSurfAPI = {
     onState: (cb) => subscribe(CH.push.maskState, cb)
   },
 
+  // 注入失败台账：读者是环境抽屉里的诊断区。与 mask 分开两条通道，
+  // 因为一个是「此刻状态」、一个是「发生过什么」。
+  injection: {
+    list: () => invoke(CH.injection.list)
+  },
+
   data: {
     cookies: (profileId) => invoke(CH.data.cookies, profileId),
     clearCookies: (profileId) => invoke(CH.data.clearCookies, profileId),

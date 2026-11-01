@@ -847,6 +847,25 @@ test('mask.list 必须有渲染层调用方', () => {
 })
 
 /**
+ * 同一条规矩再钉一次，对象是注入台账。
+ *
+ * `listInjectionIssues()` 曾经是**零调用方**：主进程把「shared_worker 顶层没覆盖」
+ * 这类事实攒在内存里，stderr 也打了，但没有任何界面能读到 —— 于是报告里那句
+ * 「已记录」只有终端看得见，用户和排障的人都看不见。
+ *
+ * 钉住的是「有读者」，不是「有这个通道」：光有 `CH.injection.list` 而没有
+ * `bridge().injection.list()` 的调用，等于又造了一个零读者。
+ */
+test('injection.list 必须有渲染层调用方', () => {
+  const drawer = stripComments(read('src/renderer/components/FingerprintDrawer.tsx'))
+  assert.match(
+    drawer,
+    /bridge\(\)\.injection\.list\(\)/,
+    '抽屉没调 injection.list()：注入失败台账又变回零读者，「已记录」只在终端成立'
+  )
+})
+
+/**
  * 环境级豁免（`allowUnmaskedL2`）的三处接线，缺一处就有一条路是哑的：
  *   1. 界面标注 —— 计划要求「界面必须显式标注该环境已豁免」，没有标注的豁免
  *      等于悄悄关掉了一道安全闸；
