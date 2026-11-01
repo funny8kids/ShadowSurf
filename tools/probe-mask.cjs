@@ -370,7 +370,7 @@ app.whenReady().then(async () => {
 
     // 原生 arity 基线 —— 必须在注入前拍，之后再也拿不到
     const tableLit = extractMaskTable(src)
-    const beforeArity = tableLit ? await evaluate(wc, arityExpr(tableLit)) : []
+    const beforeArity = tableLit ? await evaluate(wc, arityExpr(tableLit)) : {}
 
     await wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: src })
     // 重新加载同一个页面，让新文档注入生效
@@ -393,10 +393,15 @@ app.whenReady().then(async () => {
       if (misses.length > 0) failures.push('mask-inventory')
 
       const afterArity = await evaluate(wc, arityExpr(tableLit))
+      /* 按键对齐：快照里没有的键（patch 前不存在的属性，例如 defNewVal 造的
+         share / canShare）收口里也没有可比对象，跳过；快照里有、收口里没了
+         说明属性被删掉，同样算漂移。 */
       const drift = []
-      for (let i = 0; i < beforeArity.length; i++) {
-        if (beforeArity[i] !== afterArity[i]) {
-          drift.push(`${beforeArity[i]} → ${afterArity[i]}`)
+      for (const key of Object.keys(beforeArity || {})) {
+        if (!(key in (afterArity || {}))) {
+          drift.push(`${key}:${beforeArity[key]} → 属性消失`)
+        } else if (beforeArity[key] !== afterArity[key]) {
+          drift.push(`${key}:${beforeArity[key]} → ${afterArity[key]}`)
         }
       }
       rows.push({ id: 'arity-preserved', expect: [], actual: drift, pass: drift.length === 0 })
@@ -452,16 +457,23 @@ function extractMaskTable(src) {
 }
 
 /**
- * 在页面里把 _MASK_TABLE 求值，输出「行号:属性名:length」的扁平列表。
+ * 在页面里把 _MASK_TABLE 求值，输出 {「行号:属性名」: length} 的映射。
  *
  * 用「patch 前的长度」做基线，patch 后对比 —— 这是唯一能证明
  * 包装函数没有把原生 arity 改掉的证据。收口时读 d.value.length 是假修：
  * 那一刻 d.value 已经是包装本身了。
+ *
+ * **必须按键对齐，不能按位置对齐。** 早先版本输出扁平数组、比对时按 index 比 ——
+ * 那在「表里有一项在 patch 前并不存在」时必然假红：快照阶段该项被跳过（描述符
+ * 取不到），收口阶段它已经存在于是被记进来，两份列表从此错位，后面每一条都比到
+ * 了别人的值。Web Share 的 share / canShare 正是这种项（由 defNewVal 创建），
+ * 一加进去就让这条门禁吐出 35 条假漂移。键对齐后：快照里没有的键，收口里也没有
+ * 可比对象，正确地跳过；而**快照里有、收口里没了**要算漂移（属性被删掉了）。
  */
 function arityExpr(lit) {
   return `(function () {
     var T = ${lit};
-    var out = [];
+    var out = {};
     for (var i = 0; i < T.length; i++) {
       var obj = T[i][0], names = T[i][1];
       if (!obj) { continue; }
@@ -469,7 +481,7 @@ function arityExpr(lit) {
         var d = null;
         try { d = Object.getOwnPropertyDescriptor(obj, names[n]); } catch (e) {}
         if (!d || typeof d.value !== 'function') { continue; }
-        out.push(i + ':' + names[n] + ':' + d.value.length);
+        out[i + ':' + names[n]] = d.value.length;
       }
     }
     return out;

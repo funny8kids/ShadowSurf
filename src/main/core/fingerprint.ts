@@ -916,6 +916,19 @@ function buildPageScript(fp: FingerprintConfig, seed: string): string {
   L.push('      } catch (e) { _failed.push({ p: p, why: String((e && e.message) || e) }); }')
   L.push('    }')
   L.push('    function defVal(o, p, v) { defGet(o, p, function () { return v; }); }')
+  /* defGet 的前提是「原生没有就不创建」，理由见上面那段：属性存在性比属性值更硬。
+     但有一类例外必须破例 —— **真 Chrome 有、Electron 没实现**的 API。
+     那种情况下「不存在」本身就是 tell，补回来才是对齐。
+     破例的代价是判断必须来自实测（同版本真 Chrome 的差集），不能凭印象：
+     凭印象补错一个 API，等于凭空造一个真浏览器没有的属性，比漏掉更糟。
+     这个函数因此只创建、绝不覆盖：原生已有就原样返回 false。 */
+  L.push('    function defNewVal(o, p, v) {')
+  L.push('      try {')
+  L.push('        if (Object.getOwnPropertyDescriptor(o, p)) { return false; }')
+  L.push('        Object.defineProperty(o, p, { value: v, writable: true, enumerable: true, configurable: true });')
+  L.push('        return true;')
+  L.push('      } catch (e) { _failed.push({ p: p, why: String((e && e.message) || e) }); return false; }')
+  L.push('    }')
 
   /* 伪装台账必须声明在**最前面**。
      早期版本把它放在脚本末尾的统一收口处，导致 geolocation / 音频 / WebRTC 实例方法
@@ -974,7 +987,7 @@ function buildPageScript(fp: FingerprintConfig, seed: string): string {
   L.push('      [Navigator.prototype, ["userAgent", "appVersion", "platform", "vendor",')
   L.push('        "hardwareConcurrency", "deviceMemory", "language", "languages", "webdriver",')
   L.push('        "pdfViewerEnabled", "plugins", "mimeTypes", "maxTouchPoints", "gpu",')
-  L.push('        "requestMediaKeySystemAccess"]],')
+  L.push('        "requestMediaKeySystemAccess", "share", "canShare"]],')
   L.push('      [Screen.prototype, ["width", "height", "availWidth", "availHeight", "colorDepth", "pixelDepth"]],')
   L.push('      [window, ["devicePixelRatio"]],')
   L.push('      [Date.prototype, ["getTimezoneOffset", "toTimeString", "toDateString", "toString",')
@@ -1021,6 +1034,126 @@ function buildPageScript(fp: FingerprintConfig, seed: string): string {
   L.push("      defGet(NP, 'languages', function () { return C.languages.slice(); });")
   L.push("      defVal(NP, 'webdriver', false);")
   L.push("      defVal(NP, 'pdfViewerEnabled', true);")
+  L.push('    } catch (e) {}')
+
+  /* ── Web Share：全脚本唯一一处「凭空创建属性」 ──
+   *
+   * 真 Chrome 156 桌面版有 `navigator.share` / `navigator.canShare`；Electron 45
+   * 没实现，于是 `'share' in navigator` 在真 Chrome 是 true、在我们这里是 false。
+   * 属性**存在性**比属性值更硬 —— 值可以解释成用户设置，不存在没法解释。
+   *
+   * 判据全部来自实测，不是印象（tools/probe-api-shape.mjs，基准是同版本真 Chrome
+   * 156.0.8078.x，与 Electron 内置的 156.0.8078.75 同主版本）：
+   *   Navigator.prototype 属性集合：补之前 真 Chrome 84 项 / 我们 82 项
+   *   差集恰好 { share, canShare }，我们**没有**多出任何一项
+   *   补之后 84 对 84，缺 0 多 0（这个比对每次都要重跑，不能只看「补上了」）
+   * 同一份探针还确认了三件事 —— 它们**不能补**，补了就是造新 tell：
+   *   navigator.contacts        Windows 桌面 Chrome 里本来就没有（Android 专属）
+   *   navigator.contentIndex    同上（Android / ChromeOS 专属）
+   *   connection.downlinkMax    早已从规范移除，Chrome 里不存在
+   *
+   * 行为按 tools/verify-share.mjs 的 47 条读数逐条对齐。三条容易写错的：
+   *   1. canShare 的 WebIDL 转换错误是**同步抛**，share 的是 **rejected promise**
+   *      （同一个错误在两边语义不同，不能共用一条 throw）
+   *   2. share() 无参 → TypeError；share(undefined) → NotAllowedError。
+   *      区别就在 arity，所以必须读 `arguments.length`，不能读 `data === undefined`
+   *   3. 激活检查在 url 校验**之前** —— 实测 share({url:'javascript:'}) 给的是
+   *      NotAllowedError 而不是 TypeError
+   *
+   * ── 平台：只测了 Windows，另两个平台是**未测量** ──
+   *
+   * 本机只有 Windows，所以 `navigator.share` 的存在性只在 Windows 上实测过。
+   * macOS / Linux 没有基准可比。这里选择**三个平台统一创建**，理由不是「应该都有」，
+   * 而是：Electron 缺这两个 API 是**构建级**的遗漏（Blink 的 NavigatorShare 在
+   * Electron 里没编进来），不是平台级的差异；用平台级的分支去补一个构建级的洞，
+   * 等于把一个没测过的平台信念写进代码，还写成了「事实」的样子。
+   * 代价说清楚：如果真 macOS / Linux Chrome 恰好没有 Web Share，那我们在这两个
+   * 平台上就是「多造了属性」—— 比漏掉更糟。这个风险**已知、未消除**，
+   * 消除它需要在 macOS / Linux 上各跑一次 tools/verify-share.mjs。
+   */
+  L.push('')
+  L.push('    var _isFile = function (v) {')
+  L.push("      try { return Object.prototype.toString.call(v) === '[object File]'; } catch (e) { return false; }")
+  L.push('    };')
+  /* WebIDL 字典转换。返回 { err } 表示转换失败（调用方决定 throw 还是 reject），
+     返回 has* 标志位表示成员是否**存在** —— 注意是存在性，不是「值非空」：
+     实测 {title:''} 是 true、{} 是 false、{files:[]} 是 false。 */
+  L.push('    var _sdConv = function (fnName, data, hasArg) {')
+  L.push("      var pre = \"Failed to execute '\" + fnName + \"' on 'Navigator': \";")
+  L.push('      if (!hasArg) { return { absent: true }; }')
+  L.push('      if (data === null || data === undefined) { return { empty: true }; }')
+  L.push("      var t = typeof data;")
+  L.push("      if (t !== 'object' && t !== 'function') {")
+  L.push("        return { err: pre + \"The provided value is not of type 'ShareData'.\" };")
+  L.push('      }')
+  L.push("      var r = { hasTitle: ('title' in data), hasText: ('text' in data), hasUrl: ('url' in data), hasFiles: false, files: null, url: data.url };")
+  L.push("      if ('files' in data) {")
+  L.push('        r.hasFiles = true;')
+  L.push('        var fv = data.files;')
+  L.push("        var it = (fv === null || fv === undefined) ? null : fv[Symbol.iterator];")
+  L.push("        if (typeof it !== 'function') {")
+  L.push("          return { err: pre + \"Failed to read the 'files' property from 'ShareData': The object must have a callable @@iterator property.\" };")
+  L.push('        }')
+  L.push('        var arr = [];')
+  L.push('        try {')
+  L.push('          for (var s = it.call(fv), n = s.next(); !n.done; n = s.next()) { arr.push(n.value); }')
+  L.push('        } catch (e) {')
+  L.push("          return { err: pre + \"Failed to read the 'files' property from 'ShareData': The object must have a callable @@iterator property.\" };")
+  L.push('        }')
+  L.push('        for (var fi = 0; fi < arr.length; fi++) {')
+  L.push('          if (!_isFile(arr[fi])) {')
+  L.push("            return { err: pre + \"Failed to read the 'files' property from 'ShareData': Failed to convert value to 'File'.\" };")
+  L.push('          }')
+  L.push('        }')
+  L.push('        r.files = arr;')
+  L.push('      }')
+  L.push('      return r;')
+  L.push('    };')
+  /* canShare：同步返回布尔。
+     判据顺序按实测反推 —— files 非空时**不按类型过滤**（{files:[未知类型]} 仍是 true），
+     且 files 非空时 url 根本不参与判断（{title, files:[txt]} → true）。 */
+  L.push('    var _canShare = function () {')
+  L.push('      var data = arguments[0];')
+  L.push("      var c = _sdConv('canShare', data, arguments.length > 0);")
+  L.push('      if (c.err) { throw new TypeError(c.err); }')
+  L.push('      var files = (c.hasFiles && c.files) ? c.files : null;')
+  L.push('      if (!c.hasTitle && !c.hasText && !c.hasUrl && (!files || files.length === 0)) { return false; }')
+  L.push('      if (files && files.length > 0) { return true; }')
+  L.push('      if (c.hasUrl) {')
+  /* url 只认 http/https —— 实测 data: / file: / ftp: / mailto: / tel: / about: /
+     javascript: 全 false，而 '' 和 '//example.com/x' 解析成 http(s) 后为 true。
+     所以判据是「解析后协议」而不是「字符串长什么样」。 */
+  L.push('        var u = null;')
+  L.push("        try { u = new URL(String(c.url), document.baseURI); } catch (e) { return false; }")
+  L.push("        if (u.protocol !== 'http:' && u.protocol !== 'https:') { return false; }")
+  L.push('      }')
+  L.push('      return true;')
+  L.push('    };')
+  /* share：返回 promise。
+     转换错误在 share 里是 rejected 而不是同步抛（实测 4 条，与 canShare 相反）。 */
+  L.push('    var _share = function () {')
+  L.push('      var data = arguments[0];')
+  L.push('      var hasArg = arguments.length > 0;')
+  L.push("      var c = _sdConv('share', data, hasArg);")
+  L.push('      if (c.err) { return Promise.reject(new TypeError(c.err)); }')
+  L.push('      if (!hasArg) {')
+  L.push("        return Promise.reject(new TypeError(\"Failed to execute 'share' on 'Navigator': No known share data fields supplied. If using only new fields (other than title, text and url), you must feature-detect them first.\"));")
+  L.push('      }')
+  /* 激活检查在 url 校验之前：实测 share({url:'javascript:'}) → NotAllowedError */
+  L.push('      var act = false;')
+  L.push('      try { act = !!(navigator.userActivation && navigator.userActivation.isActive); } catch (e) {}')
+  L.push('      if (!act) {')
+  L.push("        return Promise.reject(new DOMException(\"Failed to execute 'share' on 'Navigator': Must be handling a user gesture to perform a share request.\", 'NotAllowedError'));")
+  L.push('      }')
+  /* 有用户激活的分支**未测量** —— 没法在没有真人操作的情况下让真 Chrome 弹出面板，
+     所以拿不到它的返回值。这里选最保守的形态：按「用户关掉了分享面板」返回
+     AbortError，这也是 Chrome 在那种情况下的结果。**不是**假装成功：
+     我们确实没有系统分享面板，resolve 会让页面以为分享完成了。 */
+  L.push("      return Promise.reject(new DOMException('Share canceled', 'AbortError'));")
+  L.push('    };')
+  L.push('    try {')
+  L.push("      defNewVal(Navigator.prototype, 'share', _share);")
+  L.push("      defNewVal(Navigator.prototype, 'canShare', _canShare);")
   L.push('    } catch (e) {}')
 
   /* screen */
