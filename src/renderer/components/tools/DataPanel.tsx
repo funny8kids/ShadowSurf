@@ -9,10 +9,19 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CookieItem, DownloadItem, DownloadState, HistoryItem, Profile } from '@shared/types'
-import { Button, Icon, Modal, cx, useToast } from '@renderer/components/ui'
+import type {
+  CookieItem,
+  DownloadItem,
+  DownloadState,
+  HistoryItem,
+  Profile,
+  WarmupReport
+} from '@shared/types'
+import { Button, Field, Icon, Modal, cx, useToast } from '@renderer/components/ui'
 import { bridge, errorMessage, hasBridge } from '@renderer/lib/api'
+import type { CookieExportFormat, CookieImportSummary } from '@shared/ipc'
 import { formatBytes, formatDate, formatRelative, profileNo } from '@renderer/lib/format'
+import { useI18n } from '@renderer/lib/i18n'
 import './data.css'
 
 export interface PanelProps {
@@ -21,32 +30,146 @@ export interface PanelProps {
 
 type Tab = 'cookies' | 'downloads' | 'history'
 
+type Translate = (key: string, vars?: Record<string, string | number>) => string
+
 const TAB_LABEL: Record<Tab, string> = {
-  cookies: 'Cookie',
-  downloads: '下载',
-  history: '历史'
+  cookies: 'data.tab.cookies',
+  downloads: 'data.tab.downloads',
+  history: 'data.tab.history'
 }
 
-const DOWNLOAD_STATE: Record<DownloadState, { label: string; tone: string }> = {
-  progressing: { label: '下载中', tone: 'run' },
-  completed: { label: '已完成', tone: 'ok' },
-  cancelled: { label: '已取消', tone: 'idle' },
-  interrupted: { label: '已中断', tone: 'bad' }
+const DOWNLOAD_STATE: Record<DownloadState, { labelKey: string; tone: string }> = {
+  progressing: { labelKey: 'data.download.state.progressing', tone: 'run' },
+  completed: { labelKey: 'data.download.state.completed', tone: 'ok' },
+  cancelled: { labelKey: 'data.download.state.cancelled', tone: 'idle' },
+  interrupted: { labelKey: 'data.download.state.interrupted', tone: 'bad' }
+}
+
+/**
+ * 列表首批渲染多少条 / 每次「加载更多」加多少条。
+ *
+ * 为什么不分页会卡：Cookie 没有上限、历史 2000 条、活动 2000 条，每行又是
+ * 5~10 个 DOM 节点（域名、路径、明文值、Secure/HttpOnly 徽标、过期时间…）。
+ * 几千行一次铺开就是上万个节点，React 的 diff、浏览器的布局与样式重算、
+ * 滚动重绘会一起变慢 —— 打开面板那一下尤其明显。
+ *
+ * 注意这里**只控制渲染量**：数据仍然一次取全（IPC 不变），
+ * 只是先把前 100 行画出来，剩下的等用户点「加载更多」。
+ */
+const PAGE_SIZE = 100
+const PAGE_STEP = 200
+
+/**
+ * 每个标签页各自的读取状态。
+ *
+ * DESIGN.md #1「不可判读状态」：空 / 错 / 加载必须三态可分。
+ * 旧实现里三个列表读失败都只发一个会消失的 toast，然后保持 []，
+ * 于是「读不到」和「确实没有」画成同一张空状态——用户会以为这个环境真的没数据。
+ * 这里按 Tab 分别记状态，三个视图互不串扰（后台预取下载不会把 Cookie 页改成「读取中」）。
+ */
+type TabReadState =
+  | { kind: 'idle' }
+  | { kind: 'loading' }
+  | { kind: 'error'; message: string }
+  | { kind: 'ready' }
+
+const INITIAL_READ_STATE: Record<Tab, TabReadState> = {
+  cookies: { kind: 'idle' },
+  downloads: { kind: 'idle' },
+  history: { kind: 'idle' }
+}
+
+/**
+ * 去掉 Electron 套在 IPC 失败外的通道名前缀。
+ *
+ * 原始消息长这样：`Error invoking remote method 'ss:data:cookies': Error: EACCES: ...`
+ * 前半截是通道名，用户不需要知道，而且会把真正的原因挤到屏幕外。
+ * DESIGN.md 要求读失败必须「带错误原因原文」，所以这里只剥壳、不改写原因本身。
+ */
+function cleanIpcMessage(raw: string): string {
+  const m = /Error invoking remote method '[^']*':\s*(?:Error:\s*)?([\s\S]*)$/.exec(raw)
+  return (m?.[1] ?? raw).trim()
+}
+
+/**
+ * 「一条都没解析出来」的判定。
+ *
+ * 全坏输入（或整份无法解析）时 `imported` 与 `failed` 都是 0，但 `errors` 非空。
+ * 这时如果只看 `failed > 0`，文案会落到「全部成功」那一支，显示绿色的
+ * 「已导入 0 条，全部成功」—— 与事实相反。所以这一支必须单独判、且不能用 ok 色。
+ */
+function importNoCookies(s: CookieImportSummary): boolean {
+  return s.imported === 0 && s.failed === 0 && s.errors.length > 0
+}
+
+/** 导入结果的三分支文案（弹层内联展示用） */
+function importSummaryText(s: CookieImportSummary, t: Translate): string {
+  if (importNoCookies(s)) return t('data.import.summary.noCookies', { n: s.errors.length })
+  if (s.failed > 0) {
+    return t('data.import.summary.failed', { imported: s.imported, failed: s.failed })
+  }
+  return t('data.import.summary.ok', { n: s.imported })
 }
 
 export function DataPanel({ profiles }: PanelProps) {
   const toast = useToast()
+  const { t } = useI18n()
 
   const [tab, setTab] = useState<Tab>('cookies')
   const [profileId, setProfileId] = useState('')
   const [cookies, setCookies] = useState<CookieItem[]>([])
   const [downloads, setDownloads] = useState<DownloadItem[]>([])
   const [history, setHistory] = useState<HistoryItem[]>([])
-  /** 正在读取的是哪个视图；用它而不是布尔值，避免后台预取下载时把 Cookie 页显示成「读取中」 */
+  /** 正在读取的是哪个视图；旧字段，保留给可能依赖它的代码，渲染一律改看 readState */
   const [loading, setLoading] = useState<Tab | null>(null)
+  /** 每个标签页独立的读取状态：空 / 错 / 加载三态分列，读失败走内联琥珀而不是 toast */
+  const [readState, setReadState] = useState<Record<Tab, TabReadState>>(INITIAL_READ_STATE)
   /** 展开明文的 Cookie，键是 domain+path+name —— 同名不同 path 的 Cookie 必须能区分 */
   const [revealed, setRevealed] = useState<Record<string, boolean>>({})
   const [confirming, setConfirming] = useState<Tab | null>(null)
+  /** 导入弹窗：text 是用户粘贴的原文，summary 是上一次导入的结果（含失败明细） */
+  const [importOpen, setImportOpen] = useState(false)
+  const [importText, setImportText] = useState('')
+  const [importSummary, setImportSummary] = useState<CookieImportSummary | null>(null)
+  const [importing, setImporting] = useState(false)
+  /**
+   * Cookie 预热弹窗。
+   *
+   * `text` 是用户粘贴的 URL 列表，`report` 是上一次运行结果。刻意把 report 留在
+   * 弹窗里而不是只发 toast：失败明细（非法协议、加载超时、被截断的条数）是
+   * 用户下一次修改输入的依据，toast 会消失，弹窗不会。
+   */
+  const [warmupOpen, setWarmupOpen] = useState(false)
+  const [warmupText, setWarmupText] = useState('')
+  const [warmupReport, setWarmupReport] = useState<WarmupReport | null>(null)
+  const [warmupRunning, setWarmupRunning] = useState(false)
+  /**
+   * 同步的运行锁。
+   *
+   * `warmupRunning` 是状态，要等下一次渲染才生效；两下极快的点击可能在同一次
+   * 提交前都读到 false，于是发出两个 run。预热本身要求串行，这里用 ref 在
+   * 事件处理里立刻占住，第二次点击直接返回。
+   */
+  const warmupBusy = useRef(false)
+
+  /**
+   * 每个列表当前渲染多少条（见 PAGE_SIZE 的注释）。
+   * 按 Tab 分开记：Cookie 翻到第 500 行再切到历史，不该把 Cookie 的进度也清掉。
+   */
+  const [visibleCount, setVisibleCount] = useState<Record<Tab, number>>({
+    cookies: PAGE_SIZE,
+    downloads: PAGE_SIZE,
+    history: PAGE_SIZE
+  })
+
+  const showMore = useCallback((which: Tab): void => {
+    setVisibleCount((prev) => ({ ...prev, [which]: prev[which] + PAGE_STEP }))
+  }, [])
+
+  /** 换环境 / 重新读取后列表内容变了，已展开的条数没有意义，回到首批 */
+  const resetVisible = useCallback((which: Tab): void => {
+    setVisibleCount((prev) => (prev[which] === PAGE_SIZE ? prev : { ...prev, [which]: PAGE_SIZE }))
+  }, [])
 
   // 切换环境时请求会乱序返回，用序号把过期响应丢掉，否则会看到上一个环境的 Cookie
   const cookieSeq = useRef(0)
@@ -63,7 +186,10 @@ export function DataPanel({ profiles }: PanelProps) {
 
   useEffect(() => {
     setRevealed({})
-  }, [profileId])
+    // 换环境 = 换了一整份列表，之前展开的行数不该带过去
+    resetVisible('cookies')
+    resetVisible('history')
+  }, [profileId, resetVisible])
 
   /* ── 读取 ── */
 
@@ -72,19 +198,33 @@ export function DataPanel({ profiles }: PanelProps) {
       const seq = ++cookieSeq.current
       if (!id || !hasBridge()) {
         setCookies([])
+        setReadState((prev) => ({ ...prev, cookies: { kind: 'ready' } }))
         return
       }
       setLoading('cookies')
+      setReadState((prev) => ({ ...prev, cookies: { kind: 'loading' } }))
       try {
         const list = await bridge().data.cookies(id)
-        if (seq === cookieSeq.current) setCookies(list)
+        if (seq === cookieSeq.current) {
+          setCookies(list)
+          // 数据换了一批，展开条数回到首批（否则上一次点过 5 次「加载更多」后，
+          // 新环境一进来就先铺 1100 行）
+          resetVisible('cookies')
+          setReadState((prev) => ({ ...prev, cookies: { kind: 'ready' } }))
+        }
       } catch (err) {
-        if (seq === cookieSeq.current) toast.push(errorMessage(err), 'err')
+        // 读失败 ≠ 没有 Cookie：写带原因的 error，内联展示并给重试，不再发会消失的 toast。
+        if (seq === cookieSeq.current) {
+          setReadState((prev) => ({
+            ...prev,
+            cookies: { kind: 'error', message: cleanIpcMessage(errorMessage(err)) }
+          }))
+        }
       } finally {
         if (seq === cookieSeq.current) setLoading(null)
       }
     },
-    [toast]
+    [resetVisible]
   )
 
   const loadHistory = useCallback(
@@ -92,35 +232,56 @@ export function DataPanel({ profiles }: PanelProps) {
       const seq = ++historySeq.current
       if (!id || !hasBridge()) {
         setHistory([])
+        setReadState((prev) => ({ ...prev, history: { kind: 'ready' } }))
         return
       }
       setLoading('history')
+      setReadState((prev) => ({ ...prev, history: { kind: 'loading' } }))
       try {
         const list = await bridge().data.history(id)
-        if (seq === historySeq.current) setHistory(list)
+        if (seq === historySeq.current) {
+          setHistory(list)
+          resetVisible('history')
+          setReadState((prev) => ({ ...prev, history: { kind: 'ready' } }))
+        }
       } catch (err) {
-        if (seq === historySeq.current) toast.push(errorMessage(err), 'err')
+        // 读失败 ≠ 没有历史：写带原因的 error，内联展示并给重试。
+        if (seq === historySeq.current) {
+          setReadState((prev) => ({
+            ...prev,
+            history: { kind: 'error', message: cleanIpcMessage(errorMessage(err)) }
+          }))
+        }
       } finally {
         if (seq === historySeq.current) setLoading(null)
       }
     },
-    [toast]
+    [resetVisible]
   )
 
   const loadDownloads = useCallback(async (): Promise<void> => {
     if (!hasBridge()) {
       setDownloads([])
+      setReadState((prev) => ({ ...prev, downloads: { kind: 'ready' } }))
       return
     }
     setLoading('downloads')
+    setReadState((prev) => ({ ...prev, downloads: { kind: 'loading' } }))
     try {
       setDownloads(await bridge().data.downloads())
+      // 重新读到的整份列表与展开条数无关，回到首批
+      resetVisible('downloads')
+      setReadState((prev) => ({ ...prev, downloads: { kind: 'ready' } }))
     } catch (err) {
-      toast.push(errorMessage(err), 'err')
+      // 读失败 ≠ 没有下载：写带原因的 error，内联展示并给重试。
+      setReadState((prev) => ({
+        ...prev,
+        downloads: { kind: 'error', message: cleanIpcMessage(errorMessage(err)) }
+      }))
     } finally {
       setLoading(null)
     }
-  }, [toast])
+  }, [resetVisible])
 
   /* ── 切 tab / 切环境时拉数据 ── */
   useEffect(() => {
@@ -160,29 +321,146 @@ export function DataPanel({ profiles }: PanelProps) {
         const removed = await bridge().data.clearCookies(profileId)
         setCookies([])
         toast.push(
-          removed > 0 ? `已清空 ${removed} 条 Cookie` : '该环境没有可清理的 Cookie',
+          removed > 0
+            ? t('data.toast.clearedCookies', { n: removed })
+            : t('data.toast.noCookiesToClear'),
           removed > 0 ? 'ok' : 'info'
         )
       } else if (which === 'downloads') {
         await bridge().data.clearDownloads()
         setDownloads([])
-        toast.push('已清空下载记录', 'ok')
+        toast.push(t('data.toast.clearedDownloads'), 'ok')
       } else {
         await bridge().data.clearHistory(profileId)
         setHistory([])
-        toast.push('已清空该环境的历史记录', 'ok')
+        toast.push(t('data.toast.clearedHistory'), 'ok')
       }
     } catch (err) {
       toast.push(errorMessage(err), 'err')
     }
-  }, [confirming, profileId, toast])
-
-  /* ── 派生 ── */
+  }, [confirming, profileId, toast, t])
 
   const activeProfile = useMemo(
     () => profiles.find((p) => p.id === profileId) ?? null,
     [profiles, profileId]
   )
+
+  /* ── Cookie 导入 / 导出 ──
+   *
+   * 导出走浏览器 Blob + <a download>，不新增 IPC：主进程只负责吐出文件内容，
+   * 落到磁盘这一步交给浏览器自己的下载机制，省一条「选保存路径」的通道。
+   * 文件名带环境名与日期：同一天多次导出、多个环境之间都不会互相覆盖。
+   */
+  const doExportCookies = useCallback(
+    async (format: CookieExportFormat): Promise<void> => {
+      if (!profileId || !hasBridge()) return
+      try {
+        const content = await bridge().data.exportCookies(profileId, format)
+        const ext = format === 'json' ? 'json' : 'txt'
+        const mime = format === 'json' ? 'application/json' : 'text/plain;charset=utf-8'
+        const stamp = formatDate(Date.now()).replace(/[\\/:*?"<>|\s]/g, '-')
+        const name = (activeProfile?.name ?? profileNo(profileId)).replace(/[\\/:*?"<>|]/g, '-')
+        const url = URL.createObjectURL(new Blob([content], { type: mime }))
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `cookies-${name}-${stamp}.${ext}`
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        URL.revokeObjectURL(url)
+        toast.push(t('data.toast.exported', { format: format === 'json' ? 'JSON' : 'Netscape' }), 'ok')
+      } catch (err) {
+        toast.push(errorMessage(err), 'err')
+      }
+    },
+    [profileId, activeProfile, toast, t]
+  )
+
+  const openImport = useCallback((): void => {
+    setImportText('')
+    setImportSummary(null)
+    setImportOpen(true)
+  }, [])
+
+  const doImportCookies = useCallback(async (): Promise<void> => {
+    if (!profileId || !hasBridge()) return
+    setImporting(true)
+    try {
+      const result = await bridge().data.importCookies(profileId, importText)
+      setImportSummary(result)
+      // 失败绝不能只留在详情里：toast 也要说清有多少条没进去。
+      // 「一条都没进来」必须单独判：failed 为 0 但 errors 非空时（全坏/整份无法解析），
+      // 落到下面「全部成功」那支会变成 ok 色，等于给全失败盖了绿灯。
+      const noCookies = importNoCookies(result)
+      toast.push(
+        noCookies
+          ? t('data.toast.importNoCookies', { n: result.errors.length })
+          : result.failed > 0
+            ? t('data.toast.importFailed', {
+                imported: result.imported,
+                failed: result.failed
+              })
+            : t('data.toast.imported', { imported: result.imported }),
+        noCookies ? 'err' : result.failed > 0 ? 'info' : 'ok'
+      )
+      void loadCookies(profileId)
+    } catch (err) {
+      toast.push(errorMessage(err), 'err')
+    } finally {
+      setImporting(false)
+    }
+  }, [profileId, importText, loadCookies, toast, t])
+
+  /* ── Cookie 预热 ──
+   *
+   * 预热是主进程里的后台行为：它按顺序访问 URL、随机停留，把 Cookie / Storage
+   * 写进当前环境的分区。界面只做两件事 —— 收集 URL、把逐条失败原因留在弹窗里。
+   */
+  const openWarmup = useCallback((): void => {
+    setWarmupText('')
+    setWarmupReport(null)
+    setWarmupOpen(true)
+  }, [])
+
+  const doWarmup = useCallback(async (): Promise<void> => {
+    // 运行期间把环境 id 固定下来：这次预热从头到尾只属于开始时那个环境，
+    // 即使背后的选择器在别处被改了也不跟着漂。
+    const targetId = profileId
+    if (!targetId || !hasBridge() || warmupBusy.current) return
+
+    const urls = warmupText
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line !== '')
+
+    warmupBusy.current = true
+    setWarmupRunning(true)
+    setWarmupReport(null)
+    try {
+      const report = await bridge().warmup.run(targetId, urls)
+      setWarmupReport(report)
+      const allOk = report.okCount === report.total
+      toast.push(
+        t('data.warmup.done', { ok: report.okCount, total: report.total }),
+        allOk ? 'ok' : report.okCount === 0 ? 'err' : 'info'
+      )
+      // 预热的目的就是让 Cookie 出现；不重读的话用户看到的还是运行前的列表。
+      void loadCookies(targetId)
+    } catch (err) {
+      toast.push(errorMessage(err), 'err')
+    } finally {
+      warmupBusy.current = false
+      setWarmupRunning(false)
+    }
+  }, [profileId, warmupText, loadCookies, toast, t])
+
+  /** 失败明细：非法协议、加载失败、超时、被截断的条数都在 steps 里，统一列出 */
+  const warmupFailures = useMemo(
+    () => (warmupReport ? warmupReport.steps.filter((step) => !step.ok) : []),
+    [warmupReport]
+  )
+
+  /* ── 派生 ── */
 
   const counts: Record<Tab, number> = {
     cookies: cookies.length,
@@ -193,20 +471,36 @@ export function DataPanel({ profiles }: PanelProps) {
   const needProfile = tab !== 'downloads'
   const noProfile = needProfile && profiles.length === 0
   const currentEmpty = tab === 'cookies' ? cookies.length === 0 : tab === 'downloads' ? downloads.length === 0 : history.length === 0
+  const activeRead = readState[tab]
+
+  // 内联错误里的「重试」：只对当前标签页重新拉一次，不改其他页的状态。
+  function retryActive(): void {
+    if (tab === 'cookies') void loadCookies(profileId)
+    else if (tab === 'history') void loadHistory(profileId)
+    else void loadDownloads()
+  }
 
   const clearLabel =
-    tab === 'cookies' ? '清空该环境 Cookie' : tab === 'downloads' ? '清空下载记录' : '清空该环境历史'
+    tab === 'cookies'
+      ? t('data.clear.cookies')
+      : tab === 'downloads'
+        ? t('data.clear.downloads')
+        : t('data.clear.history')
 
   return (
     <div className="dp">
       <header className="dp-head">
         <div>
-          <h2>浏览数据</h2>
-          <p>Cookie 与历史按环境独立存放，下载记录为全局视图，清空只影响当前所选环境。</p>
+          <h2>{t('data.title')}</h2>
+          <p>{t('data.subtitle')}</p>
         </div>
         <div className="dp-head-side">
           <span className="dp-scope">
-            {tab === 'downloads' ? '全局' : activeProfile ? activeProfile.name : '未选择环境'}
+            {tab === 'downloads'
+              ? t('data.scope.global')
+              : activeProfile
+                ? activeProfile.name
+                : t('data.scope.noProfile')}
           </span>
           {tab === 'downloads' ? null : (
             <label className={cx('dp-select', profiles.length === 0 && 'off')}>
@@ -215,9 +509,9 @@ export function DataPanel({ profiles }: PanelProps) {
                 value={profileId}
                 disabled={profiles.length === 0}
                 onChange={(e) => setProfileId(e.target.value)}
-                aria-label="选择环境"
+                aria-label={t('data.selectProfile')}
               >
-                {profiles.length === 0 ? <option value="">暂无环境</option> : null}
+                {profiles.length === 0 ? <option value="">{t('data.noProfiles')}</option> : null}
                 {profiles.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name} · {profileNo(p.id)}
@@ -229,7 +523,7 @@ export function DataPanel({ profiles }: PanelProps) {
         </div>
       </header>
 
-      <div className="dp-tabs" role="tablist" aria-label="浏览数据类型">
+      <div className="dp-tabs" role="tablist" aria-label={t('data.tabsAria')}>
         {(Object.keys(TAB_LABEL) as Tab[]).map((key) => (
           <button
             key={key}
@@ -239,11 +533,55 @@ export function DataPanel({ profiles }: PanelProps) {
             className={cx('dp-tab', tab === key && 'on')}
             onClick={() => setTab(key)}
           >
-            {TAB_LABEL[key]}
+            {t(TAB_LABEL[key])}
             <span className="n">{counts[key]}</span>
           </button>
         ))}
         <span className="dp-tabs-spacer" />
+        {tab === 'cookies' ? (
+          <>
+            <Button
+              size="sm"
+              variant="ghost"
+              icon="download"
+              onClick={() => void doExportCookies('netscape')}
+              disabled={!profileId}
+              title={t('data.export.netscapeTitle')}
+            >
+              {t('data.export.netscape')}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              icon="download"
+              onClick={() => void doExportCookies('json')}
+              disabled={!profileId}
+              title={t('data.export.jsonTitle')}
+            >
+              {t('data.export.json')}
+            </Button>
+            <Button
+              size="sm"
+              variant="quiet"
+              icon="swap"
+              onClick={openImport}
+              disabled={!profileId}
+              title={t('data.import.openTitle')}
+            >
+              {t('data.import.open')}
+            </Button>
+            <Button
+              size="sm"
+              variant="quiet"
+              icon="spark"
+              onClick={openWarmup}
+              disabled={!profileId}
+              title={profileId ? t('data.warmup.button') : t('data.warmup.noProfile')}
+            >
+              {t('data.warmup.button')}
+            </Button>
+          </>
+        ) : null}
         <Button
           size="sm"
           variant="quiet"
@@ -255,7 +593,7 @@ export function DataPanel({ profiles }: PanelProps) {
           }}
           disabled={needProfile && !profileId}
         >
-          刷新
+          {t('common.refresh')}
         </Button>
         <Button
           size="sm"
@@ -268,45 +606,87 @@ export function DataPanel({ profiles }: PanelProps) {
         </Button>
       </div>
 
+      {tab === 'cookies' ? (
+        <p>
+          {t('data.note.cookies', {
+            name: activeProfile?.name ?? t('data.scope.noProfileShort')
+          })}
+        </p>
+      ) : null}
+
       <div className="dp-body scroll-thin">
         {noProfile ? (
           <EmptyState
             icon="grid"
-            title="还没有可用的环境"
-            desc="Cookie 与历史跟着环境走。先在环境页创建一个身份，再回来查看它留下的痕迹。"
+            title={t('data.empty.noProfile.title')}
+            desc={t('data.empty.noProfile.desc')}
           />
-        ) : loading === tab && currentEmpty ? (
-          <div className="dp-loading">正在读取{tab === 'downloads' ? '下载记录' : tab === 'cookies' ? ' Cookie' : '历史'}…</div>
+        ) : activeRead.kind === 'idle' || activeRead.kind === 'loading' ? (
+          <div className="dp-loading">
+            {t(
+              tab === 'downloads'
+                ? 'data.loading.downloads'
+                : tab === 'cookies'
+                  ? 'data.loading.cookies'
+                  : 'data.loading.history'
+            )}
+          </div>
+        ) : activeRead.kind === 'error' ? (
+          <div className="dp-err">
+            <b>
+              {t(
+                tab === 'downloads'
+                  ? 'data.error.downloads'
+                  : tab === 'cookies'
+                    ? 'data.error.cookies'
+                    : 'data.error.history'
+              )}
+            </b>
+            <p className="dp-err-reason">{activeRead.message}</p>
+            {/* DESIGN.md：读不到 ≠ 没有数据。现在既不能说有也不能说没有，所以停下别动、重试一次。 */}
+            <p className="dp-err-hint">
+              {t(
+                tab === 'downloads'
+                  ? 'data.errHint.downloads'
+                  : tab === 'cookies'
+                    ? 'data.errHint.cookies'
+                    : 'data.errHint.history'
+              )}
+            </p>
+            <Button size="sm" variant="ghost" icon="reload" onClick={retryActive}>
+              {t('common.retry')}
+            </Button>
+          </div>
         ) : currentEmpty ? (
           tab === 'cookies' ? (
             <EmptyState
               icon="shield"
-              title="这个环境还没有 Cookie"
-              desc="用该环境打开任意站点登录一次，Cookie 会写进它自己的存储分区，其他环境看不到。"
+              title={t('data.empty.cookies.title')}
+              desc={t('data.empty.cookies.desc')}
             />
           ) : tab === 'downloads' ? (
             <EmptyState
               icon="download"
-              title="还没有下载记录"
-              desc="在任意环境里下载文件，进度会实时出现在这里；记录只保留在本次运行期间。"
+              title={t('data.empty.downloads.title')}
+              desc={t('data.empty.downloads.desc')}
             />
           ) : (
             <EmptyState
               icon="list"
-              title="这个环境还没有历史记录"
-              desc="环境内的整页跳转会写进这里，站内单页路由（pushState）不计入。"
+              title={t('data.empty.history.title')}
+              desc={t('data.empty.history.desc')}
             />
           )
         ) : tab === 'cookies' ? (
           <div className="dp-table">
             <div className="dp-tr dp-th">
-              <span>域名</span>
-              <span>名称</span>
-              <span>值</span>
-              <span>属性</span>
-              <span>过期</span>
+              <span>{t('data.table.domain')}</span>
+              <span>{t('common.name')}</span>
+              <span>{t('data.table.value')}</span>
+              <span>{t('data.table.flags')}</span>
+              <span>{t('data.table.expires')}</span>
             </div>
-            {cookies.map((c) => {
+            {cookies.slice(0, visibleCount.cookies).map((c) => {
               const key = `${c.domain}${c.path}${c.name}`
               const shown = revealed[key] === true
               return (
@@ -321,28 +701,35 @@ export function DataPanel({ profiles }: PanelProps) {
                   <button
                     type="button"
                     className={cx('dp-val', shown && 'on')}
-                    title={shown ? '点击隐藏' : '点击显示明文'}
+                    title={shown ? t('data.reveal.hide') : t('data.reveal.show')}
                     onClick={() => setRevealed((prev) => ({ ...prev, [key]: !shown }))}
                   >
-                    <span className="dp-val-txt">{shown ? c.value || '(空)' : '••••••••'}</span>
+                    <span className="dp-val-txt">
+                      {shown ? c.value || t('data.value.empty') : '••••••••'}
+                    </span>
                     <Icon name={shown ? 'eyeOff' : 'eye'} size={11} />
                   </button>
                   <span className="dp-flags">
                     {c.secure ? <i className="dp-flag sec">Secure</i> : null}
                     {c.httpOnly ? <i className="dp-flag http">HttpOnly</i> : null}
-                    {c.session ? <i className="dp-flag sess">会话</i> : null}
+                    {c.session ? <i className="dp-flag sess">{t('data.flag.session')}</i> : null}
                     {!c.secure && !c.httpOnly && !c.session ? <i className="dp-flag none">—</i> : null}
                   </span>
                   <span className="dp-exp">
-                    {c.session || !c.expires ? '会话结束' : formatDate(c.expires)}
+                    {c.session || !c.expires ? t('data.sessionEnd') : formatDate(c.expires)}
                   </span>
                 </div>
               )
             })}
+            <LoadMore
+              shown={Math.min(visibleCount.cookies, cookies.length)}
+              total={cookies.length}
+              onMore={() => showMore('cookies')}
+            />
           </div>
         ) : tab === 'downloads' ? (
           <div className="dp-list">
-            {downloads.map((d) => {
+            {downloads.slice(0, visibleCount.downloads).map((d) => {
               const meta = DOWNLOAD_STATE[d.state] ?? DOWNLOAD_STATE.progressing
               const pct =
                 d.state === 'completed'
@@ -356,9 +743,9 @@ export function DataPanel({ profiles }: PanelProps) {
                   <div className="dp-dl-main">
                     <div className="dp-dl-r1">
                       <span className="dp-dl-name" title={d.savePath || d.filename}>
-                        {d.filename || '未命名文件'}
+                        {d.filename || t('data.download.unnamed')}
                       </span>
-                      <span className={cx('dp-state', meta.tone)}>{meta.label}</span>
+                      <span className={cx('dp-state', meta.tone)}>{t(meta.labelKey)}</span>
                       <span className="dp-dl-time">{formatRelative(d.startedAt)}</span>
                     </div>
                     <div className="dp-dl-url" title={d.url}>
@@ -380,10 +767,15 @@ export function DataPanel({ profiles }: PanelProps) {
                 </div>
               )
             })}
+            <LoadMore
+              shown={Math.min(visibleCount.downloads, downloads.length)}
+              total={downloads.length}
+              onMore={() => showMore('downloads')}
+            />
           </div>
         ) : (
           <div className="dp-list">
-            {history.map((h) => (
+            {history.slice(0, visibleCount.history).map((h) => (
               <div className="dp-hi" key={h.id}>
                 <span className="dp-hi-dot" />
                 <div className="dp-hi-main">
@@ -397,41 +789,178 @@ export function DataPanel({ profiles }: PanelProps) {
                 <span className="dp-hi-time">{formatRelative(h.at)}</span>
               </div>
             ))}
+            <LoadMore
+              shown={Math.min(visibleCount.history, history.length)}
+              total={history.length}
+              onMore={() => showMore('history')}
+            />
           </div>
         )}
       </div>
 
       <Modal
         open={confirming !== null}
-        title={confirming === 'cookies' ? '清空该环境的 Cookie' : confirming === 'downloads' ? '清空下载记录' : '清空该环境的历史记录'}
+        title={
+          confirming === 'cookies'
+            ? t('data.clearModal.cookies.title')
+            : confirming === 'downloads'
+              ? t('data.clearModal.downloads.title')
+              : t('data.clearModal.history.title')
+        }
         icon="trash"
         tone="danger"
         onClose={() => setConfirming(null)}
         note={
           confirming === 'cookies'
-            ? '清空后该环境的所有站点都会回到未登录状态，其他环境不受影响。'
+            ? t('data.clearModal.cookies.note')
             : confirming === 'downloads'
-              ? '只清空这份列表，正在进行中的下载不会被取消。'
-              : '只删除该环境的浏览记录，其他环境的历史保持原样。'
+              ? t('data.clearModal.downloads.note')
+              : t('data.clearModal.history.note')
         }
         footer={
           <>
             <Button variant="ghost" onClick={() => setConfirming(null)}>
-              取消
+              {t('common.cancel')}
             </Button>
             <Button variant="danger" icon="trash" onClick={() => void doClear()}>
-              确认清空
+              {t('data.clearModal.confirm')}
             </Button>
           </>
         }
       >
         <p>
           {confirming === 'downloads'
-            ? `将清空 ${downloads.length} 条下载记录。`
+            ? t('data.clearModal.downloads.body', { n: downloads.length })
             : confirming === 'cookies'
-              ? `将清空环境「${activeProfile?.name ?? '未选择'}」的 ${cookies.length} 条 Cookie。`
-              : `将删除环境「${activeProfile?.name ?? '未选择'}」的 ${history.length} 条历史记录。`}
+              ? t('data.clearModal.cookies.body', {
+                  name: activeProfile?.name ?? t('data.scope.noProfileShort'),
+                  n: cookies.length
+                })
+              : t('data.clearModal.history.body', {
+                  name: activeProfile?.name ?? t('data.scope.noProfileShort'),
+                  n: history.length
+                })}
         </p>
+      </Modal>
+
+      <Modal
+        open={importOpen}
+        title={t('data.import.title')}
+        icon="swap"
+        tone="accent"
+        align="left"
+        maxWidth={560}
+        onClose={() => setImportOpen(false)}
+        note={t('data.import.note')}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setImportOpen(false)}>
+              {t('common.cancel')}
+            </Button>
+            <Button
+              variant="primary"
+              icon="check"
+              disabled={importing || importText.trim() === ''}
+              onClick={() => void doImportCookies()}
+            >
+              {importing ? t('data.import.importing') : t('data.import.submit')}
+            </Button>
+          </>
+        }
+      >
+        <Field label={t('data.import.contentLabel')} hint={t('data.import.contentHint')}>
+          <textarea
+            rows={9}
+            value={importText}
+            onChange={(e) => setImportText(e.target.value)}
+            placeholder={'# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tFALSE\t...'}
+            spellCheck={false}
+          />
+        </Field>
+        {importSummary ? (
+          <p
+            style={importNoCookies(importSummary) ? { color: 'var(--amber)' } : undefined}
+          >
+            {importSummaryText(importSummary, t)}
+          </p>
+        ) : null}
+        {importSummary && importSummary.errors.length > 0 ? (
+          <details>
+            <summary>
+              {t('data.import.errors', { n: importSummary.errors.length })}
+            </summary>
+            <ul>
+              {importSummary.errors.map((err, i) => (
+                <li key={i}>{err}</li>
+              ))}
+            </ul>
+          </details>
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={warmupOpen}
+        title={t('data.warmup.title')}
+        icon="spark"
+        tone="accent"
+        align="left"
+        maxWidth={560}
+        onClose={() => {
+          // 运行中不关窗：预热没有取消通道，关掉只会让用户以为它停了，
+          // 而主进程仍在访问后面的页面。等这一批跑完再允许关闭。
+          if (!warmupRunning) setWarmupOpen(false)
+        }}
+        note={t('data.warmup.desc')}
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              onClick={() => setWarmupOpen(false)}
+              disabled={warmupRunning}
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button
+              variant="primary"
+              icon="spark"
+              disabled={warmupRunning || warmupText.trim() === '' || !profileId}
+              onClick={() => void doWarmup()}
+            >
+              {warmupRunning ? t('data.warmup.running') : t('data.warmup.run')}
+            </Button>
+          </>
+        }
+      >
+        <Field label={t('data.warmup.urls')}>
+          <textarea
+            rows={8}
+            value={warmupText}
+            onChange={(e) => {
+              setWarmupText(e.target.value)
+              // 输入一改，上一次的失败明细就过期了；留着会让人以为新列表也有这些错。
+              if (warmupReport !== null) setWarmupReport(null)
+            }}
+            placeholder={t('data.warmup.urlsPlaceholder')}
+            disabled={warmupRunning}
+            spellCheck={false}
+          />
+        </Field>
+        {warmupReport ? (
+          <p>{t('data.warmup.done', { ok: warmupReport.okCount, total: warmupReport.total })}</p>
+        ) : null}
+        {warmupFailures.length > 0 ? (
+          <details>
+            <summary>{t('data.warmup.failedDetail', { n: warmupFailures.length })}</summary>
+            <ul>
+              {warmupFailures.map((step, i) => (
+                <li key={i}>
+                  {step.url}
+                  {step.error ? ` — ${step.error}` : ''}
+                </li>
+              ))}
+            </ul>
+          </details>
+        ) : null}
       </Modal>
     </div>
   )
@@ -453,6 +982,33 @@ function EmptyState({
       </div>
       <h3>{title}</h3>
       <p>{desc}</p>
+    </div>
+  )
+}
+
+/**
+ * 「加载更多」。
+ *
+ * 分批渲染是纯展示层的事：数据已经全在内存里（IPC 一次取全），
+ * 这里只决定一次画多少行。放在列表末尾而不是顶部工具栏 ——
+ * 用户滚到底自然看到它，不用回头找。
+ */
+function LoadMore({
+  shown,
+  total,
+  onMore
+}: {
+  shown: number
+  total: number
+  onMore: () => void
+}) {
+  const { t } = useI18n()
+  if (shown >= total) return null
+  return (
+    <div style={{ display: 'flex', justifyContent: 'center', padding: '10px 0' }}>
+      <Button size="sm" variant="ghost" onClick={onMore}>
+        {t('common.loadMore', { n: total - shown })}
+      </Button>
     </div>
   )
 }

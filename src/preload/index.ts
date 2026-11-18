@@ -67,7 +67,15 @@ const api: ShadowSurfAPI = {
     // 伪装闸门豁免：唯一入口。开启时 confirmName 必须与环境名完全相等，
     // 校验在主进程做（`store/profiles.ts: setExemption`）—— 界面上的校验只是提示
     setExemption: (id, enabled, confirmName) =>
-      invoke(CH.profiles.setExemption, id, enabled, confirmName)
+      invoke(CH.profiles.setExemption, id, enabled, confirmName),
+    // 代理出口 → 地理校准：只传 id，探测 / 落库 / 审计全部在主进程完成
+    matchGeo: (id) => invoke(CH.profiles.matchGeo, id),
+    // 回收站：软删除列表 / 恢复 / 彻底删除（彻底删除会一并清分区数据）
+    trash: () => invoke(CH.profiles.trash),
+    restore: (id) => invoke(CH.profiles.restore, id),
+    purge: (id) => invoke(CH.profiles.purge, id),
+    // 主进程推送的完整列表：定时任务 / 地理校准等非本窗口发起的变更靠它同步
+    onState: (cb) => subscribe(CH.push.profileState, cb)
   },
 
   window: {
@@ -91,7 +99,13 @@ const api: ShadowSurfAPI = {
         left: Math.round(payload.left),
         // 侧栏在右侧，右侧留白就是侧栏宽度
         right: Math.round(payload.panelWidth),
-        panelWidth: Math.round(payload.panelWidth)
+        panelWidth: Math.round(payload.panelWidth),
+        // visible 必须转发：它是「离开双轨窗口、隐藏网页视图」的唯一信号，
+        // 之前这里只发 5 个字段，渲染层传的 visible:false 在主进程被丢掉。
+        visible: payload.visible,
+        // split 暂未被主进程布局使用，但仍然转发：契约里的字段不能在这一层消失，
+        // 否则将来接入分屏比例时两边要同时改（见 core/windows.ts 的 ContentInsets.split）。
+        split: payload.split
       })
     },
 
@@ -183,6 +197,9 @@ const api: ShadowSurfAPI = {
   data: {
     cookies: (profileId) => invoke(CH.data.cookies, profileId),
     clearCookies: (profileId) => invoke(CH.data.clearCookies, profileId),
+    // 导出返回的是「文件内容」而不是结构化列表：格式知识只在主进程有一份
+    exportCookies: (profileId, format) => invoke(CH.data.exportCookies, profileId, format),
+    importCookies: (profileId, text) => invoke(CH.data.importCookies, profileId, text),
     downloads: () => invoke(CH.data.downloads),
     clearDownloads: () => invoke(CH.data.clearDownloads),
     history: (profileId) => invoke(CH.data.history, profileId),
@@ -197,6 +214,41 @@ const api: ShadowSurfAPI = {
     // 只把令牌写进剪贴板，不返回明文 —— 渲染层拿不到它
     copyToken: () => invoke(CH.localApi.copyToken),
     onState: (cb) => subscribe(CH.push.localApiState, cb)
+  },
+
+  // 本地团队：全是本机操作，没有登录 / 云端 / 遥测。
+  team: {
+    state: () => invoke(CH.team.state),
+    // 契约层面 memberAdd 收一个 {name, role} 对象，但主进程 handler 是
+    // (_e, name, role) 两个位置参数，所以这里要把对象拆开再过桥。
+    // 拆错形状的话主进程 cleanName 收到的是整个对象，会直接抛「姓名必须是字符串」。
+    memberAdd: (input) => invoke(CH.team.memberAdd, input.name, input.role),
+    memberUpdate: (id, patch) => invoke(CH.team.memberUpdate, id, patch),
+    memberRemove: (id) => invoke(CH.team.memberRemove, id),
+    shareSet: (profileId, memberId, permission) =>
+      invoke(CH.team.shareSet, profileId, memberId, permission),
+    shareRemove: (profileId, memberId) => invoke(CH.team.shareRemove, profileId, memberId),
+    activity: () => invoke(CH.team.activity)
+  },
+
+  // 本地扩展：只登记「已解压目录」的路径，不下载、不安装远程包。
+  extensions: {
+    list: () => invoke(CH.extensions.list),
+    create: (input) => invoke(CH.extensions.create, input),
+    update: (id, patch) => invoke(CH.extensions.update, id, patch),
+    remove: (id) => invoke(CH.extensions.remove, id)
+  },
+
+  warmup: {
+    run: (profileId, urls) => invoke(CH.warmup.run, profileId, urls)
+  },
+
+  schedules: {
+    list: () => invoke(CH.schedules.list),
+    create: (input) => invoke(CH.schedules.create, input),
+    update: (id, patch) => invoke(CH.schedules.update, id, patch),
+    remove: (id) => invoke(CH.schedules.remove, id),
+    runNow: (id) => invoke(CH.schedules.runNow, id)
   }
 }
 

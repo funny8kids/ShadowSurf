@@ -286,11 +286,34 @@ export function registerScriptModule(ctx: ModuleContext): void {
     scripts.remove(String(id))
   })
 
-  ctx.handle(CH.scripts.run, async (event, scriptId, profileId, rawOptions): Promise<ScriptRunResult> => {
+  ctx.handle(CH.scripts.run, async (event, scriptId, profileId, rawOptions) => {
     // 发起方 webContents id 要一直带到 requestConsent：凭证的存在意义之一就是
     // 「这张票只对发起它的那个渲染进程有效」。留一个入口不传，这个不变量就破了个例。
     const senderId = typeof event?.sender?.id === 'number' ? event.sender.id : undefined
-    const script = scripts.get(String(scriptId))
+    return runScript(ctx, String(scriptId), String(profileId), rawOptions, senderId)
+  })
+}
+
+/**
+ * 可复用的脚本回放入口。
+ *
+ * 为什么把 handler 体抽出来：定时任务需要在**没有渲染进程发起**的情况下跑同一脚本。
+ * 原逻辑内联在 IPC 回调里、唯一身份来源是 event.sender.id，于是「定时跑脚本」要么
+ * 复制一份（两份必然漂移），要么做不了。抽出后两条路径共用同一份执行逻辑；
+ * senderId 变成可选显式入参。
+ *
+ * senderId 为 undefined 时，同意票不绑定渲染进程 —— 这正是定时触发的语义
+ * （没有发起方窗口），但 L2 仍然要弹系统确认窗，闸门不被绕过。
+ */
+export async function runScript(
+  ctx: ModuleContext,
+  scriptId: string,
+  profileId: string,
+  rawOptions?: unknown,
+  senderId?: number
+): Promise<ScriptRunResult> {
+  const scripts = ctx.stores.scripts
+  const script = scripts.get(String(scriptId))
     if (!script) throw new Error('脚本不存在，可能已被删除')
 
     const steps = Array.isArray(script.steps) ? script.steps : []
@@ -387,6 +410,9 @@ export function registerScriptModule(ctx: ModuleContext): void {
           ...(ticket !== undefined ? { ticket } : {}),
           origin: 'script',
           note,
+          // 伪装闸门查的是这条回放所操作的**标签页** wc。senderId（若有）是发起回放的
+          // 控制台渲染进程，两者编号空间不同，拿它去查永远查不到状态。
+          maskWebContentsId: handle.wc.id,
           onGate: (event) => auditGate(ctx.stores, event)
         })
       } catch (err) {
@@ -439,6 +465,5 @@ export function registerScriptModule(ctx: ModuleContext): void {
       if (i < total - 1) await sleep(clampDelay(step.delayMs))
     }
 
-    return { ok: true, executed, total }
-  })
+  return { ok: true, executed, total }
 }

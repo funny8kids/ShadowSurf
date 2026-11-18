@@ -9,7 +9,7 @@
 /* ────────────────────────────── 面板骨架 ────────────────────────────── */
 
 .tool-panel {
-  padding: 22px 26px 32px;
+  padding: 22px 0 32px;
   display: flex;
   flex-direction: column;
   gap: 18px;
@@ -18,8 +18,9 @@
 
 .tool-head h2 {
   margin: 0 0 4px;
-  font-size: 17px;
-  font-weight: 600;
+  font-size: var(--fs-21);
+  font-weight: 650;
+  letter-spacing: -0.02em;
   color: var(--ink);
 }
 
@@ -140,7 +141,7 @@
   font-size: 11.5px;
   color: var(--ink-2);
   min-width: 960px;
-  transition: background 0.12s;
+  transition: background var(--dur-3) var(--ease-easy);
 }
 
 .px-row:last-child {
@@ -269,7 +270,8 @@
   display: grid;
   place-items: center;
   color: var(--ink-3);
-  transition: background 0.12s, color 0.12s;
+  transition: background var(--dur-3) var(--ease-easy),
+    color var(--dur-3) var(--ease-easy);
   flex: none;
 }
 
@@ -348,6 +350,45 @@
   margin-top: 4px;
 }
 
+/* ────────────────────────────── 读失败态（琥珀 / 未知） ──────────────────────────────
+   读不到 ≠ 没有。这里用琥珀语义（--amber / --amber-2 / --amber-line），
+   不用 --red：红色是「确认坏了」这个结论，而读不到只是「还不知道」（DESIGN.md §不可判读状态）。
+   和空态的区分不能只靠文字：空态是灰色虚线框 + 新建/导入动作，
+   这里是实心琥珀边框 + 琥珀底 + 重试动作，遮住文字也能看出两者不是一张脸。 */
+.px-err {
+  padding: 26px 24px;
+  border: 1px solid var(--amber-line);
+  border-left: 3px solid var(--amber);
+  border-radius: var(--r);
+  background: var(--amber-2);
+  color: var(--amber-ink);
+}
+
+.px-err b {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--amber);
+}
+
+.px-err p {
+  max-width: 580px;
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  line-height: 1.75;
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+
+/* 环境原因那句是最该被读到的一句，用较深的墨色，别和错误原文同色 */
+.px-err-hint {
+  color: var(--ink-3);
+}
+
+.px-err button {
+  margin-top: 12px;
+}
+
 /* ────────────────────────────── 弹层内的表单 ────────────────────────────── */
 
 .px-form {
@@ -379,7 +420,9 @@
   background: var(--surface-2);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
-  transition: border-color 0.14s, box-shadow 0.14s, background 0.14s;
+  transition: border-color var(--dur-3) var(--ease-easy),
+    box-shadow var(--dur-3) var(--ease-easy),
+    background var(--dur-3) var(--ease-easy);
 }
 
 .px-field input::placeholder,
@@ -488,7 +531,7 @@
   align-items: center;
   gap: 4px;
   border-radius: var(--r-xs);
-  transition: background 0.12s;
+  transition: background var(--dur-3) var(--ease-easy);
 }
 
 .px-envrow:hover {
@@ -543,7 +586,8 @@
   color: var(--ink-3);
   border: 1px solid var(--line);
   border-radius: var(--r-xs);
-  transition: color 0.12s, border-color 0.12s;
+  transition: color var(--dur-3) var(--ease-easy),
+    border-color var(--dur-3) var(--ease-easy);
 }
 
 .px-envrow .unlink:hover:not(:disabled) {

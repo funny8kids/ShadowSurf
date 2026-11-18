@@ -76,6 +76,7 @@
  */
 
 import { _electron as electron } from 'playwright-core'
+import { gpuFallbackArgs } from './gpu-flags.mjs'
 import { createServer } from 'node:http'
 import { mkdirSync, writeFileSync, readFileSync, statSync, mkdtempSync, rmSync } from 'node:fs'
 import { resolve, dirname, join } from 'node:path'
@@ -1179,7 +1180,7 @@ let app = null
 try {
   app = await electron.launch({
     executablePath: electronBinary(),
-    args: ['.', '--user-data-dir=' + TMP_USERDATA],
+    args: ['.', '--user-data-dir=' + TMP_USERDATA, ...gpuFallbackArgs()],
     cwd: ROOT,
     env,
     timeout: 40000

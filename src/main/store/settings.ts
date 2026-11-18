@@ -9,7 +9,7 @@
  */
 
 import { safeStorage } from 'electron'
-import { DEFAULT_SETTINGS } from '@shared/presets'
+import { DEFAULT_SETTINGS, PROVIDERS } from '@shared/presets'
 import type { Settings, ThemeMode } from '@shared/types'
 import { JsonStore } from './db'
 import type { HealthStoreRef } from './health'
@@ -45,6 +45,42 @@ type StoredSettings = Omit<Settings, 'apiKey'> & {
 const ENC_PREFIX = 'enc:'
 const RAW_PREFIX = 'raw:'
 
+/**
+ * 服务商 id 白名单。
+ *
+ * 原先 `set()` 直接 `patch.provider ?? current.provider` 落盘，任意字符串都能
+ * 进 settings.json（渲染层的输入中间态、手改配置文件、或者桥接层被塞脏值）。
+ * 下游按 provider 决定 baseUrl、鉴权方式与界面文案，未知 id 不会立刻报错，
+ * 只表现为「设置看起来保存成功，请求却发不出去」——这类静默失败最难查。
+ * 合法集合只认 `PROVIDERS`，自定义服务商用内置的 `custom` id。
+ */
+const PROVIDER_IDS: ReadonlySet<string> = new Set(PROVIDERS.map((p) => p.id))
+
+/**
+ * provider 的白名单校验。
+ *
+ * 非法值回落到 `fallback`（当前值），**不抛错**：设置面板是即时保存的，
+ * 用户输入过程中很容易出现中间态；把整次保存打回会让面板卡在一个改不动的
+ * 状态。回落保证落盘的一定是下游认得的 id，用户下一步也能看到实际生效值。
+ */
+function asProvider(value: unknown, fallback: string): string {
+  return typeof value === 'string' && PROVIDER_IDS.has(value) ? value : fallback
+}
+
+/**
+ * baseUrl / model 的清洗：trim 后为空就回落到当前值。
+ *
+ * 空 baseUrl 不是「自定义」，而是一个必然失败的请求地址；空 model 会让
+ * 兼容 API 直接 400。而输入框被清空的瞬间恰好会产生空串，照单落盘等于
+ * 用户还没填完就先坏一次配置。回落而不是拒绝，同样是为了不在输入中间态
+ * 把设置面板卡死。
+ */
+function asNonEmptyTrimmed(value: unknown, fallback: string): string {
+  if (typeof value !== 'string') return fallback
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : fallback
+}
+
 function asString(v: unknown, fallback: string): string {
   return typeof v === 'string' ? v : fallback
 }
@@ -67,6 +103,20 @@ function asBoolean(v: unknown, fallback: boolean): boolean {
  */
 function asThemeMode(v: unknown): ThemeMode {
   return v === 'light' || v === 'dark' || v === 'system' ? v : DEFAULT_SETTINGS.theme
+}
+
+/**
+ * 数值区间钳制。
+ *
+ * 为什么在写入处钳而不是拒绝：设置面板输入过程中很容易出现中间态（清空后重填、
+   * 拖滑块到一半），拒绝会让用户卡住；钳到边界则「非法值退到合法边界」，
+ * 用户下一步就能看到结果并修正。非法值静默落盘才是真问题：
+ * `temperature: 99` 会让 LLM 请求直接 400，`maxSteps: -1` 让循环一步不跑，
+ * `panelWidth: -400` 让面板宽度变负数 —— 三者都不报错，只表现为「功能坏了」。
+ */
+function clampNumber(v: number, min: number, max: number): number {
+  if (!Number.isFinite(v)) return min
+  return Math.min(max, Math.max(min, v))
 }
 
 /**
@@ -184,8 +234,26 @@ export class SettingsStore {
     }
   }
 
+  /**
+   * apiKey 明文的单槽缓存。
+   *
+   * 设置面板每次渲染都会 `get()`，而 `get()` 原先无条件做一次 DPAPI 解密
+   * （Windows 上是一次系统调用，Linux 上可能还要唤醒 keyring），代价不便宜。
+   * 缓存以**密文**为键：只有设置真的换了 Key、密文变化时才重新解密，旧明文
+   * 自然失效。只留一个槽位，不按历史密文无限缓存，避免把用过的密钥长期
+   * 留在内存里。
+   */
+  private cachedKey: { cipher: string; plain: string } | null = null
+
   get(): Settings {
     const stored = this.store.read()
+    let apiKey: string
+    if (this.cachedKey !== null && this.cachedKey.cipher === stored.apiKey) {
+      apiKey = this.cachedKey.plain
+    } else {
+      apiKey = decryptKey(stored.apiKey)
+      this.cachedKey = { cipher: stored.apiKey, plain: apiKey }
+    }
     return {
       provider: stored.provider,
       baseUrl: stored.baseUrl,
@@ -195,7 +263,7 @@ export class SettingsStore {
       autoRun: stored.autoRun,
       panelWidth: stored.panelWidth,
       theme: stored.theme,
-      apiKey: decryptKey(stored.apiKey)
+      apiKey
     }
   }
 
@@ -210,14 +278,19 @@ export class SettingsStore {
     // 变成一次普通的设置保存，而清掉锚点正是让尾部删除检测失效的那一步。
     // 白名单取字段之后，这个字段只有 `setAuditHead()` 一条写入路径。
     const next: StoredSettings = {
-      provider: patch.provider ?? current.provider,
-      baseUrl: patch.baseUrl ?? current.baseUrl,
+      // provider 只接受 PROVIDERS 里的 id，未知值回落到当前值（不抛错）。
+      provider: asProvider(patch.provider, current.provider),
+      // 空串 / 纯空白不能落盘：回落当前值，避免把配置写成必然失败的请求。
+      baseUrl: asNonEmptyTrimmed(patch.baseUrl, current.baseUrl),
       apiKey: current.apiKey,
-      model: patch.model ?? current.model,
-      temperature: patch.temperature ?? current.temperature,
-      maxSteps: patch.maxSteps ?? current.maxSteps,
+      model: asNonEmptyTrimmed(patch.model, current.model),
+      // 取值域钳制：temperature ∈ [0,2]（OpenAI 兼容 API 上限）、
+      // maxSteps ∈ [1,30]（与 agent/loop.ts 的 MIN_STEPS/MAX_STEPS_LIMIT 同源）、
+      // panelWidth ∈ [0,2000]（0 = 自动）。越界钳到边界，不抛错。
+      temperature: clampNumber(patch.temperature ?? current.temperature, 0, 2),
+      maxSteps: clampNumber(patch.maxSteps ?? current.maxSteps, 1, 30),
       autoRun: patch.autoRun ?? current.autoRun,
-      panelWidth: patch.panelWidth ?? current.panelWidth,
+      panelWidth: clampNumber(patch.panelWidth ?? current.panelWidth, 0, 2000),
       theme: patch.theme ?? current.theme,
       auditHead: current.auditHead
     }

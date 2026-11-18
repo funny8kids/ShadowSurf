@@ -839,9 +839,9 @@ export class JsonStore<T> {
    * 从调用点挪到这里看起来像一次无害的重构，实际是删掉唯一的退路。
    *
    * 判据只有一条：**它是否携带主文件没有的信息。**
-   * 逐字节比对而不是「按 persist 的原子性推断」—— `persist` 的最后一步 rename
-   * 之后还有 `statQuietly` 与 `clone`，后者对不可克隆的值会抛；那种情况下主文件
-   * 已经是新内容了，靠推断就会把唯一的旧格式副本删掉。
+   * 逐字节比对而不是「按 persist 的原子性推断」：主文件已经是新内容时，
+   * 靠推断就会把唯一的旧格式副本删掉。直接比字节，不需要推理 persist 收尾
+   * 还会做什么（写后 clone 已移除，收尾只剩不抛的 statQuietly）。
    *
    * 读不到就**不删**：宁可多留一份，不可少留一份。
    */
@@ -998,7 +998,10 @@ export class JsonStore<T> {
 
     const tmp = this.file + '.tmp'
     const payload: unknown = this.envelope ? encodeEnvelope(target, out) : out
-    const json = JSON.stringify(payload, null, 2)
+    // 紧凑序列化（无缩进）。审计 / 历史这类几千条的文件，2 空格美化会让体积大
+    // 30-40%，stringify / parse / 写盘都跟着变慢；而这些文件只在程序里读写，
+    // 没有「给人看」的场景。读回不依赖缩进（JSON.parse），所以这是纯性能改动。
+    const json = JSON.stringify(payload)
 
     // 先写 tmp 并落盘，再原子替换；顺序不能颠倒
     const fd = fs.openSync(tmp, 'w')
@@ -1013,7 +1016,11 @@ export class JsonStore<T> {
     // 收尾取 mtime 用不抛的版本：写入已经成功了，这时再抛会把一次成功的写报成失败。
     // 拿不到就让 cachedMtime 停在 0，下一次读会重新读盘 —— 正确，只是多一次 IO。
     const st = statQuietly(this.file)
-    this.cache = clone(data)
+    // 写后不再 clone：`data` 就是刚刚序列化过的那份对象，缓存直接引用即可。
+    // 省掉一次与文件等大的深拷贝（审计 5000 条时是几毫秒的同步阻塞）。
+    // 写前隔离仍然保留 —— `update()` 里的 `clone(this.read())` 让 fn 拿到的是副本，
+    // 入参语义没变。
+    this.cache = data
     this.cachedMtime = st === null ? 0 : st.mtimeMs
     this.writes += 1
   }

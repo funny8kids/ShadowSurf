@@ -44,6 +44,14 @@ export interface LoopDeps {
    * 把「要不要执行不可逆动作」的答案交给它，等于把闸门建在被攻破的一侧。
    */
   senderId?: number
+  /**
+   * 伪装闸门要查的**标签页 webContents id**（不是发起方渲染进程）。
+   *
+   * 透传给执行器，见 `actions.ts` 里 `Approval.maskWebContentsId` 的说明：
+   * 伪装状态按标签页 wc 存，而 `senderId` 是控制台窗口的 renderer ——
+   * 拿后者查永远是 null，L2 会被永久拦下。
+   */
+  maskWebContentsId?: number
 }
 
 /** 步数上限的硬边界：太小做不成事，太大就是烧钱且容易在同一个坑里打转 */
@@ -257,6 +265,12 @@ export async function runAgent(
           intent: req.intent,
           note: thought,
           ...(deps.senderId !== undefined ? { senderId: deps.senderId } : {}),
+          // 伪装状态查的是标签页 wc，与上面那个「发起方 renderer」不是一回事。
+          // 不带它，执行器会退回 senderId 去查 —— 那在 agent 路径上恒为 null，
+          // 所有 L2 动作会被伪装闸门永久拦下（用户点了「允许执行」也没用）。
+          ...(deps.maskWebContentsId !== undefined
+            ? { maskWebContentsId: deps.maskWebContentsId }
+            : {}),
           // 闸门事件落到同一条审计链：原先 agent 这条路径跑 40 步一个字节都不留，
           // 事后完全无法回答「它到底点过什么」。
           onGate: (event) => auditGate(getStores(), event)

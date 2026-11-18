@@ -7,6 +7,7 @@
 
 import type { FingerprintConfig, Profile, ProfileStatus, TaskRecord, TaskStatus } from '@shared/types'
 import type { ActionFailure, StepStatus } from '@shared/protocol'
+import { currentLang } from './i18n/lang-store'
 
 /**
  * 动作类型 → 中文。
@@ -37,13 +38,22 @@ export function formatDate(ts: number): string {
 
 /** 刚刚 / 2 分钟前 / 3 小时前 / 2026-08-14 */
 export function formatRelative(ts: number | null, now: number = Date.now()): string {
-  if (!ts) return '从未使用'
+  const en = currentLang() === 'en'
+  if (!ts) return en ? 'Never used' : '从未使用'
   const diff = now - ts
-  if (diff < 0) return '刚刚'
-  if (diff < 45_000) return '刚刚'
-  if (diff < 3_600_000) return `${Math.max(1, Math.round(diff / 60_000))} 分钟前`
-  if (diff < 86_400_000) return `${Math.round(diff / 3_600_000)} 小时前`
-  if (diff < 7 * 86_400_000) return `${Math.round(diff / 86_400_000)} 天前`
+  if (diff < 0 || diff < 45_000) return en ? 'just now' : '刚刚'
+  if (diff < 3_600_000) {
+    const n = Math.max(1, Math.round(diff / 60_000))
+    return en ? `${n} min ago` : `${n} 分钟前`
+  }
+  if (diff < 86_400_000) {
+    const n = Math.round(diff / 3_600_000)
+    return en ? `${n} h ago` : `${n} 小时前`
+  }
+  if (diff < 7 * 86_400_000) {
+    const n = Math.round(diff / 86_400_000)
+    return en ? `${n} d ago` : `${n} 天前`
+  }
   return formatDate(ts)
 }
 
@@ -130,8 +140,16 @@ export function localeCountry(locale: string): string {
   return m ? m[1].toUpperCase() : locale.slice(0, 2).toUpperCase()
 }
 
+const COUNTRY_NAME_EN: Record<string, string> = {
+  US: 'United States', GB: 'United Kingdom', UK: 'United Kingdom', DE: 'Germany',
+  FR: 'France', NL: 'Netherlands', SG: 'Singapore', JP: 'Japan', TH: 'Thailand',
+  CN: 'China', CA: 'Canada', AU: 'Australia', BR: 'Brazil', ES: 'Spain',
+  IT: 'Italy', KR: 'South Korea', IN: 'India', RU: 'Russia'
+}
+
 export function countryLabel(locale: string): string {
   const code = localeCountry(locale)
+  if (currentLang() === 'en') return COUNTRY_NAME_EN[code] ?? code
   return COUNTRY_NAME[code] ?? code
 }
 
@@ -169,32 +187,34 @@ export interface StatusText {
 }
 
 export function profileStatusText(status: ProfileStatus): StatusText {
+  const en = currentLang() === 'en'
   switch (status) {
     case 'running':
-      return { label: '运行中', tone: 'run' }
+      return { label: en ? 'Running' : '运行中', tone: 'run' }
     case 'starting':
-      return { label: '启动中', tone: 'warn' }
+      return { label: en ? 'Starting' : '启动中', tone: 'warn' }
     case 'error':
-      return { label: '启动失败', tone: 'warn' }
+      return { label: en ? 'Launch failed' : '启动失败', tone: 'warn' }
     default:
-      return { label: '影子待命', tone: 'idle' }
+      return { label: en ? 'Shadow standby' : '影子待命', tone: 'idle' }
   }
 }
 
 export function taskStatusText(status: TaskStatus): string {
+  const en = currentLang() === 'en'
   switch (status) {
     case 'queued':
-      return '排队中'
+      return en ? 'Queued' : '排队中'
     case 'running':
-      return '进行中'
+      return en ? 'Running' : '进行中'
     case 'paused':
-      return '已暂停'
+      return en ? 'Paused' : '已暂停'
     case 'done':
-      return '已完成'
+      return en ? 'Done' : '已完成'
     case 'failed':
-      return '失败'
+      return en ? 'Failed' : '失败'
     default:
-      return '已停止'
+      return en ? 'Stopped' : '已停止'
   }
 }
 
@@ -206,17 +226,18 @@ export function taskTone(status: TaskStatus): 'ok' | 'run' | 'fail' | 'warn' {
 }
 
 export function stepStatusText(status: StepStatus): string {
+  const en = currentLang() === 'en'
   switch (status) {
     case 'running':
-      return '正在执行'
+      return en ? 'Running' : '正在执行'
     case 'ok':
-      return '已完成'
+      return en ? 'Done' : '已完成'
     case 'failed':
-      return '失败'
+      return en ? 'Failed' : '失败'
     case 'rejected':
-      return '已跳过'
+      return en ? 'Skipped' : '已跳过'
     default:
-      return '等待确认'
+      return en ? 'Awaiting approval' : '等待确认'
   }
 }
 
@@ -235,12 +256,15 @@ export function stepResultText(step: {
   result?: string
   failure?: ActionFailure
 }): string {
+  const en = currentLang() === 'en'
   if (!step.failure) return step.result ?? stepStatusText(step.status)
   switch (step.failure) {
     case 'not-found':
-      return '页面上没找到要操作的元素，已跳过 —— 页面可能已经变了'
+      return en
+        ? 'Element not found — skipped. The page may have changed.'
+        : '页面上没找到要操作的元素，已跳过 —— 页面可能已经变了'
     case 'exec':
-      return '页面没有接受这次操作'
+      return en ? 'The page did not accept this action' : '页面没有接受这次操作'
     default:
       return step.result ?? stepStatusText(step.status)
   }

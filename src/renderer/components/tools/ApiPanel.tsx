@@ -12,6 +12,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { LocalApiState, Profile } from '@shared/types'
 import { Button, Icon, cx, useToast } from '@renderer/components/ui'
 import { formatClock, formatRelative } from '@renderer/lib/format'
+import { useI18n } from '@renderer/lib/i18n'
 import './api.css'
 
 export interface PanelProps {
@@ -20,19 +21,43 @@ export interface PanelProps {
 
 const DEFAULT_PORT = 7717
 
-const ENDPOINTS: Array<{ method: 'GET' | 'POST'; path: string; desc: string }> = [
-  { method: 'GET', path: '/health', desc: '探活，唯一免鉴权的端点' },
-  { method: 'GET', path: '/profiles', desc: '环境列表' },
-  { method: 'POST', path: '/profiles/:id/launch', desc: '启动环境' },
-  { method: 'POST', path: '/profiles/:id/stop', desc: '停止环境' },
-  { method: 'GET', path: '/profiles/:id/snapshot', desc: '页面快照' },
-  { method: 'POST', path: '/profiles/:id/act', desc: '执行单个动作' },
-  { method: 'GET', path: '/tasks', desc: '任务列表' }
+/**
+ * 读取本地 API 状态的三态。
+ *
+ * 为什么不能只用 `LocalApiState | null`：`null` 同时表示「还没读到」和「读不到」，
+ * 而渲染层会把它当成「已停止」—— 那是把「不知道」画成「没在跑」。
+ * 读不到时唯一诚实的说法是「读不到」，所以 error 必须是独立的一支。
+ */
+type ApiLoadState =
+  | { kind: 'loading' }
+  | { kind: 'error'; message: string }
+  | { kind: 'ready'; state: LocalApiState }
+
+const ENDPOINTS: Array<{ method: 'GET' | 'POST'; path: string; descKey: string }> = [
+  { method: 'GET', path: '/health', descKey: 'api.ep.health' },
+  { method: 'GET', path: '/profiles', descKey: 'api.ep.profiles' },
+  { method: 'POST', path: '/profiles/:id/launch', descKey: 'api.ep.launch' },
+  { method: 'POST', path: '/profiles/:id/stop', descKey: 'api.ep.stop' },
+  { method: 'GET', path: '/profiles/:id/snapshot', descKey: 'api.ep.snapshot' },
+  { method: 'POST', path: '/profiles/:id/act', descKey: 'api.ep.act' },
+  { method: 'GET', path: '/tasks', descKey: 'api.ep.tasks' }
 ]
 
 function errText(err: unknown, fallback: string): string {
   if (err instanceof Error && err.message) return err.message
   return fallback
+}
+
+/**
+ * 去掉 Electron 给 IPC 失败套的那层壳。
+ *
+ * 为什么这里再写一份：AuditPanel 里那份是模块私有的（没有 export），
+ * 而本轮只能动 ApiPanel 与 api.css —— 为了复用它去改审计页属于越界。
+ * 正则与那边逐字一致，否则同一个 IPC 错误在两个面板里会显示成两种样子。
+ */
+function cleanIpcMessage(raw: string): string {
+  const m = /Error invoking remote method '[^']*':\s*(?:Error:\s*)?([\s\S]*)$/.exec(raw)
+  return (m?.[1] ?? raw).trim()
 }
 
 /**
@@ -67,30 +92,41 @@ async function copyText(text: string): Promise<boolean> {
 
 export function ApiPanel({ profiles }: PanelProps) {
   const toast = useToast()
-  const [state, setState] = useState<LocalApiState | null>(null)
+  const { t } = useI18n()
+  /* 三态源。原来这里是 `LocalApiState | null`，读取失败只剩 toast 一条，
+     面板本体继续按 null 渲染 —— 于是失败长得和「服务没启动」一模一样。 */
+  const [load, setLoad] = useState<ApiLoadState>({ kind: 'loading' })
   const [port, setPort] = useState(String(DEFAULT_PORT))
   const [busy, setBusy] = useState(false)
 
-  useEffect(() => {
-    let alive = true
-    void window.ss.localApi
-      .state()
-      .then((next) => {
-        if (!alive) return
-        setState(next)
-        if (next.port > 0) setPort(String(next.port))
-      })
-      .catch((err: unknown) => {
-        if (alive) toast.push(errText(err, '读取本地 API 状态失败'), 'err')
-      })
+  /* 其它逻辑（指标、端口回显、按钮可用性）只认「读到的那份状态」：
+     loading / error 一律 null，不在错误态下把默认值或旧值当成事实。 */
+  const state = load.kind === 'ready' ? load.state : null
 
-    // 主进程每次状态变化都会推一遍，页面不需要轮询
-    const off = window.ss.localApi.onState((next) => setState(next))
-    return () => {
-      alive = false
-      off()
+  /* 读取状态的唯一入口：首次加载和「重试」按钮共用一条路径，
+     否则重试会和首屏跑出两套不同的成功/失败处理。 */
+  const loadState = useCallback(async (): Promise<void> => {
+    setLoad({ kind: 'loading' })
+    try {
+      const next = await window.ss.localApi.state()
+      setLoad({ kind: 'ready', state: next })
+      if (next.port > 0) setPort(String(next.port))
+    } catch (err) {
+      // 错误留在原地，不能只弹 toast：toast 会消失，消失后面板又会回到
+      // 「已停止」那句假话。原因里的通道名是 IPC 噪音，先剥掉。
+      setLoad({
+        kind: 'error',
+        message: cleanIpcMessage(errText(err, t('api.err.readState')))
+      })
     }
-  }, [toast])
+  }, [t])
+
+  useEffect(() => {
+    void loadState()
+    // 主进程每次状态变化都会推一遍，页面不需要轮询
+    const off = window.ss.localApi.onState((next) => setLoad({ kind: 'ready', state: next }))
+    return () => off()
+  }, [loadState])
 
   const running = state?.running === true
   const portNumber = Number(port)
@@ -102,38 +138,38 @@ export function ApiPanel({ profiles }: PanelProps) {
       setBusy(true)
       try {
         const next = await task()
-        setState(next)
+        setLoad({ kind: 'ready', state: next })
         if (next.port > 0) setPort(String(next.port))
         toast.push(okText, 'ok')
       } catch (err) {
-        toast.push(errText(err, '操作失败'), 'err')
+        toast.push(errText(err, t('api.err.operation')), 'err')
       } finally {
         setBusy(false)
       }
     },
-    [toast]
+    [toast, t]
   )
 
   const onStart = (): void => {
     if (!portValid) {
-      toast.push('端口必须是 1-65535 之间的整数', 'err')
+      toast.push(t('api.err.port'), 'err')
       return
     }
-    void call(() => window.ss.localApi.start(portNumber), '本地 API 已启动')
+    void call(() => window.ss.localApi.start(portNumber), t('api.toast.started'))
   }
 
   const onStop = (): void => {
-    void call(() => window.ss.localApi.stop(), '本地 API 已停止')
+    void call(() => window.ss.localApi.stop(), t('api.toast.stopped'))
   }
 
   // 契约里没有单独的 regenerate 通道，主进程把「已运行时再次 start」约定为重掷令牌
   const onRegenerate = (): void => {
-    void call(() => window.ss.localApi.start(), '令牌已重新生成，旧令牌立即失效')
+    void call(() => window.ss.localApi.start(), t('api.toast.regenerated'))
   }
 
   const onCopy = async (text: string, label: string): Promise<void> => {
     const ok = await copyText(text)
-    toast.push(ok ? `${label}已复制` : '复制失败，请手动选中文本复制', ok ? 'ok' : 'err')
+    toast.push(ok ? t('api.toast.copied', { label }) : t('common.copyFailed'), ok ? 'ok' : 'err')
   }
 
   /**
@@ -146,9 +182,9 @@ export function ApiPanel({ profiles }: PanelProps) {
   const onCopyToken = async (): Promise<void> => {
     try {
       await window.ss.localApi.copyToken()
-      toast.push('令牌已复制到剪贴板', 'ok')
+      toast.push(t('api.toast.tokenCopied'), 'ok')
     } catch (err) {
-      toast.push(errText(err, '复制令牌失败'), 'err')
+      toast.push(errText(err, t('api.err.copyToken')), 'err')
     }
   }
 
@@ -161,38 +197,54 @@ export function ApiPanel({ profiles }: PanelProps) {
     <div className="api-panel">
       <header className="api-head">
         <div>
-          <h2>本地 API</h2>
-          <p>
-            在回环地址上起一个 REST 服务，外部脚本、CLI、IDE 插件都能用它驱动环境。
-            当前 {profiles.length} 个环境可被调用。
-          </p>
+          <h2>{t('api.title')}</h2>
+          <p>{t('api.subtitle', { n: profiles.length })}</p>
         </div>
       </header>
 
       <section className="api-card">
         <div className="api-status">
-          <span className={cx('api-state', running && 'on')}>
-            <i />
-            {running ? '运行中' : '已停止'}
-          </span>
+          {/* 读不到时绝不落到「已停止」那一支 —— 那是把「不知道」画成「没在跑」。
+              「读取中…」与「已停止」也分开：前者是没结论，后者是结论。 */}
+          {load.kind === 'error' ? (
+            <div className="api-err" role="alert">
+              <Icon name="alert" size={13} strokeWidth={2} />
+              <div className="api-err-body">
+                <b>{t('api.error.title')}</b>
+                <span>{load.message}</span>
+              </div>
+              <Button size="sm" variant="ghost" icon="reload" onClick={() => void loadState()}>
+                {t('common.retry')}
+              </Button>
+            </div>
+          ) : (
+            <span className={cx('api-state', running && 'on')}>
+              <i />
+              {load.kind === 'loading'
+                ? t('api.loading')
+                : running
+                  ? t('api.running')
+                  : t('api.stopped')}
+            </span>
+          )}
           <code className="api-addr">{base}</code>
           <div className="api-controls">
             <input
               className="api-input"
               value={port}
               inputMode="numeric"
-              aria-label="监听端口"
-              title={running ? '停止后才能修改端口' : '监听端口，默认 7717'}
+              aria-label={t('api.portAria')}
+              title={running ? t('api.port.title.running') : t('api.port.title.idle')}
               disabled={running || busy}
               onChange={(e) => setPort(e.target.value.replace(/[^\d]/g, '').slice(0, 5))}
             />
             {running ? (
               <Button variant="danger" icon="stop" disabled={busy} onClick={onStop}>
-                停止
+                {t('api.stop')}
               </Button>
             ) : (
               <Button variant="primary" icon="play" disabled={busy} onClick={onStart}>
-                启动
+                {t('api.start')}
               </Button>
             )}
           </div>
@@ -200,19 +252,19 @@ export function ApiPanel({ profiles }: PanelProps) {
 
         <div className="api-metrics">
           <div className="api-metric">
-            <span>监听地址</span>
+            <span>{t('api.metric.address')}</span>
             <b>127.0.0.1</b>
           </div>
           <div className="api-metric">
-            <span>端口</span>
+            <span>{t('api.metric.port')}</span>
             <b>{running && state?.port ? state.port : '—'}</b>
           </div>
           <div className="api-metric">
-            <span>已处理请求</span>
+            <span>{t('api.metric.requests')}</span>
             <b>{state ? state.requests.toLocaleString('en-US') : '—'}</b>
           </div>
           <div className="api-metric">
-            <span>启动时间</span>
+            <span>{t('api.metric.startedAt')}</span>
             <b>{state?.startedAt ? formatClock(state.startedAt) : '—'}</b>
             {state?.startedAt ? <em>{formatRelative(state.startedAt)}</em> : null}
           </div>
@@ -221,8 +273,8 @@ export function ApiPanel({ profiles }: PanelProps) {
 
       <section className="api-card">
         <div className="api-card-head">
-          <h3>访问令牌</h3>
-          <span>除 /health 外，所有请求都要带 Authorization: Bearer &lt;token&gt;</span>
+          <h3>{t('api.token.title')}</h3>
+          <span>{t('api.token.requirement')}</span>
         </div>
         {/* 能力边界必须放在令牌**之前**。
             这个面板原本已经说了三件让人安心的事（令牌存在哪、不印完整值、只监听回环），
@@ -236,78 +288,94 @@ export function ApiPanel({ profiles }: PanelProps) {
         <p className="api-scope">
           <Icon name="alert" size={13} strokeWidth={2} />
           <span>
-            持有此令牌的本地进程可以在<strong>任意环境</strong>上执行操作。
-            <strong>可回退动作</strong>（点击链接、滚动、取数）直接执行；
-            <strong>不可逆动作</strong>（支付、删除、发布、发送）需要在本机弹窗确认，
-            必须有人当场点「允许执行」才会跑 —— 无人值守的自动化跑到那一步会停住，
-            然后在 120 秒后拿到 409 超时。
+            {t('api.scope.lead')}
+            <strong>{t('api.scope.anyProfile')}</strong>
+            {t('api.scope.afterAny')}
+            <strong>{t('api.scope.reversible')}</strong>
+            {t('api.scope.afterReversible')}
+            <strong>{t('api.scope.irreversible')}</strong>
+            {t('api.scope.afterIrreversible')}
             <br />
-            这不是能力限制，是设计：<strong>自动化可以做，不可逆的那一下要有人在场。</strong>
-            令牌文件以当前用户身份可读，同一账户下的其他程序也能读到它。
+            {t('api.scope.br')}
+            <strong>{t('api.scope.design')}</strong>
+            {t('api.scope.tail')}
           </span>
         </p>
         <div className="api-token">
-          <code className="api-token-value">保存在主进程内，界面不显示</code>
+          <code className="api-token-value">{t('api.token.hidden')}</code>
           <div className="api-tools">
             <Button size="sm" variant="ghost" onClick={() => void onCopyToken()}>
-              复制令牌
+              {t('api.token.copy')}
             </Button>
             <Button
               size="sm"
               variant="ghost"
               icon="dice"
               disabled={!running || busy}
-              title={running ? '作废旧令牌并生成新的' : '服务启动后才能重新生成令牌'}
+              title={
+                running
+                  ? t('api.token.regenerate.title.on')
+                  : t('api.token.regenerate.title.off')
+              }
               onClick={onRegenerate}
             >
-              重新生成
+              {t('api.token.regenerate')}
             </Button>
           </div>
         </div>
         <p className="api-hint">
-          令牌是 32 字节随机值，存在数据目录的 local-api-token.json 里，重启应用不会变。
-          <strong> 界面上没有「显示令牌」是有意的</strong>：这一页跑在渲染层，能显示就能被读走。
-          「复制令牌」由主进程直接写剪贴板，明文不经过这里。
-          <strong> 重新生成是唯一的补救动作</strong>：作废旧令牌后，已发出的调用立即失效。
+          {t('api.hint.lead')}
+          <strong>{t('api.hint.noShow')}</strong>
+          {t('api.hint.mid')}
+          <strong>{t('api.hint.regenerate')}</strong>
+          {t('api.hint.tail')}
         </p>
       </section>
 
       <section className="api-card">
         <div className="api-card-head">
-          <h3>端点速查</h3>
-          <span>成功返回 {`{ ok: true, data }`}，失败返回 {`{ ok: false, error }`}</span>
+          <h3>{t('api.endpoints.title')}</h3>
+          <span>
+            {t('api.endpoints.response', {
+              ok: '{ ok: true, data }',
+              error: '{ ok: false, error }'
+            })}
+          </span>
         </div>
         <div className="api-endpoints">
           {ENDPOINTS.map((ep) => (
             <div className="api-ep" key={`${ep.method} ${ep.path}`}>
               <span className={cx('api-method', ep.method.toLowerCase())}>{ep.method}</span>
               <code className="api-path">{ep.path}</code>
-              <span className="api-desc">{ep.desc}</span>
+              <span className="api-desc">{t(ep.descKey)}</span>
             </div>
           ))}
         </div>
         <p className="api-hint">
-          /act 的 body 形如 {`{ "action": { "type": "click", "id": "e3" } }`}；
-          元素编号取自 /snapshot，编号不存在会被直接拒绝。
-          body 里的 {`"confirm": true`} <strong>没有任何效力</strong>：
-          不可逆动作的授权只能来自应用窗口上的一次人工点击。
+          {t('api.act.lead')}
+          {`{ "action": { "type": "click", "id": "e3" } }`}
+          {t('api.act.afterBody')}
+          {`"confirm": true`}{' '}
+          <strong>{t('api.act.noEffect')}</strong>
+          {t('api.act.tail')}
         </p>
       </section>
 
       <section className="api-card">
         <div className="api-card-head">
-          <h3>调用示例</h3>
-          <span>复制后可直接在终端执行</span>
+          <h3>{t('api.example.title')}</h3>
+          <span>{t('api.example.hint')}</span>
         </div>
         <pre className="api-curl">{curlShown}</pre>
         <div className="api-curl-foot">
-          <Button size="sm" variant="ghost" onClick={() => void onCopy(curlShown, 'curl 命令')}>
-            复制 curl
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => void onCopy(curlShown, t('api.copy.curl'))}
+          >
+            {t('api.example.copy')}
           </Button>
-          <span className="api-hint">
-            示例用的是列表里第一个环境，可替换成任意 profile id。复制后把 &lt;token&gt;
-            换成上一步「复制令牌」拿到的那串值。
-          </span>
+          <span className="api-hint">{t('api.example.body')}</span>
         </div>
       </section>
 
@@ -317,8 +385,9 @@ export function ApiPanel({ profiles }: PanelProps) {
           这条只是说明服务监听在哪，不是一项安全保证。 */}
       <p className="api-note">
         <Icon name="globe" size={13} strokeWidth={2} />
-        只监听 127.0.0.1，局域网访问不到；关闭服务或退出应用后端口立即释放。
-        这限制的是<strong>谁能连上来</strong>，不限制连上之后能做什么 —— 能力边界见上方令牌说明。
+        {t('api.note.lead')}
+        <strong>{t('api.note.who')}</strong>
+        {t('api.note.tail')}
       </p>
     </div>
   )

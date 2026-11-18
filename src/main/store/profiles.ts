@@ -7,7 +7,7 @@
  * 存储实现藏在 JsonStore 后面，将来换 SQLite 时这个类的方法签名不变。
  */
 
-import { randomInt } from 'node:crypto'
+import { createHash, randomInt } from 'node:crypto'
 import { PROFILE_COLORS } from '@shared/presets'
 import type {
   CloneOptions,
@@ -23,7 +23,6 @@ import { JsonStore } from './db'
 import type { HealthStoreRef } from './health'
 import type { CorruptInfo } from './json-file'
 import { SCHEMA_CURRENT, SCHEMA_SEALED, seedForm, validateProfiles } from './json-file'
-import { createHash } from 'node:crypto'
 
 import { openSeed, sealAvailable, sealSeed } from './seed-seal'
 
@@ -31,6 +30,31 @@ import { openSeed, sealAvailable, sealSeed } from './seed-seal'
 const ID_ALPHABET = '23456789abcdefghjkmnpqrstuvwxyz'
 const ID_LENGTH = 12
 const DEFAULT_GROUP = '默认'
+
+/**
+ * seedHint 计算缓存。**只存在主进程内存里，不落盘、不出 IPC、不导出。**
+ *
+ * ── 为什么需要 ──
+ * sha256 是一次同步 CPU 计算，而 `list()` 是高频路径（环境页刷新、状态广播、
+ * 健康检查、各模块的列表调用），每次都把**所有**环境的 seedHint 重算一遍：
+ * 100 个环境约 2.4ms，1000 个约 24ms —— 主进程会被这种「只是刷新一下列表」
+ * 的操作反复占住。seed → seedHint 是纯函数（同一个 seed 永远得到同一个值），
+ * 缓存不会引入一致性风险；环境被删除/重掷种子后旧 key 只是留在表里，
+ * 不会让任何新环境读到错误的值。
+ *
+ * ── 为什么 key 用种子明文 ──
+ * 种子本来就已经以明文形态常驻主进程内存（`StoredProfile` 和 profiles.json
+ * 解密后的数组），这张表只是多持有一份字符串引用，没有扩大暴露面。
+ * 它不落盘、不经过 IPC、不是导出路径的一部分；渲染层拿到的仍然只有
+ * `Profile.seedHint`（8 位哈希），完整种子依旧不出主进程。
+ *
+ * ── 为什么有上限 ──
+ * 长期运行的实例里，regenerate / clone 会不断产生新种子；没有上限的 Map
+ * 就是一条缓慢的内存泄漏。Map 的迭代顺序是插入顺序，超限就删最旧的一条
+ * （FIFO 足够：这里没有「热点种子」的假设，也不值得为此维护 LRU 链表）。
+ */
+const SEED_HINT_CACHE_LIMIT = 2048
+const seedHintCache = new Map<string, string>()
 
 /**
  * 种子指纹：`sha256(seed)` 前 8 位。
@@ -42,7 +66,17 @@ const DEFAULT_GROUP = '默认'
  * 完整种子不出主进程（见 `StoredProfile` 的注释），所以这个可比较的短串是必须的。
  */
 export function seedHintOf(seed: string): string {
-  return createHash('sha256').update(seed).digest('hex').slice(0, 8)
+  const cached = seedHintCache.get(seed)
+  if (cached !== undefined) return cached
+
+  const hint = createHash('sha256').update(seed).digest('hex').slice(0, 8)
+  if (seedHintCache.size >= SEED_HINT_CACHE_LIMIT) {
+    // keys().next() 拿到的是最早插入的一条（Map 保持插入顺序）
+    const oldest = seedHintCache.keys().next()
+    if (!oldest.done) seedHintCache.delete(oldest.value)
+  }
+  seedHintCache.set(seed, hint)
+  return hint
 }
 
 /**
@@ -59,6 +93,17 @@ export function toPublicProfile(p: StoredProfile): Profile {
 
 function deepCopy(p: StoredProfile): StoredProfile {
   return structuredClone(p)
+}
+
+/**
+ * 是否在回收站里。
+ *
+ * 只把 `null` / `undefined` 当「未删除」：`deletedAt` 是毫秒时间戳，正常值恒为正，
+ * 但盘上的 JSON 可被手改，`0` 也是一个合法时间戳。用真值判断会让一条
+ * `deletedAt: 0` 的记录悄悄回到正常列表 —— 回收站里少一条，用户没有任何提示。
+ */
+function isTrashed(p: StoredProfile): boolean {
+  return p.deletedAt !== undefined && p.deletedAt !== null
 }
 
 function newId(taken: StoredProfile[]): string {
@@ -285,6 +330,72 @@ function safeOf(of: (fp: FingerprintConfig) => string, fp: FingerprintConfig): s
   }
 }
 
+/**
+ * `update()` 允许写入的字段白名单。
+ *
+ * 与 `update()` 里那个显式字段表一一对应：白名单不是「认识的字段」，
+ * 而是「真的会写进 `next` 的字段」。两处必须同步 —— 只加白名单不加字段表，
+ * 就变成「接受了但没生效」，正是这次要修的那个问题。
+ *
+ * **`deletedAt` 故意不在这里。** 回收站状态的唯一写入口是 `softRemove` /
+ * `restore`：加进白名单等于给渲染层开了一条
+ * `update(id, { deletedAt: ... })` 的路，可以不经过审计把环境藏进回收站，
+ * 或把已删除的环境悄悄放回正常列表。未知字段会抛错（见 `update`），
+ * 所以这里不加就真的写不进去，而不是「接受了但没生效」。
+ */
+const WRITABLE: ReadonlySet<string> = new Set([
+  'name',
+  'group',
+  'color',
+  'note',
+  'tags',
+  'proxy',
+  'status',
+  'lastUsedAt',
+  'lastError',
+  'favorite',
+  'startUrl',
+  'extensionIds',
+  'fingerprint'
+])
+
+/**
+ * 扩展 id 列表的清洗。
+ *
+ * 只接受字符串数组：渲染层把表单状态直接丢过来时，常见的是 `['']` / 重复项 /
+ * 带空格。这里统一 trim + 去空 + 去重，并限长 —— 上限不是业务限制，而是
+ * 防止一个坏掉的调用方把整张扩展表塞进每个环境。
+ *
+ * 非数组一律抛错而不是静默当作空：`extensionIds: 'ext_1'` 这种拼错的形状
+ * 如果被当成「清空」，用户会以为扩展被删了。
+ */
+const EXTENSION_IDS_MAX = 50
+
+function cleanExtensionIds(value: unknown): string[] {
+  if (!Array.isArray(value)) throw new Error('extensionIds 必须是字符串数组')
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const item of value) {
+    if (typeof item !== 'string') throw new Error('extensionIds 必须是字符串数组')
+    const id = item.trim()
+    if (id === '' || seen.has(id)) continue
+    seen.add(id)
+    out.push(id)
+    if (out.length >= EXTENSION_IDS_MAX) break
+  }
+  return out
+}
+
+/**
+ * `fingerprint` 的投影字段：`platform` / `browserVersion` 是它的冗余副本。
+ *
+ * 它们**不是**可写字段（见 `update()` 里的说明），但模板应用
+ * （`modules/templates.ts` 的 `applyTemplate`）会连着 `fingerprint` 一起传，
+ * 所以不能当未知字段一刀切拒绝 —— 而是收下来后校验「必须与指纹一致」。
+ * 值不一致才说明调用方真的想单独改平台，那是被禁止的。
+ */
+const PROJECTION_KEYS: readonly string[] = ['platform', 'browserVersion']
+
 export class ProfileStore {
   private readonly store = new JsonStore<StoredProfile[]>('profiles.json', () => [], migrateProfiles, {
     schema: targetSchema,
@@ -333,14 +444,42 @@ export class ProfileStore {
   /**
    * 对外列表。**返回值里没有 seed**（见 `toPublicProfile`）。
    *
+   * 回收站里的环境（`deletedAt` 非空）不在这里返回。过滤必须放在这里而不是
+   * 各个调用方：环境页、localapi、MCP、团队面板全都消费 `list()`，
+   * 让每个消费者自己记得排除已删除项，漏一处就是「已删除的环境仍在正常接口里」。
+   *
    * 需要 seed 的内部调用方用 `getStored()` —— 那个名字本身就说明了「这是内部形态」。
    */
   list(): Profile[] {
-    const all = this.store.read().slice()
+    const all = this.store.read().filter((p) => !isTrashed(p))
     all.sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
     return all.map((p) => toPublicProfile(deepCopy(p)))
   }
 
+  /**
+   * 回收站列表：只含 `deletedAt` 非空的环境，按删除时间**降序**（最近删的在最前）。
+   *
+   * 返回 public 形态，和 `list()` 一样不含 seed —— 渲染层拿到 `deletedAt`
+   * 只是为了显示「删除时间」，不需要种子的任何投影之外的东西。
+   *
+   * 时间戳相同（同一毫秒内删了多个）时按 id 倒序兜底，保证顺序稳定：
+   * 否则每次刷新都可能换一个顺序，用户点「恢复」时容易点错行。
+   */
+  listTrash(): Profile[] {
+    const all = this.store.read().filter((p) => isTrashed(p))
+    all.sort(
+      (a, b) => Number(b.deletedAt) - Number(a.deletedAt) || b.id.localeCompare(a.id)
+    )
+    return all.map((p) => toPublicProfile(deepCopy(p)))
+  }
+
+  /**
+   * 按 id 取环境。**回收站里的环境也会返回。**
+   *
+   * 恢复流程必须先读到已删除的记录才能把它捞回来；这里过滤掉的话，
+   * `restore()` 只能自己绕过 get 去读盘，同一套查找逻辑就有两份实现。
+   * 状态由调用方自查 `deletedAt` —— 只有「不允许操作已删除环境」的入口才需要判。
+   */
   get(id: string): Profile | null {
     const hit = this.getStored(id)
     return hit === null ? null : toPublicProfile(hit)
@@ -348,6 +487,8 @@ export class ProfileStore {
 
   /**
    * 内部形态（含明文 seed）。**只给主进程用**：注入脚本、迁移导出、令牌派生。
+   *
+   * 与 `get()` 一样**不过滤回收站**：恢复/彻底删除都要先拿到记录本身。
    *
    * 单独一个方法而不是给 `get()` 加参数：加参数的话调用点写的是
    * `get(id, true)`，读代码的人得去数第二个参数是什么；而 `getStored(id)`
@@ -415,14 +556,28 @@ export class ProfileStore {
     const existing = this.getStored(id)
     if (existing === null) throw new Error('环境不存在：' + id)
 
+    const raw = patch as Record<string, unknown>
+
     // seed 永远不可经 update 修改：换身份的唯一入口是 regenerate（它重掷种子并重建指纹）。
     //
     // 类型层已经挡了一道（`Partial<Profile>` 里没有 seed），但**类型不是运行时**：
     // 渲染层被 XSS 之后发过来的是裸 JSON，TS 编译不过的代码它照样能发。
-    // 所以这里再判一次 —— 而且必须判，因为下面那个显式字段表会**静默忽略**
-    // 未知字段，那正好是注释里说的「我改了但没生效」这个更难查的问题。
-    if ((patch as Record<string, unknown>)['seed'] !== undefined) {
+    // 所以这里再判一次 —— 而且必须判在「未知字段」之前：seed 的错误信息要指出
+    // 唯一正确的入口，泛泛的「不支持的字段：seed」会把人引到错误的修法上。
+    if (raw['seed'] !== undefined) {
       throw new Error('seed 不可直接修改：要换一套指纹请用「重掷种子」（regenerate）')
+    }
+
+    // 未知字段必须报错，不能静默忽略。
+    //
+    // 原来的实现只挑白名单字段写进 `next`，patch 里多出来的键既不报错也不生效：
+    // 拼错 `noet`、或者把 `platform` 当成可写项传进来，调用方拿到的都是一次
+    // 「成功」—— 而界面显示的还是旧值。这类失败的排查成本远高于一句报错。
+    const unknown = Object.keys(raw).filter(
+      (k) => !WRITABLE.has(k) && !PROJECTION_KEYS.includes(k)
+    )
+    if (unknown.length > 0) {
+      throw new Error('不支持的字段：' + unknown.join(', '))
     }
 
     // id / createdAt 是身份的锚点；platform / browserVersion 是 fingerprint 的投影，
@@ -438,6 +593,12 @@ export class ProfileStore {
       status: patch.status ?? existing.status,
       lastUsedAt: patch.lastUsedAt !== undefined ? patch.lastUsedAt : existing.lastUsedAt,
       lastError: patch.lastError !== undefined ? patch.lastError : existing.lastError,
+      favorite: patch.favorite ?? existing.favorite,
+      startUrl: patch.startUrl !== undefined ? patch.startUrl : existing.startUrl,
+      extensionIds:
+        patch.extensionIds !== undefined
+          ? cleanExtensionIds(patch.extensionIds)
+          : existing.extensionIds,
       id: existing.id,
       createdAt: existing.createdAt,
       updatedAt: Date.now()
@@ -461,11 +622,102 @@ export class ProfileStore {
       next.browserVersion = fp.uaVersion
     }
 
+    // 投影字段：允许出现在 patch 里（模板应用会带），但值必须与最终指纹一致。
+    // 不一致 = 调用方想绕过指纹单独改平台，那是被禁止的 —— 改了 UA 不改平台
+    // 就是一份自相矛盾的指纹。
+    if (raw['platform'] !== undefined && raw['platform'] !== next.platform) {
+      throw new Error('platform 由 fingerprint 决定，不能与指纹不一致')
+    }
+    if (raw['browserVersion'] !== undefined && raw['browserVersion'] !== next.browserVersion) {
+      throw new Error('browserVersion 由 fingerprint 决定，不能与指纹不一致')
+    }
+
     this.store.update((draft) => {
       const i = draft.findIndex((p) => p.id === id)
       if (i >= 0) draft[i] = next
     })
     return toPublicProfile(deepCopy(next))
+  }
+
+  /**
+   * 批量局部更新：同一个 patch 应用到多个 id，**只写一次盘**。
+   *
+   * 为什么需要：`proxy.remove` 要清掉所有挂载该代理的环境的 `proxy` 字段。
+   * 逐条 `update()` 是 N 次整份 `profiles.json` 的 read-modify-atomic-rename
+   * （10 个环境 = 10 次全量写）。这里收成一次 `store.update`。
+   *
+   * 语义（与逐条 `update` 的差异必须说清楚）：
+   * - **校验与 `update` 同源**：`seed` 拒绝、未知字段拒绝、`fingerprint` 形状、
+   *   投影字段一致性，全部照旧 —— 批量不是绕过闸门的理由。
+   * - **不存在的 id 忽略**（不抛）：调用方拿的是同一份 `list()` 快照，
+   *   快照与写入之间环境被别处删掉是正常竞态，抛错会让整批失败。
+   * - **0 条命中不落盘**：返回 0，避免一次无意义的整份重写。
+   * - `updatedAt` 统一刷新为本次时间。
+   */
+  updateMany(ids: string[], patch: Partial<Profile>): number {
+    if (ids.length === 0) return 0
+    const raw = patch as Record<string, unknown>
+    if (raw['seed'] !== undefined) {
+      throw new Error('seed 不可直接修改：要换一套指纹请用「重掷种子」（regenerate）')
+    }
+    const unknown = Object.keys(raw).filter(
+      (k) => !WRITABLE.has(k) && !PROJECTION_KEYS.includes(k)
+    )
+    if (unknown.length > 0) {
+      throw new Error('不支持的字段：' + unknown.join(', '))
+    }
+    // fingerprint 若在 patch 里，先校验一次形状（与 update 同一套规则）。
+    const fpPatch = patch.fingerprint
+    if (fpPatch !== undefined) {
+      if (fpPatch === null || typeof fpPatch !== 'object') {
+        throw new Error('fingerprint 必须是对象')
+      }
+      if (typeof fpPatch.os !== 'string' || fpPatch.os.length === 0) {
+        throw new Error('fingerprint 缺少 os')
+      }
+      if (typeof fpPatch.uaVersion !== 'string' || fpPatch.uaVersion.length === 0) {
+        throw new Error('fingerprint 缺少 uaVersion')
+      }
+    }
+
+    const idSet = new Set(ids)
+    let changed = 0
+    this.store.update((draft) => {
+      const now = Date.now()
+      for (let i = 0; i < draft.length; i++) {
+        const existing = draft[i]
+        if (!idSet.has(existing.id)) continue
+        const next: StoredProfile = {
+          ...existing,
+          name: patch.name ?? existing.name,
+          group: patch.group ?? existing.group,
+          color: patch.color ?? existing.color,
+          note: patch.note ?? existing.note,
+          tags: Array.isArray(patch.tags) ? patch.tags.slice() : existing.tags,
+          proxy: patch.proxy !== undefined ? patch.proxy : existing.proxy,
+          status: patch.status ?? existing.status,
+          lastUsedAt: patch.lastUsedAt !== undefined ? patch.lastUsedAt : existing.lastUsedAt,
+          lastError: patch.lastError !== undefined ? patch.lastError : existing.lastError,
+          favorite: patch.favorite ?? existing.favorite,
+          startUrl: patch.startUrl !== undefined ? patch.startUrl : existing.startUrl,
+          extensionIds:
+            patch.extensionIds !== undefined
+              ? cleanExtensionIds(patch.extensionIds)
+              : existing.extensionIds,
+          id: existing.id,
+          createdAt: existing.createdAt,
+          updatedAt: now
+        }
+        if (fpPatch !== undefined) {
+          next.fingerprint = structuredClone(fpPatch)
+          next.platform = fpPatch.os
+          next.browserVersion = fpPatch.uaVersion
+        }
+        draft[i] = next
+        changed += 1
+      }
+    })
+    return changed
   }
 
   /**
@@ -630,6 +882,59 @@ export class ProfileStore {
     })
   }
 
+  /**
+   * 软删除：只打 `deletedAt` 时间戳，**不删记录、不碰分区**。
+   *
+   * 分区里存着 Cookie / localStorage / IndexedDB。软删除的整个意义就是
+   * 「先别动它们」—— 恢复之后环境必须还是原来那个登录态；如果这里顺手清了，
+   * 回收站就只剩一个空壳，恢复按钮等于「重新建一个同名环境」。
+   * 真正的清理在 `purge` 之前由调用方负责（见 `modules/trash.ts`）。
+   */
+  softRemove(id: string): Profile {
+    const existing = this.getStored(id)
+    if (existing === null) throw new Error('环境不存在：' + id)
+
+    const now = Date.now()
+    const next: StoredProfile = { ...existing, deletedAt: now, updatedAt: now }
+    this.store.update((draft) => {
+      const i = draft.findIndex((p) => p.id === id)
+      if (i >= 0) draft[i] = next
+    })
+    return toPublicProfile(deepCopy(next))
+  }
+
+  /**
+   * 从回收站恢复：清空 `deletedAt`，其余字段与记录原样保留。
+   *
+   * 这里**不重新读分区、不重建指纹**：软删除期间记录和分区都没动过，
+   * 恢复要做的只是把「可见性」还回去。重建任何东西都会破坏「同一环境同一身份」。
+   */
+  restore(id: string): Profile {
+    const existing = this.getStored(id)
+    if (existing === null) throw new Error('环境不存在：' + id)
+
+    const next: StoredProfile = { ...existing, deletedAt: null, updatedAt: Date.now() }
+    this.store.update((draft) => {
+      const i = draft.findIndex((p) => p.id === id)
+      if (i >= 0) draft[i] = next
+    })
+    return toPublicProfile(deepCopy(next))
+  }
+
+  /**
+   * 彻底删除：把记录从数组里真正移除。
+   *
+   * **只负责记录**，不清理 `persist:ss_<id>` 分区。职责分离的理由：
+   * 分区清理要 `electron.session` + 跨平台文件删除，属于主进程运行时能力；
+   * store 要能在没有 Electron 的环境里被单测。调用方（`modules/trash.ts`）
+   * 必须在调用本方法**之前**尽力执行 `clearProfileData`，否则记录没了、
+   * 分区还留在盘上，之后也没有任何 id 能再认领它。
+   */
+  purge(id: string): void {
+    // 复用 remove 的「不存在就抛」与数组移除逻辑，避免两份删除实现漂移。
+    this.remove(id)
+  }
+
   /** 删除后不留占位：列表就是纯数组，天然没有空洞 */
   remove(id: string): void {
     if (this.get(id) === null) throw new Error('环境不存在：' + id)
@@ -661,6 +966,10 @@ export class ProfileStore {
       createdAt: now,
       updatedAt: now,
       lastUsedAt: null,
+      // `...src` 会把 deletedAt 一起复制过来。副本是一个**新**环境：
+      // 源环境即使还在回收站，复制出来的也必须是正常可见的，否则用户点了
+      // 「克隆」却什么也没看到（副本直接进了回收站）。
+      deletedAt: null,
       tags: src.tags.slice(),
       // `...src` 会把豁免一起复制过来，所以必须显式覆盖。
       // 复制一个「已关掉闸门」的环境，等于让用户在没有对副本做过任何确认的情况下

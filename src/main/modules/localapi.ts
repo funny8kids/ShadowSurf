@@ -7,7 +7,7 @@
  * - 令牌落盘复用，进程重启后外部脚本不必重新配置；
  * - 只监听回环地址，绝不 bind 0.0.0.0。
  *
- * 为什么用 node:http 而不是 Hono/Fastify：这个服务只有 7 个端点、零中间件需求，
+ * 为什么用 node:http 而不是 Hono/Fastify：这个服务有一组固定的端点、零中间件需求，
  * 引入框架会让「谁能访问、怎么鉴权」被框架的默认行为接管，安全边界反而看不清。
  * 这里每一行 CORS 与鉴权都是显式的。
  *
@@ -15,6 +15,18 @@
  * 就返回完整 token，等于渲染层零交互就能拿到它 —— 一个被 XSS 的渲染层可以自己
  * `start()` 再自己拿 token，然后 `POST /act` 带 `"confirm":true`，全程没人点过任何东西。
  * 现在令牌只在主进程内存里，界面要拿只能让主进程写进剪贴板，渲染层始终看不到明文。
+ *
+ * 已实现的 GET 端点（/health 免鉴权，其余都要 Bearer）：
+ *   /v1/health                              探活
+ *   /v1/profiles                            环境列表
+ *   /v1/profiles/{id}/snapshot              运行中环境的页面快照
+ *   /v1/profiles/{id}/consistency           指纹一致性自检（逐项 pass/warn/fail）
+ *   /v1/templates                           指纹模板列表
+ *   /v1/scripts                             自动化脚本列表
+ *   /v1/proxies                             代理池列表（去凭据）
+ *   /v1/audit/verify                        审计哈希链校验结论
+ *   /v1/tasks                               任务列表
+ * POST 端点：/v1/profiles/{id}/launch|stop|act（见下方路由）。
  */
 
 import { createServer } from 'node:http'
@@ -22,12 +34,14 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { app, clipboard } from 'electron'
+import { app, clipboard, ipcMain } from 'electron'
+import type { IpcMainInvokeEvent } from 'electron'
 import { CH } from '@shared/ipc'
-import type { LocalApiState, Profile } from '@shared/types'
+import type { ConsistencyReport, LocalApiState, Profile, ProxyRecord } from '@shared/types'
 import type { Action, ActionType } from '@shared/protocol'
 import { describeAction } from '@shared/protocol'
 import { dataDir, getStores } from '@main/store'
+import type { CollectionStore } from '@main/store'
 import { isSealed, openText, sealText } from '@main/store/seed-seal'
 import { migrateSecretAtRest, writeFileAtomic } from '@main/store/secret-at-rest'
 import { bridgeFor } from '@main/core/cdp'
@@ -35,7 +49,7 @@ import { captureSnapshot } from '@main/agent/snapshot'
 import { ApprovalRequiredError, AuditUnavailableError, MaskIncompleteError, executeAction } from '@main/agent/actions'
 import { assessRisk } from '@main/agent/risk'
 import { requestConsent } from '@main/agent/consent'
-import { auditGate } from '@main/modules/audit'
+import { auditGate, verifyAudit } from '@main/modules/audit'
 import type { ModuleContext } from './context'
 
 /* ────────────────────────────── 常量 ────────────────────────────── */
@@ -372,6 +386,115 @@ function requireTab(profileId: string) {
   return tab
 }
 
+/**
+ * 读一个集合 store，并把它「读不到 ≠ 空」的判定翻成真实错误。
+ *
+ * CollectionStore.list() 在文件损坏 / 读不到时会降级返回 []（见 store/json-file.ts 的 quarantine），
+ * 而 corruption 是上一次读留下的判定 —— 所以顺序必须是「先 list() 再读 corruption」，
+ * 反过来在一个冷进程里恒为 null（与 modules/audit.ts 的 verifyAudit 同一条理由）。
+ *
+ * 不这么做的话，一次损坏的读取会被 API 报成「列表是空的」：调用方分不清
+ * 「用户真的没有数据」和「数据读不出来」，而后者伪装成了成功。这里是控制面，
+ * 宁可返回 503 让调用方停下来，也不要给一条看起来正常的空列表。
+ */
+function listCollection<T extends { id: string }>(store: CollectionStore<T>, label: string): T[] {
+  const items = store.list()
+  const corruption = store.corruption
+  if (corruption !== null) {
+    const why = corruption.kind === 'io' ? '读不到（被占用或没有权限）' : '已损坏'
+    throw new ApiError(
+      503,
+      'E_STORE_UNAVAILABLE',
+      `${label}${why}，无法列出：${corruption.file}（${corruption.detail}）`
+    )
+  }
+  return items
+}
+
+/**
+ * 代理列表的对外形状。
+ *
+ * 用**字段白名单**而不是「从完整记录里删掉 password」：白名单在
+ * ProxyRecord 将来加新字段时默认不带出去；黑名单会默认带出去，
+ * 直到有人记得补一句删除 —— 而「记得」正是凭据泄露最爱钻的空子。
+ * username 也一并去掉：它和 password 一起构成代理凭据，
+ * 本地 API 是拿到令牌就能驱动浏览器的控制面，没有理由把代理账号往外发。
+ */
+function toProxyBrief(record: ProxyRecord): Record<string, unknown> {
+  return {
+    id: record.id,
+    name: record.name,
+    protocol: record.protocol,
+    host: record.host,
+    port: record.port,
+    region: record.region,
+    lastCheck: record.lastCheck
+  }
+}
+
+/** ipcMain.handle 注册的处理函数形状（与 handlers.ts 的 ctx.handle 包装一致） */
+type InvokeHandler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown
+
+/**
+ * 拿到指纹自检的处理函数。
+ *
+ * 自检的探针、比对、注入台账都在 modules/audit.ts 里，且必须与不可逆动作的闸门
+ * 共用同一份判定；那个函数没有导出，所以这里**不重新实现**，而是复用 audit.ts
+ * 已经注册到 ipcMain 的 handler —— 保证本地 API 和界面走的是同一条自检路径。
+ *
+ * `ipcMain._invokeHandlers` 是 Electron 的内部 Map（handle() 往里写，
+ * ipcMain 的 C++ 分发也按 channel 从它取 handler）。它是私有字段，所以用 unknown 中转；
+ * 若某个 Electron 版本把它改名，这里会拿到 undefined 并如实报 503，
+ * 而不是退化成「自己实现一份自检」—— 那才是真正危险的假成功。
+ */
+function selfCheckHandler(): InvokeHandler | undefined {
+  const registry = (ipcMain as unknown as { _invokeHandlers?: Map<string, InvokeHandler> })
+    ._invokeHandlers
+  if (!registry) return undefined
+  return registry.get(CH.selfcheck.run)
+}
+
+/**
+ * 跑一次指纹自检，返回每项的 pass / warn / fail。
+ *
+ * 前置校验故意用本模块已有的 requireProfile / requireTab：
+ * 「环境不存在」和「没开窗」是调用顺序问题，要在 gate 前就给出准确错误码，
+ * 而不是让自检探针先跑一半再报一个含混的 500。
+ * 真正的探针比对仍交给 audit.ts 的 handler，这里一行都不重算。
+ */
+async function runConsistency(profileId: string): Promise<ConsistencyReport> {
+  requireProfile(profileId)
+  requireTab(profileId)
+
+  const handler = selfCheckHandler()
+  if (handler === undefined) {
+    // 内部通道拿不到就如实失败，绝不退化成「自己算一份」。
+    throw new ApiError(503, 'E_SELFCHECK_UNAVAILABLE', '指纹自检通道不可用')
+  }
+
+  // 自检 handler 不用 event（它的签名是 (_event, profileId)）；
+  // 用一个显式的空壳占位，并标注它只是占位、不是真事件。
+  const event = {} as IpcMainInvokeEvent
+  const result = await handler(event, profileId)
+  // ctx.handle 把结果包成 {ok:true,data} / {ok:false,error}；先拆包再交给调用方
+  if (result !== null && typeof result === 'object' && 'ok' in result) {
+    const wrapped = result as { ok?: unknown; data?: unknown; error?: unknown }
+    if (wrapped.ok === true && wrapped.data !== undefined) {
+      return wrapped.data as ConsistencyReport
+    }
+    if (wrapped.ok === false) {
+      const detail = wrapped.error as { message?: unknown } | undefined
+      const message =
+        detail !== null && typeof detail === 'object' && typeof detail.message === 'string'
+          ? detail.message
+          : '指纹自检失败'
+      throw new ApiError(500, 'E_SELFCHECK_FAILED', message)
+    }
+  }
+  // 不是预期的信封形状 —— 说明通道对面变了，不能当成成功的空报告
+  throw new ApiError(500, 'E_SELFCHECK_BAD_RESPONSE', '指纹自检返回了无法识别的结果')
+}
+
 /** 只搬运协议里声明过的字段，调用方塞进来的其他键一律丢弃 */
 function toAction(raw: unknown): Action {
   if (raw === null || typeof raw !== 'object') {
@@ -461,6 +584,42 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       throw new ApiError(401, 'E_UNAUTHORIZED', '缺少或错误的 Bearer 令牌')
     }
 
+    // 只有GET值，却收到别的方法：归到 E_NOT_FOUND，和现有 /profiles 列表的口径一致
+    // （这里不返回 405 —— 全服务都没有 405，避免给调用方两套判别口径）
+    const getOnly = (): void => {
+      if (method !== 'GET') {
+        throw new ApiError(404, 'E_NOT_FOUND', `没有这个端点：${method} /${seg.join('/')}`)
+      }
+    }
+
+    if (seg[0] === 'templates' && seg.length === 1) {
+      getOnly()
+      sendJson(res, 200, { ok: true, data: listCollection(getStores().templates, '指纹模板') })
+      return
+    }
+
+    if (seg[0] === 'scripts' && seg.length === 1) {
+      getOnly()
+      sendJson(res, 200, { ok: true, data: listCollection(getStores().scripts, '自动化脚本') })
+      return
+    }
+
+    if (seg[0] === 'proxies' && seg.length === 1) {
+      getOnly()
+      // 白名单形状在 toProxyBrief：username / password 一律不带出控制面
+      const list = listCollection(getStores().proxies, '代理池').map(toProxyBrief)
+      sendJson(res, 200, { ok: true, data: list })
+      return
+    }
+
+    if (seg[0] === 'audit' && seg.length === 2 && seg[1] === 'verify') {
+      getOnly()
+      // 直接调 audit.ts 的 verifyAudit，不在 API 层重写哈希链校验：
+      // 它已经把「读不到 / 已损坏」和「链断了」分开，复制一份只会让两边语义漂移
+      sendJson(res, 200, { ok: true, data: verifyAudit(getStores()) })
+      return
+    }
+
     if (seg[0] === 'profiles') {
       await handleProfiles(method, seg, req, res)
       return
@@ -530,6 +689,12 @@ async function handleProfiles(
     await cdp.attach()
     const snap = await captureSnapshot(cdp)
     sendJson(res, 200, { ok: true, data: snap })
+    return
+  }
+
+  if (verb === 'consistency') {
+    if (method !== 'GET') throw new ApiError(404, 'E_NOT_FOUND', '指纹自检请用 GET')
+    sendJson(res, 200, { ok: true, data: await runConsistency(id) })
     return
   }
 
@@ -605,6 +770,9 @@ async function handleProfiles(
       result = await executeAction(cdp, action, snap, {
         ...(ticket !== undefined ? { ticket } : {}),
         origin: 'api',
+        // 伪装闸门查的是这个环境的**标签页** wc。这条路径没有 sender，但「哪个窗口」
+        // 是确定的（`requireTab(id)` 取到的就是本次要操作的那个标签页）。
+        maskWebContentsId: tab.wc.id,
         onGate: (event) => auditGate(getStores(), event)
       })
     } catch (err) {

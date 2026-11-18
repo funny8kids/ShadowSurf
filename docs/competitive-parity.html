@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShadowSurf 竞争对位分析 · 商用指纹浏览器与主流浏览器</title>
+<link rel="stylesheet" href="assets/doc.css">
+<style>
+/* 本文专用 */
+.mx table{font-size:12px}
+.mx th,.mx td{padding:8px 9px;text-align:center;vertical-align:middle}
+.mx th:first-child,.mx td:first-child{text-align:left;white-space:nowrap;font-weight:600;color:var(--ink)}
+.mx .state{font-size:9.5px;padding:1px 5px;letter-spacing:-.02em}
+.lg{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:12px;color:var(--ink-3);margin:14px 0 0}
+.lg span{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+</style>
+<script src="assets/doc.js"></script>
+</head>
+<body>
+<div class="shell">
+
+<aside class="toc">
+  <div class="toc-brand">
+    <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2.5-7 3.5 14 2.5-7H21"/></svg></div>
+    <b>ShadowSurf</b>
+  </div>
+  <div class="toc-doc">竞争对位分析<br>Competitive Parity · 2026-11</div>
+  <nav>
+    <div class="grp">结论</div>
+    <a href="#verdict">1 结论先行</a>
+    <div class="grp">矩阵</div>
+    <a href="#mx-a">2 表 A 指纹引擎面</a>
+    <a href="#mx-b">3 表 B 环境与代理</a>
+    <a href="#mx-c">4 表 C 自动化与协作</a>
+    <div class="grp">差距</div>
+    <a href="#gap-engine">5 引擎层指纹缺口</a>
+    <a href="#gap-env">6 环境与代理缺口</a>
+    <a href="#gap-auto">7 自动化缺口</a>
+    <a href="#gap-team">8 团队 / 云 / API 缺口</a>
+    <a href="#gap-ui">9 UI/UX 缺口</a>
+    <div class="grp">边界</div>
+    <a href="#redline">10 三条红线</a>
+    <a href="#road">11 路线图</a>
+    <a href="#refs">12 参考来源</a>
+  </nav>
+</aside>
+
+<main class="content">
+
+<header class="doc-head">
+  <div class="doc-kicker">Competitive Parity · 2026-11</div>
+  <h1>ShadowSurf 与商用指纹浏览器 / 主流浏览器的<em>能力对位</em></h1>
+  <p class="sub">把 10 款商用指纹浏览器与 6 款主流浏览器逐格摊开，明确本项目在哪里领先、在哪里落后、哪些事情根本不该做。本文只写能在一手来源核实的东西——厂商没公开说明的写「未核实」，不按「同类产品都有」推断。</p>
+  <div class="doc-meta">
+    <div><b>调研截止</b>　2026-11-18</div>
+    <div><b>覆盖</b>　10 款商用产品 + 6 款主流浏览器</div>
+    <div><b>方法</b>　官方文档 / 定价页 / 帮助中心 / 发布说明 / W3C / Fluent 2 与 Material 3 令牌源</div>
+    <div class="rel"><b>关联</b>
+      <a href="index.html">设计中心</a>
+      <a href="architecture.html">架构设计</a>
+      <a href="frontend.html">前端设计</a>
+      <a href="open-source-features.html">开源功能清单</a>
+    </div>
+  </div>
+</header>
+
+<!-- ============ 1 ============ -->
+<h2 id="verdict"><span class="n">01</span>结论先行</h2>
+<p class="lede">五条结论。每一条后面跟着可复核的证据，不写「业内普遍认为」这种没有出处的句子。</p>
+
+<div class="verdicts">
+  <div class="v">
+    <div class="n">01</div>
+    <div>
+      <h4>引擎层的差距不在「数量」，在「未覆盖面」</h4>
+      <p>本项目代码实测：<code>_MASK_TABLE</code> 覆盖 <b>17 个宿主对象、61 个属性级触点</b>，加上 <code>document.fonts.check</code> 与 <code>speechSynthesis.getVoices</code> 共 <b>63 个触点</b>，分布在约 <b>30 条独立可检测通道</b>上。对面：GoLogin 文档逐条列出 <b>21 项</b>设置（User-Agent / Orbita 版本 / 屏幕分辨率 / 语言 / Platform / CPU 线程 / RAM / DoNotTrack / OS / 字体列表 / 视频输入 / 音频输入 / 音频输出 / Canvas / WebGL / AudioContext / ClientRects / WebRTC / 时区 / 位置），Multilogin 宣称 <b>55+</b> 参数，AdsPower 与 BitBrowser 均宣称 <b>50+</b>。但那是「参数个数」，不是「通道个数」。本项目缺的是<b>整条通道消失</b>：<code>battery</code>、<code>mediaDevices</code>、<code>permissions</code>、<code>mediaCapabilities</code>、<code>navigator.connection</code>、<code>WebAssembly</code> 在代码里各 <b>0 次引用</b>；<code>plugins</code> / <code>mimeTypes</code> / <code>maxTouchPoints</code> 只在登记表里出现（为了 <code>toString</code> 收口保留原生 arity），<b>值并没有改写</b>。</p>
+    </div>
+  </div>
+  <div class="v">
+    <div class="n">02</div>
+    <div>
+      <h4>会被外部检测器真正打中的是三件事，不是三十件事</h4>
+      <p>其一，<b>插桩本身就是一个 tell</b>：被换过的函数必须让 <code>Function.prototype.toString</code> 说得出原话，而 <code>plugins</code> 这类只登记未改写的属性仍然吐宿主真值——两者对照就能定位出改写过。其二，<b>字体 DOM 布局通道没封</b>：<code>document.fonts.check</code> 与 canvas <code>measureText</code> 两条路已接管，用 <code>&lt;span&gt;</code> + <code>offsetWidth</code> 做布局度量的第三条路拦不住，代码里 <code>offsetWidth</code> <b>0 次引用</b>。其三，<b>TLS/JA3 与 HTTP/2 在 Electron 层做不到</b>，README 已明确列为不承诺项。</p>
+    </div>
+  </div>
+  <div class="v">
+    <div class="n">03</div>
+    <div>
+      <h4>商业产品的付费墙锁的不是指纹算法</h4>
+      <p>免费档就有可用指纹环境：Multilogin <b>5 个</b>环境 + 1 个云手机、GoLogin <b>3 个</b>、AdsPower <b>2 个</b>、BitBrowser <b>10 个</b>（且免费档就含 Local API、RPA、SOCKS5/SSH 代理）、Dolphin <b>3–5 个</b>、MoreLogin <b>2 个 / 2 用户</b>（含本地 API + Synchronizer + Selenium/Puppeteer）、Undetectable <b>5 个</b>云环境、Incogniton <b>10 个</b>。被锁的是另外七样：<b>团队角色与共享、云端（云手机/云浏览器/云同步）、代理市集、扩展与脚本市场、Cookie 机器人、跨工具迁移、并发调度</b>（AdsPower 明确支持到 <b>100</b> 并发线程）。本项目在<b>完整性</b>上领先，在<b>协作与规模</b>上落后——这是两种不同的落后，不要混成一句「我们更强」。</p>
+    </div>
+  </div>
+  <div class="v">
+    <div class="n">04</div>
+    <div>
+      <h4>2026 年的桌面浏览器 UI 期望是七件套，本项目缺四套令牌与十类原语</h4>
+      <p>七件套 = <b>侧栏 + 垂直标签 + 命令面板 + AI 侧栏 + 分屏 + 三档主题 + 密度调节</b>，外加骨架屏与动效体系。一手依据：Chrome 146+ 右键 <code>Show Tabs Vertically</code>；Chrome 分屏快捷键 <code>Shift+Alt+N</code>；Edge 支持窗口内切换工作区、工作区置顶与自定义 emoji；Firefox 157 自称「史上最大视觉改版」并新增<b>紧凑模式</b>与一键浅/深主题；Firefox 155 的 <code>Organize Tabs</code>；Chrome 的 AI Mode 进了地址栏、Gemini 走侧栏（可弹出 / 可停靠、上下文最多 <b>10 个</b>标签）；Dia（Arc 将于 <b>2026-12-22</b> 关停后的继任者）提供 Profiles + 侧栏标签 + Tab Groups + 记住布局的 Splits。本项目 <code>tokens.css</code> 的颜色 / 圆角 / 三级阴影 / 焦点环 / 布局尺寸是完整的，暗色也全覆盖，但<b>没有间距阶梯、没有动效时长与缓动、没有层级、没有字阶</b>这四套令牌——<code>app.css</code> 里的动效是 <code>0.12s</code> / <code>0.14s</code> / <code>0.16s</code> / <code>0.18s</code> 手写内联值，没有一处 token 化。</p>
+    </div>
+  </div>
+  <div class="v">
+    <div class="n">05</div>
+    <div>
+      <h4>MCP 已经是品类标配，本项目却没有接入面——这是最锋利的缺口</h4>
+      <p>截至 2026-11-18 核实到 <b>5 家</b>在售产品已发货 MCP：GoLogin Core MCP Server（<code>gologinapp/gologin-mcp</code>，暴露 profile 创建 / 启动 / 停止 / 列举，适配 OpenAI、Gemini、Claude、Cursor、Copilot）、AdsPower（<code>local-api-mcp-typescript</code>，Claude Desktop 与 Cursor）、Undetectable（Browser MCP + Chromium CDP MCP，<code>undetectable-local-api-mcp-ts</code>，MIT 协议，Claude / Claude Code / Codex / Gemini / Cursor）、Incogniton（MCP）、MoreLogin（Copy to Agent · MCP）。本项目的立项理由就是「AI 原生浏览器」，却连一个 MCP 端点都没有：全仓库检索 <code>mcp</code> 命中 0 处（唯一相关的是 <code>docs/api/openapi.yaml</code> 的注释）。</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 2 ============ -->
+<h2 id="mx-a"><span class="n">02</span>表 A · 指纹引擎面</h2>
+<p class="lede">行 = 指纹面，列 = 商用产品 + 本项目。本项目一列全部来自代码实测（<code>src/main/core/fingerprint.ts</code>），不是来自产品宣传。</p>
+
+<div class="tbl-wrap">
+<div class="mx">
+<table>
+<thead><tr>
+  <th style="min-width:210px">指纹面</th>
+  <th>Multilogin</th><th>GoLogin</th><th>AdsPower</th><th>BitBrowser</th><th>Dolphin</th><th>MoreLogin</th><th>Octo</th><th>Undetectable</th><th>Incogniton</th><th style="background:var(--accent-2)">ShadowSurf</th>
+</tr></thead>
+<tbody>
+<tr><td>navigator 基础（UA / platform / cores / RAM / DNT / language）</td>
+<td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state warn">部分</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>screen / DPR / colorDepth</td>
+<td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state warn">部分</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state warn">部分</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>UA-CH 高熵（brands / getHighEntropyValues）</td>
+<td><span class="state warn">部分</span></td><td><span class="state warn">部分</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">缺失</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state warn">部分</span></td></tr>
+<tr><td>canvas 2D（getImageData / toDataURL / toBlob）</td>
+<td><span class="state warn">部分</span></td><td><span class="state warn">部分</span></td><td><span class="state warn">部分</span></td><td><span class="state warn">部分</span></td><td><span class="state warn">部分</span></td><td><span class="state warn">部分</span></td><td><span class="state idle">未核实</span></td><td><span class="state warn">部分</span></td><td><span class="state idle">未核实</span></td><td><span class="state warn">部分</span></td></tr>
+<tr><td>OffscreenCanvas（Worker 场景第二通道）</td>
+<td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state warn">部分</span></td></tr>
+<tr><td>WebGL 1 / WebGL 2</td>
+<td><span class="state warn">部分</span></td><td><span class="state warn">部分</span></td><td><span class="state warn">部分</span></td><td><span class="state warn">部分</span></td><td><span class="state warn">部分</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state warn">部分</span></td><td><span class="state idle">未核实</span></td><td><span class="state warn">部分</span></td></tr>
+<tr><td>AudioContext（AudioBuffer / AnalyserNode）</td>
+<td><span class="state warn">部分</span></td><td><span class="state ok">免费</span></td><td><span class="state warn">部分</span></td><td><span class="state warn">部分</span></td><td><span class="state warn">部分</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state warn">部分</span></td><td><span class="state warn">部分</span></td><td><span class="state warn">部分</span></td></tr>
+<tr><td>字体三通道（fonts.check / measureText / DOM 布局度量）</td>
+<td><span class="state warn">部分</span></td><td><span class="state warn">部分</span></td><td><span class="state warn">部分</span></td><td><span class="state warn">部分</span></td><td><span class="state warn">部分</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state warn">部分</span></td><td><span class="state idle">未核实</span></td><td><span class="state warn">部分</span></td></tr>
+<tr><td>WebRTC（IP 屏蔽与构造器 hook）</td>
+<td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>geolocation</td>
+<td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state warn">部分</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state ok">免费</span></td><td><span class="state idle">未核实</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>时区 / Intl（locale + timeZone）</td>
+<td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>plugins / mimeTypes</td>
+<td><span class="state ok">免费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state ok">免费</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>maxTouchPoints</td>
+<td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>navigator.connection</td>
+<td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>battery</td>
+<td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>mediaDevices（摄像头 / 麦克风 / 扬声器枚举）</td>
+<td><span class="state idle">未核实</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state warn">部分</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>permissions（授权态查询）</td>
+<td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>mediaCapabilities</td>
+<td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>WebGPU</td>
+<td><span class="state idle">未核实</span></td><td><span class="state idle">缺失</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state idle">缺失</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state warn">部分</span></td></tr>
+<tr><td>TLS / HTTP2 / TCP 指纹</td>
+<td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">缺失</span></td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+<div class="lg">
+  <span><span class="state ok">免费</span>免费档即完整覆盖</span>
+  <span><span class="state run">付费</span>仅付费档完整覆盖</span>
+  <span><span class="state warn">部分</span>只覆盖该面的部分通道或部分模式</span>
+  <span><span class="state idle">缺失</span>未覆盖</span>
+  <span><span class="state idle">未核实</span>厂商一手来源未公开说明</span>
+</div>
+
+<div class="note">
+  <div class="lbl">读法</div>
+  <p>本表只记录一手来源写明的能力。厂商未公开说明某一面的，一律写「未核实」，不按「同类产品都有」推断——所以这一列里有大量「未核实」，那是<b>信息缺口</b>，不是能力缺失。</p>
+  <p><b>TLS / HTTP2 / TCP 那一行全部是「未核实」</b>：截至 2026-11-18，没有任何一家在公开文档里写明它们做了 TLS/JA3 或 HTTP/2 指纹伪造，包括常被引用「内核级 TLS 伪造」说法的几家。这一行读出的结论只能是「<b>全行业都未公开</b>」，不能读成「谁都没有」；而本项目那一格的「缺失」是<b>确定的</b>——Electron 层确实做不到。</p>
+  <p>本项目一列的判据：<code>src/main/core/fingerprint.ts</code> 里是否真的改写了该属性。登记在 <code>_MASK_TABLE</code> 但没有对应 <code>defVal</code> 的（如 <code>plugins</code> / <code>mimeTypes</code> / <code>maxTouchPoints</code>），一律记「缺失」。</p>
+</div>
+
+<!-- ============ 3 ============ -->
+<h2 id="mx-b"><span class="n">03</span>表 B · 环境与代理管理</h2>
+<p class="lede">行 = 环境管理与代理能力，列同上。本项目一列同样来自代码与 IPC 契约。</p>
+
+<div class="tbl-wrap">
+<div class="mx">
+<table>
+<thead><tr>
+  <th style="min-width:210px">能力</th>
+  <th>Multilogin</th><th>GoLogin</th><th>AdsPower</th><th>BitBrowser</th><th>Dolphin</th><th>MoreLogin</th><th>Octo</th><th>Undetectable</th><th>Incogniton</th><th style="background:var(--accent-2)">ShadowSurf</th>
+</tr></thead>
+<tbody>
+<tr><td>创建 / 编辑 / 删除</td>
+<td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>克隆</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>批量创建</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>文件夹 / 分组</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state warn">部分</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>标签</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state warn">部分</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>备注</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>收藏 / 置顶</td>
+<td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>搜索 / 筛选</td>
+<td><span class="state warn">部分</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>多语言界面</td>
+<td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state warn">部分</span></td><td><span class="state warn">部分</span></td><td><span class="state warn">部分</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>批量操作</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state warn">部分</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>Cookie 导入</td>
+<td><span class="state warn">部分</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>Cookie 导出</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>Cookie 预热（cookie robot）</td><td>已实现：<code>ss:warmup:run</code> 按环境串行访问用户给的 URL 列表，每页随机停留 1.5–3s、单页 20s 超时、最多 30 条；逐页返回成功 / 失败原因。写入的是该环境自己的 <code>persist:ss_&lt;id&gt;</code> 分区</td><td><span class="state ok">已落地</span></td><td>只做真实访问，不伪造 / 不导出第三方 cookie；预热期间提示不要同时手动操作该环境</td></tr>
+<tr><td>扩展管理</td><td>已实现：<code>ss:extensions:*</code> 登记解压目录（校验 manifest.json、路径去重、可停用），<code>Profile.extensionIds</code> 逐环境勾选，启动时经 <code>session.extensions.loadExtension</code> 装进该环境自己的 session，幂等且失败逐条回报</td><td><span class="state ok">已落地</span></td><td>不下载、不上市场、不静默安装；扩展只见得到该环境的 Cookie</td></tr>
+<tr><td>跨工具环境迁移</td>
+<td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state warn">部分</span></td></tr>
+<tr><td>模板</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>云同步 / 云端存储</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>回收站 / 恢复已删</td>
+<td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>HTTP / HTTPS 代理</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td><td><span class="state ok">免费</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>SOCKS5</td>
+<td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>SOCKS4</td>
+<td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>SSH 隧道</td>
+<td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>IPv6</td>
+<td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>代理市集（内置代理供应）</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>代理轮换</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>地域定向（按国家 / 城市）</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state warn">部分</span></td></tr>
+<tr><td>健康检查 / 连通性探测</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state warn">部分</span></td></tr>
+<tr><td>代理池 / 代理组</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>批量导入代理</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>故障转移 / kill switch</td>
+<td><span class="state idle">缺失</span></td><td><span class="state idle">缺失</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">缺失</span></td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+<div class="note">
+  <div class="lbl">读法</div>
+  <p>本表最值得看的一列是<b>最后一行</b>：<b>十家产品没有一家公开文档写明「代理故障转移 / kill switch」</b>，但每一家都写了代理健康检查。这不是能力差距——是这一类能力全行业都没做，而它恰好是真实泄漏风险最高的一处（代理挂掉后流量回落到宿主 IP）。</p>
+  <p>Multilogin 的 Cookie 导入只核实到<b>「JSON 且小于 100MB」</b>，其帮助页虽有 netscape / cookie editor 标签，但正文并未确认支持，故记「部分」。Dolphin 一列的资料来自 GoLogin 官方对比文（其官网 <code>dolphinanty.com</code> 已 301 跳转到该文），属二手但为厂商自述，故在行内保持克制表述。</p>
+  <p>本项目「批量导入代理」为免费：<code>src/main/modules/proxy.ts</code> 支持三种写法批量导入，<code>PROTOCOLS</code> 枚举含 <code>http</code> / <code>https</code> / <code>socks5</code>，但 SOCKS5 探测显式返回「暂不支持」——不假装成功，这是对的，所以那一格记「缺失」而不是「部分」。</p>
+</div>
+
+<!-- ============ 4 ============ -->
+<h2 id="mx-c"><span class="n">04</span>表 C · 自动化与协作 / UI-UX</h2>
+<p class="lede">上半是接入与协作，下半是 2026 年桌面浏览器的 UI 期望与本项目现状。两者放在一起，是因为竞品的「协作」几乎全靠 UI 兑现——角色、共享、日志在界面上没有入口就等于没有。</p>
+
+<h3>4.1 表 C · 自动化与接入</h3>
+
+<div class="tbl-wrap">
+<div class="mx">
+<table>
+<thead><tr>
+  <th style="min-width:210px">能力</th>
+  <th>Multilogin</th><th>GoLogin</th><th>AdsPower</th><th>BitBrowser</th><th>Dolphin</th><th>MoreLogin</th><th>Octo</th><th>Undetectable</th><th>Incogniton</th><th style="background:var(--accent-2)">ShadowSurf</th>
+</tr></thead>
+<tbody>
+<tr><td>无代码 RPA 构建器</td>
+<td><span class="state idle">未核实</span></td><td><span class="state warn">部分</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>RPA 录制器</td>
+<td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>元素拾取 / 可视化选元素</td>
+<td><span class="state warn">部分</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state warn">部分</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state warn">部分</span></td></tr>
+<tr><td>动作同步器（多环境同动作）</td>
+<td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>Selenium</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>Puppeteer</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>Playwright</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>CDP 调试端口外露</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>本地 API</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>云端 API</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>OpenAPI 规范</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>Webhook</td>
+<td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>MCP server</td>
+<td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>AI / 自然语言自动化</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state warn">部分</span></td><td><span class="state warn">部分</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>定时任务</td>
+<td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state ok">免费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state ok">免费</span></td></tr>
+<tr><td>任务分组</td>
+<td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>并发上限</td>
+<td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state warn">部分</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>会话录制 / 轨迹</td>
+<td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state warn">部分</span></td></tr>
+<tr><td>拟人输入</td>
+<td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>文件上传 / 下载处理</td>
+<td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state warn">部分</span></td></tr>
+<tr><td>技能 / 脚本市场</td>
+<td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state ok">免费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>CLI / SDK</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state warn">部分</span></td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+<h3>4.2 表 D · 协作与云</h3>
+
+<div class="tbl-wrap">
+<div class="mx">
+<table>
+<thead><tr>
+  <th style="min-width:210px">能力</th>
+  <th>Multilogin</th><th>GoLogin</th><th>AdsPower</th><th>BitBrowser</th><th>Dolphin</th><th>MoreLogin</th><th>Octo</th><th>Undetectable</th><th>Incogniton</th><th style="background:var(--accent-2)">ShadowSurf</th>
+</tr></thead>
+<tbody>
+<tr><td>团队角色</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state warn">部分</span></td></tr>
+<tr><td>席位</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state warn">部分</span></td></tr>
+<tr><td>共享环境</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state warn">部分</span></td></tr>
+<tr><td>权限粒度</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state warn">部分</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state warn">部分</span></td></tr>
+<tr><td>会话监控</td>
+<td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>操作 / 活动日志</td>
+<td><span class="state warn">部分</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state warn">部分</span></td></tr>
+<tr><td>2FA</td>
+<td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>IP 白名单 / 登录告警</td>
+<td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>云手机 / 云浏览器</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">缺失</span></td><td><span class="state idle">缺失</span></td><td><span class="state run">付费</span></td><td><span class="state idle">缺失</span></td></tr>
+<tr><td>多端同步</td>
+<td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state run">付费</span></td><td><span class="state idle">未核实</span></td><td><span class="state idle">未核实</span></td><td><span class="state run">付费</span></td><td><span class="state idle">缺失</span></td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+<h3>4.3 UI/UX 期望 · 2026 桌面浏览器的可实现规格</h3>
+<p class="lede">竞品矩阵在 UI 层大面积「未核实」——因为指纹浏览器本身不是主浏览器，UI 不是它们的产品重心。<b>真正对标 UI 的应该是 Chrome / Edge / Firefox / Brave / Dia / Comet。</b>下面这一节把 2026 年的期望翻译成本项目可直接落地的令牌与规格。</p>
+
+<div class="tbl-wrap">
+<div class="mx">
+<table>
+<thead><tr>
+  <th style="min-width:150px">期望</th>
+  <th style="min-width:260px">一手来源与事实</th>
+  <th style="min-width:120px">本项目现状</th>
+  <th style="min-width:300px">规格 / 令牌</th>
+</tr></thead>
+<tbody>
+<tr><td>垂直标签</td><td>Chrome 146+ 右键 <code>Show Tabs Vertically</code>，可折叠为仅 favicon、可拖拽调宽；Firefox 136 起垂直标签在侧栏内；Brave 1.52 起提供；Dia 迁入 Arc 的侧栏标签</td><td><span class="state idle">缺失</span></td><td>侧栏垂直标签；折叠态只留 16px favicon；行高 32–36px；侧栏宽可拖拽；<code>--side-w</code> 由 196px 改为可调</td></tr>
+<tr><td>标签组</td><td>Chrome 拖拽成组、命名 + 颜色、跨设备同步、关闭后保留可重开；Firefox 138 标签组可拖拽重排</td><td><span class="state idle">缺失</span></td><td>组名 12px/600 + 8px 色点；点击组名折叠 / 展开；组与环境的分组（<code>Profile.group</code>）概念分离</td></tr>
+<tr><td>标签搜索</td><td>Chrome「Search your tabs」覆盖打开的标签、标签组、最近关闭、其它设备与搜索建议</td><td><span class="state idle">缺失</span></td><td>并入命令面板一级分组，不单独做控件</td></tr>
+<tr><td>命令面板</td><td>Arc Command Bar 处理搜索 / URL / 固定 / 复制 / 历史；Firefox Unified Search Button；Chrome AI Mode 直接进了地址栏</td><td><span class="state idle">缺失</span></td><td><code>⌘/Ctrl + K</code>；宽 560–640px；圆角 12px；行高 40px、行间距 8px；命中高亮用 4% 强调色washes而非实色；100ms 淡入 + 4px 抬升</td></tr>
+<tr><td>AI 侧栏</td><td>Chrome Gemini 走侧栏，可「Pop-out chat」或「Dock to original tab」，上下文最多 10 个打开 / 最近的标签，共享标签带对勾、在用标签带发光下划线</td><td><span class="state warn">部分</span></td><td>AgentPanel 由底部 66px 条改为可停靠侧栏（宽 <code>--panel-w</code> 380px）+ 可弹出 + 可停靠；上下文标签用对勾与下划线两种状态</td></tr>
+<tr><td>分屏</td><td>Chrome 分屏 <code>Shift+Alt+N</code>（Mac <code>⌘+Option+N</code>），活动视图以加粗边框标记、工具栏动作只作用于活动视图、侧栏保持展开；Edge Split screen；Dia Splits 记住布局</td><td><span class="state idle">缺失</span></td><td>注意与既有「双轨」区分：双轨是人 / 影子，不是分屏。分屏为两个 WebContentsView 并排，活动视图加粗边框</td></tr>
+<tr><td>阅读模式</td><td>Chrome 阅读模式可调字号 / 配色 / 字体 / 行高 / 字距 / 链接与图片开关，支持 Line focus 与朗读（逐句导航、变速、逐词高亮），可停靠侧栏</td><td><span class="state idle">缺失</span></td><td>本期不做；但朗读能力与 Agent 的页面摘要可复用同一条文本抽取管道</td></tr>
+<tr><td>下载架</td><td>Chrome 下载气泡位于窗口底部，含文件名 / 大小 / 进度 / 取消</td><td><span class="state idle">缺失</span></td><td>数据面板已有下载列表与清空动作，改为气泡形态 + 空闲自动收起为芯片</td></tr>
+<tr><td>密度 / 紧凑模式</td><td>Firefox 157 新增紧凑模式，压缩工具栏与标签间距，为小屏与分屏让路</td><td><span class="state idle">缺失</span></td><td>间距阶梯乘子 ×0.75（仅影响间距令牌，不动字号）</td></tr>
+<tr><td>三档主题</td><td>Chrome 提供 Light / Dark / Device（跟随系统），可在新标签页右下角「Customize Chrome」切换且即时生效；Firefox 157 提供一键浅色 / 深色内置主题</td><td><span class="state warn">部分</span></td><td>主进程 <code>nativeTheme.themeSource</code> 已支持三态，<b>但设置面板未暴露</b>；补一个三选一段控件，切换不重启</td></tr>
+<tr><td>权限气泡</td><td>Chrome 权限提示锚定地址栏站点信息芯片，不做模态；含「仅本次 / 始终允许 / 拒绝」</td><td><span class="state idle">缺失</span></td><td>锚定地址栏芯片；<code>200ms</code> 入场，用减速曲线</td></tr>
+<tr><td>骨架屏</td><td>—</td><td><span class="state warn">部分</span></td><td>已有 <code>--skeleton</code> 色令牌，但未见扫光组件；补 1.6s、45° 扫光</td></tr>
+<tr><td>FLIP 重排</td><td>—</td><td><span class="state idle">缺失</span></td><td>移动行 200ms transform，其余行 FLIP</td></tr>
+<tr><td>间距阶梯令牌</td><td>Fluent 2 <code>spacings</code>：2 / 4 / 6 / 8 / 10 / 12 / 16 / 20 / 24 / 32</td><td><span class="state idle">缺失</span></td><td>新建 <code>--sp-2 … --sp-32</code> 十档，禁止手写像素值</td></tr>
+<tr><td>圆角令牌</td><td>Material 3 <code>corner</code>：0 / 4 / 8 / 12 / 16 / 28 / full；Fluent 2：2 / 4 / 6 / 8 / 12 / 16 / 24 / 32 / 40</td><td><span class="state warn">部分</span></td><td>现有 <code>--r-xs 5 / --r-sm 7 / --r 10 / --r-lg 14</code> 重映射到 Material 3 的 4 / 8 / 12 / 16</td></tr>
+<tr><td>动效时长令牌</td><td>Fluent 2：50 / 100 / 150 / 200 / 250 / 300 / 400 / 500 ms；Material 3：standard 300、emphasized 500</td><td><span class="state idle">缺失</span></td><td>新建八档时长令牌，替换 <code>app.css</code> 中 0.12 / 0.14 / 0.16 / 0.18s 手写值</td></tr>
+<tr><td>动效缓动令牌</td><td>Fluent 2：<code>curveEasyEase cubic-bezier(0.33,0,0.67,1)</code>、<code>curveDecelerateMax cubic-bezier(0.1,0.9,0.2,1)</code>、<code>curveAccelerateMax cubic-bezier(0.9,0.1,1,0.2)</code></td><td><span class="state idle">缺失</span></td><td>三档缓动令牌；<b>入场用减速曲线，出场用加速曲线</b>，颜色与透明度用 easyEase</td></tr>
+<tr><td>层级 / 阴影令牌</td><td>Fluent 2 以模糊半径命名：shadow2 / 4 / 8 / 16 / 28 / 64；Material 3 色调抬升 0 / 1 / 3 / 6 / 8 / 12%</td><td><span class="state warn">部分</span></td><td>现有 <code>--sh-1/2/3</code> 已是两层 ramp，保留并补齐 8 / 16 / 28 / 64 四档</td></tr>
+<tr><td>字阶令牌</td><td>—</td><td><span class="state idle">缺失</span></td><td>12 / 13 / 15 / 18 / 24 / 32 六档，行高 1.5–1.78；正文 15px 与现有 <code>body</code> 一致</td></tr>
+<tr><td>焦点可见性</td><td>WCAG 2.2 SC 2.4.13（AAA）：焦点指示器面积不小于未聚焦组件 2 CSS 像素厚周长，且聚焦与未聚焦同像素对比度 ≥ 3:1</td><td><span class="state warn">部分</span></td><td>现有 <code>--ring-accent</code> 为 <code>0 0 0 4.5px rgba(44,122,85,.10)</code>，透明度过低，需按 ≥3:1 重定并逐控件核对</td></tr>
+<tr><td>目标尺寸</td><td>WCAG 2.2 SC 2.5.8（AA）：指针目标最小 24×24 CSS 像素</td><td><span class="state idle">未核实</span></td><td>图标按钮与列表行操作统一到 24px 最小命中区</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+<div class="note">
+  <div class="lbl">读法</div>
+  <p>本节不是竞品对位，是<b>规格来源</b>：所有数值都来自 Fluent 2 与 Material 3 的令牌源文件，以及 Chrome / Firefox / Edge / Dia 的官方帮助页与发布说明。竞品一列在 UI 层全是「未核实」，是因为指纹浏览器的主战场不在窗口装饰——<b>不要因为竞品没做就以为不用做</b>，用户每天看的是 Chrome。</p>
+  <p>本项目现状一列写的是代码事实：<code>tokens.css</code> 有颜色 / 圆角 / 阴影 / 焦点环 / 布局尺寸 / 骨架色，<b>但没有</b>间距、动效时长、动效缓动、字阶这四套令牌；<code>app.css</code> 的动效全部是内联手写值。</p>
+</div>
+
+<!-- ============ 5 ============ -->
+<h2 id="gap-engine"><span class="n">05</span>差距（一）· 引擎层指纹缺口</h2>
+<p class="lede">能做的先做，做不到的写进红线，不要含糊过去。</p>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:24%">缺口</th><th style="width:34%">证据（代码 / 一手来源）</th><th style="width:16%">Electron 层可行性</th><th style="width:26%">备注</th></tr></thead>
+<tbody>
+<tr><td>六个 API 整条通道未接管</td><td><code>battery</code> / <code>mediaDevices</code> / <code>permissions</code> / <code>mediaCapabilities</code> / <code>navigator.connection</code> / <code>WebAssembly</code> 在 <code>fingerprint.ts</code> 中各 <b>0 次引用</b></td><td><span class="pill lo">能做</span></td><td>GoLogin 明确公开了「视频输入 / 音频输入 / 音频输出」三项，本项目应有对应能力</td></tr>
+<tr><td><code>plugins</code> / <code>mimeTypes</code> / <code>maxTouchPoints</code> 只登记未改写</td><td>三者出现在 <code>_MASK_TABLE</code>（注释写明该表「快照与登记共用」），但没有对应的 <code>defVal</code>，值仍是宿主真值</td><td><span class="pill lo">能做</span></td><td>Incogniton 公开列出了「installed plugins」为可定制项</td></tr>
+<tr><td>UA-CH 高熵未接管</td><td>代码构造了 <code>brands</code> 与 <code>fullVersionList</code>，但 <code>getHighEntropyValues</code> <b>0 次引用</b></td><td><span class="pill lo">能做</span></td><td>高熵会暴露架构位、模型名、平台版本</td></tr>
+<tr><td>canvas 缺「block」模式</td><td><code>FingerprintConfig.canvas</code> 只有 <code>'noise' | 'off'</code>；GoLogin 文档把 Canvas 列为 Off / Block / Add Noise 三模式，并<b>建议用 Off 或 Block 而非 Add Noise</b></td><td><span class="pill lo">能做</span></td><td>噪声产生的是「任何真机都不可能产生」的值，检测器可以聚类</td></tr>
+<tr><td>OffscreenCanvas 只部分处理</td><td>代码有专门的「OffscreenCanvas：第二条测量通道」段，但与 page 通道的噪声口径需统一</td><td><span class="pill lo">能做</span></td><td>Worker 场景默认走这条</td></tr>
+<tr><td>字体 DOM 布局通道未封</td><td><code>offsetWidth</code> <b>0 次引用</b>；README 已写明「字体探测只做了一半」</td><td><span class="pill mid">能做但成本高</span></td><td>要改布局接口，代价大；见 §10 红线二</td></tr>
+<tr><td>AudioContext 只覆盖两条通道</td><td>已接管 <code>AudioBuffer.getChannelData</code> 与 <code>AnalyserNode.getFloatFrequencyData</code>；<code>AudioContext</code> 自身的 <code>options</code> / <code>sampleRate</code> 未见改写</td><td><span class="pill lo">能做</span></td><td>GoLogin 把 AudioContext 列为独立可改项</td></tr>
+<tr><td>Worker / Service Worker 顶层脚本竞态</td><td>CDP <code>Target.setAutoAttach { flatten:true }</code> 已能对 Worker / OOPIF 子 target 注入（<code>buildWorkerScript</code> 专用源），但代码注释自陈代价是「失去注入早于 worker 顶层脚本这条保证」</td><td><span class="pill hi">需要内核 fork</span></td><td>见 §10 红线三</td></tr>
+<tr><td>TLS / JA3、HTTP/2 SETTINGS、TCP 栈</td><td>Electron / Chromium 网络栈不暴露这些层；README 列为不承诺项</td><td><span class="pill hi">需要内核 fork</span></td><td>见 §10 红线一</td></tr>
+<tr><td>引擎版本与 UA 声称值不对齐</td><td>UA 里的 Chromium 版本由 <code>uaVersion</code> 自由指定，而运行时是 Electron 自带内核；HTTP/2 行为与 JS 特性集随真实内核走</td><td><span class="pill hi">需要内核 fork</span></td><td>代码已用同类手法处理过 <code>navigator.share</code> 存在性差异，但无法覆盖整内核行为</td></tr>
+<tr><td>无 Firefox / Gecko 引擎线</td><td>GoLogin 侧对比文指出 Multilogin 用 Chromium 与 Firefox 双引擎做「引擎级多样性」；AdsPower / BitBrowser / Dolphin / MoreLogin 均提供 Chrome + Firefox</td><td><span class="pill hi">不在本项目定位内</span></td><td>v1 只做 Chromium，见开源功能清单的边界</td></tr>
+<tr><td>无移动端（Android / iOS）指纹环境</td><td>Multilogin（核心产品）、AdsPower、BitBrowser、Dolphin、Octo、Incogniton 均提供移动环境</td><td><span class="pill hi">不在本项目定位内</span></td><td>云手机是另一条产品线，成本结构不同</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note ok">
+  <div class="lbl">本项目在这一层的护城河</div>
+  <p>不比覆盖面，比<b>可验证性</b>——这一层竞品的一手文档基本没有对应描述。</p>
+  <p><b>一、实测对照而不是声明。</b>页面内 <b>16 项一致性实测对照</b>，macOS 环境在 Windows 宿主上跑出 <b>100 分 / 16 通过 / 0 失败</b>。</p>
+  <p><b>二、状态机区分「未测」与「成功」。</b>掩码状态有 <code>unknown</code> 一档——脚本已下发但结果未回读，不等于已装上。代码注释把这件事叫「假绿」：<i>「没报错」和「没跑」在外部完全同形</i>。</p>
+  <p><b>三、种子不出主进程。</b>渲染层只拿到 <code>seedHint</code>（<code>sha256(seed)</code> 前 8 位），用于肉眼比对是不是同一个环境；完整种子与指纹解析都在主进程。竞品的「指纹哈希」通常以可导出的形式存在。</p>
+  <p><b>四、审计哈希链。</b>每条记录带前一条哈希，<code>verify()</code> 能从头重算并定位断裂点——这是<b>防篡改</b>审计，不是运营审计，两者不能混为一谈（见 §08）。</p>
+</div>
+
+<!-- ============ 6 ============ -->
+<h2 id="gap-env"><span class="n">06</span>差距（二）· 环境与代理管理缺口</h2>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:24%">缺口</th><th style="width:34%">证据</th><th style="width:16%">Electron 层可行性</th><th style="width:26%">备注</th></tr></thead>
+<tbody>
+<tr><td>Cookie 导入 / 导出</td><td>已实现：<code>ss:data:exportCookies</code>（Netscape / JSON）与 <code>ss:data:importCookies</code>（自动识别两种格式、逐条错误回报、失败计数不静默）</td><td><span class="state ok">已落地</span></td><td>Multilogin 只确认 JSON 格式；Undetectable 提供 cookie 格式转换器</td></tr>
+<tr><td>跨工具环境迁移</td><td>AdsPower 支持从 Dolphin / Multilogin / GoLogin 用 API 转入；Undetectable 支持从其它反检测浏览器迁移</td><td><span class="pill lo">能做</span></td><td>这是用户从付费产品迁出的第一道门槛</td></tr>
+<tr><td>Cookie 机器人 / 预制 cookie</td><td>GoLogin、Multilogin、AdsPower、Undetectable、Incogniton 五家都有（多为核心付费档卖点）</td><td><span class="pill mid">能做，但有边界</span></td><td>需要真实访问站点建历史，边界见开源功能清单「不做破解与绕过」</td></tr>
+<tr><td>扩展管理</td><td>竞品普遍有扩展目录与跨环境批量安装；本项目 <code>extension/</code> 是自研 MV3 侧边栏，不是可分发的扩展管理</td><td><span class="pill lo">能做</span></td><td>Chromium 扩展目录接入成本低</td></tr>
+<tr><td>SOCKS5 / SOCKS5h 探测</td><td>已实现：RFC 1928 握手 + RFC 1929 认证，支持本地 DNS（socks5）与远程 DNS（socks5h）；并且下发 Chromium 时按 <code>socks5://</code> 处理（早期把它当 HTTP 代理是 bug）</td><td><span class="state ok">已落地</span></td><td>BitBrowser 免费档就写明支持 SOCKS5</td></tr>
+<tr><td>代理轮换 / 代理池 / 故障转移</td><td>本项目只有「添加 / 编辑 / 删除 / 导入 / 检测 / 应用」，无轮换策略、无池、无 kill switch</td><td><span class="pill lo">能做</span></td><td>故障转移是真实泄漏风险最高的一处，全行业都没公开做</td></tr>
+<tr><td>代理 → 指纹只比对不自动绑定</td><td>挂载时比对出口时区与指纹时区，不一致只提示；GoLogin / AdsPower / BitBrowser 都按代理 IP 自动派生时区 / 语言 / 位置</td><td><span class="pill lo">能做</span></td><td>自动派生会让「代理即真相」，配置成本大幅下降</td></tr>
+<tr><td>收藏置顶 / 回收站</td><td>已实现：<code>Profile.favorite</code> 与收藏优先排序；<code>ss:profiles:trash / restore / purge</code> 软删除与恢复，彻底删除才清分区数据</td><td><span class="state ok">已落地</span></td><td>软删除不碰分区：恢复后登录态还在；彻底删除不可撤销，界面上二次确认</td></tr>
+<tr><td>代理 / 扩展 / 配置模板</td><td>本项目模板只有指纹模板与迁移包，无代理模板与扩展模板</td><td><span class="pill lo">能做</span></td><td>GoLogin / Multilogin 都有「配置包」概念</td></tr>
+<tr><td>代理市集 / 云同步 / 多端</td><td>Octo Proxy Shop、Incogniton Proxy Shop、Multilogin 内置住宅 / ISP / 移动代理（150+ 地区）、GoLogin 195 国</td><td><span class="pill hi">不在本项目定位内</span></td><td>开源功能清单已明确：服务不自建、不赚差价</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note ok">
+  <div class="lbl">本项目在这一层的护城河</div>
+  <p><b>迁移包是明文、可审计、不含密钥的。</b>实测 save → apply → export → import → remove 全链路，导出体积 <b>10.4KB</b>，不含任何密钥。竞品的「环境包」普遍是加密 blob——能搬，但搬不了、看不见、没法 diff。</p>
+  <p><b>首次打开播种 3 条内置模板</b>，用户不用从空白开始；迁移包与模板模块（<code>ss:templates:*</code> 与 <code>ss:migration:*</code>）已经是独立 IPC 契约，接第三方格式只是加解析器的事。</p>
+  <p><b>代理只探测 http/https，socks5 明确报「暂不支持」而不是假装成功</b>——这类「诚实报错」本身是产品信用，竞品的代理页往往不区分「已连接」与「已检测」。</p>
+</div>
+
+<!-- ============ 7 ============ -->
+<h2 id="gap-auto"><span class="n">07</span>差距（三）· 自动化缺口</h2>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:24%">缺口</th><th style="width:34%">证据</th><th style="width:16%">Electron 层可行性</th><th style="width:26%">备注</th></tr></thead>
+<tbody>
+<tr><td><b>没有 MCP server</b></td><td>全仓库检索 <code>mcp</code> 命中 0 处；架构文档「协议暴露」一节写过 MCP，但代码未落地</td><td><span class="pill lo">能做</span></td><td>五家在售（GoLogin / AdsPower / Undetectable / Incogniton / MoreLogin）——最锋利的缺口</td></tr>
+<tr><td>CDP 调试端口未外露</td><td>Playwright 的 <code>connectOverCDP</code> 接不进来；本项目有内部 CDP 桥但只在主进程内</td><td><span class="pill lo">能做</span></td><td>只监听 127.0.0.1，与本地 API 同一套鉴权</td></tr>
+<tr><td>无 RPA 录制器 / 可视化拾取器</td><td>快照里有 <code>data-ss-id="e1..eN"</code> 编号元素，但回放步骤用语义描述（<code>role=button name=登录</code>），没有可视化选元素</td><td><span class="pill lo">能做</span></td><td>竞品：BitBrowser 拖拽工作流、Dolphin 场景构建器、MoreLogin No-Code RPA</td></tr>
+<tr><td>单窗口单任务</td><td>README 明列「同一时刻只允许一个 Agent 任务，多任务编排还没做」</td><td><span class="pill lo">能做</span></td><td>AdsPower 明确支持到 100 并发线程</td></tr>
+<tr><td>无定时任务 · 任务分组</td><td>定时任务已实现：<code>ss:schedules:*</code> 支持「启动环境 / 运行脚本」，间隔分钟或每日 HH:MM 二选一，30s 扫描、失败不重试刷屏、手 runNow 不推进周期；任务分组仍未做</td><td><span class="state warn">部分</span></td><td>脚本定时必须显式指定运行环境（录制来源 ≠ 运行环境）</td></tr>
+<tr><td>无技能 / 提示词复用</td><td>AdsPower 有 <code>/skills</code> 与技能生成；MoreLogin 有 Copy to Agent 与 Commander / Creator Hub</td><td><span class="pill lo">能做</span></td><td>技能包同时应能导出为 MCP resource</td></tr>
+<tr><td>会话录制 / 视频轨迹</td><td>有步骤、产物与回放索引，无视频或 DOM 轨迹</td><td><span class="pill lo">能做</span></td><td>Chrome / Firefox 的 Mini Window 类能力另说</td></tr>
+<tr><td>文件上传 / 下载未进动作集</td><td>动作协议只有点击 / 输入 / 按键 / 滚动 / 跳转 / 取数；下载只能读列表</td><td><span class="pill lo">能做</span></td><td>—</td></tr>
+<tr><td><code>/act</code> 与 <code>/snapshot</code> 无端到端回归</td><td>README 明列「真实 CDP 执行链路没有在 Electron 内跑通回归」</td><td><span class="pill lo">能做（必须先补）</span></td><td>这是自动化故事最薄的一环，优先于任何新功能</td></tr>
+<tr><td>云端浏览器 / 分布式执行</td><td>GoLogin Cloud Browser、Multilogin 云端环境、MoreLogin Cloud Browsers</td><td><span class="pill hi">不在本项目定位内</span></td><td>与「单机优先、数据不出本机」原则冲突</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note ok">
+  <div class="lbl">本项目在这一层的护城河</div>
+  <p>竞品把「安全边界」写在宣传里，本项目把它写在<b>执行器</b>里。三条代码级约束：</p>
+  <p><b>一、模型拿不到选择器。</b>元素用 <code>data-ss-id="e3"</code> 落在真实 DOM，模型只能说「点 e3」，执行器回查；编号不在当轮快照里就判幻觉（实测 <code>e999</code> 被拒）。</p>
+  <p><b>二、红线在执行器，不在 prompt。</b><code>assessRisk()</code> 在动作执行前拦截支付 / 下单 / 删除，模型说「这很安全」也没用。Chrome 的 auto browse 也要「先给计划、敏感步骤要求接管」——思路一致，但本项目是本地代码强制，不是服务端策略。</p>
+  <p><b>三、页面内容与模型输出都是不可信数据。</b>渲染层全部走 React 文本节点，没有 <code>dangerouslySetInnerHTML</code>。</p>
+  <p>竞品的 MCP 大多只做到「创建 / 启动 / 停止 / 列举环境」；本项目如果做 MCP，可以直接把<b>快照 + 动作 + 风险分级 + 审计</b>一并暴露出去——这比再做一个「启动浏览器的 MCP」有价值得多。</p>
+</div>
+
+<!-- ============ 8 ============ -->
+<h2 id="gap-team"><span class="n">08</span>差距（四）· 团队 / 云 / API 缺口</h2>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:24%">缺口</th><th style="width:34%">证据</th><th style="width:16%">Electron 层可行性</th><th style="width:26%">备注</th></tr></thead>
+<tbody>
+<tr><td>无多用户模型</td><td>用户 / 角色 / 组 / 席位 / 共享 / ACL 全缺；十家在售产品全部有角色体系（Dolphin 为 Admin / Team Lead / User，Incogniton 为 Owner / Manager / Launch-only）</td><td><span class="pill hi">不在本项目定位内</span></td><td>v1 单机优先是架构文档写死的约束</td></tr>
+<tr><td>无云端环境存储 / 云浏览器</td><td>GoLogin、Multilogin、MoreLogin、BitBrowser、Incogniton 都有</td><td><span class="pill hi">不在本项目定位内</span></td><td>与「数据不出本机」冲突</td></tr>
+<tr><td>无云手机</td><td>Multilogin 已把云手机做成核心产品（Android 10–16、约 30 种机型、190+ 国家）</td><td><span class="pill hi">不在本项目定位内</span></td><td>开源功能清单明确不做</td></tr>
+<tr><td>无 2FA / IP 白名单 / 登录告警</td><td>Multilogin、GoLogin、AdsPower 都有 2FA；AdsPower 另有 IP 白名单与登录告警</td><td><span class="pill lo">能做</span></td><td>控制面自身的账号安全</td></tr>
+<tr><td>无会话监控 / 环境锁</td><td>两个客户端同时启动同一环境的行为未定义；Undetectable 有活跃会话监控</td><td><span class="pill lo">能做</span></td><td>本地用文件锁即可</td></tr>
+<tr><td>无 Webhook</td><td>十家产品的一手文档均未写明 webhook，全行业都缺</td><td><span class="pill lo">能做</span></td><td>对 agent-first 产品是自然补全</td></tr>
+<tr><td>OpenAPI 只在文件里</td><td><code>docs/api/openapi.yaml</code> 存在，但没有可访问的规范端点</td><td><span class="pill lo">能做</span></td><td>GoLogin 直接挂 <code>openapi.json</code>；AdsPower 与 Multilogin 挂 Postman</td></tr>
+<tr><td>无 SDK / CLI</td><td>只有本地 HTTP API；GoLogin 有 Node / Python SDK 与 CLI，Incogniton 有 SDK + CLI</td><td><span class="pill lo">能做</span></td><td>SDK 薄封装即可</td></tr>
+<tr><td>操作日志无 actor 归属</td><td>审计链记录了动作，但单用户模型下没有「谁」的维度</td><td><span class="pill lo">能做</span></td><td>结构上先预留 actor 字段，避免以后改格式</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note ok">
+  <div class="lbl">本项目在这一层的护城河</div>
+  <p><b>防篡改审计 vs 运营审计，是两件事。</b>竞品的「活动日志」记的是谁在什么时候改了什么；本项目的审计链记的是<b>这条记录是否被改过</b>（每条带前一条哈希，<code>verify()</code> 从头重算定位断裂点）。前者不能否定后者，后者也不能冒充前者——所以<b>不要因为竞品有活动日志就宣称自己有团队审计</b>。</p>
+  <p><b>密钥隔离。</b>模型 API Key 与代理凭据只存在于 Agent 进程内存与系统密钥链，渲染进程永不接触；种子完整值不出主进程。</p>
+  <p><b>零遥测默认。</b>竞品为了团队功能必然要上报行为数据；本项目默认不上报，这是隐私叙事上的实打实差异。</p>
+</div>
+
+<!-- ============ 9 ============ -->
+<h2 id="gap-ui"><span class="n">09</span>差距（五）· UI/UX 缺口</h2>
+
+<div class="tbl">
+<table>
+<thead><tr><th style="width:24%">缺口</th><th style="width:34%">证据</th><th style="width:16%">Electron 层可行性</th><th style="width:26%">备注</th></tr></thead>
+<tbody>
+<tr><td>缺间距阶梯令牌</td><td><code>tokens.css</code> 已补 2 / 4 / 6 / 8 / 10 / 12 / 16 / 20 / 24 / 32 十档 <code>--sp-*</code></td><td><span class="state ok">已落地</span></td><td>紧凑模式在 <code>[data-density='compact']</code> 里整体 ×0.75</td></tr>
+<tr><td>缺动效时长与缓动令牌</td><td>已补八档 <code>--dur-*</code> 与四档 <code>--ease-*</code>，内联手写值迁移到令牌</td><td><span class="state ok">已落地</span></td><td>easyEase / decelerateMax / accelerateMax / emphasis；入场减速、出场加速</td></tr>
+<tr><td>缺层级令牌</td><td>已有 <code>--sh-1/2/3</code> + 新增 <code>--sh-4</code> 与 <code>--scrim-premium</code></td><td><span class="state warn">部分</span></td><td>未铺满 shadow8 / 16 / 28 / 64 全档；够当前组件用</td></tr>
+<tr><td>缺字阶令牌</td><td>已补 <code>--fs-*</code> / <code>--fw-*</code> / <code>--lh-*</code></td><td><span class="state ok">已落地</span></td><td>新组件统一走字阶；老组件保留原值以零回归</td></tr>
+<tr><td>交互原语不全</td><td><code>ui.tsx</code> 已补 Select / Tabs / Tooltip / Popover / Checkbox / Input / Card / Badge / Skeleton / Spinner</td><td><span class="state ok">已落地</span></td><td>另补 CommandPalette 独立组件</td></tr>
+<tr><td>面板三态不统一</td><td><code>AuditPanel</code> 用判别联合做全三态；其余面板仍把读失败压成 toast</td><td><span class="state warn">部分</span></td><td>只有审计页是参照实现，其余待推广</td></tr>
+<tr><td>无命令面板</td><td>已接 <code>CommandPalette</code>，<code>⌘/Ctrl + K</code> 覆盖 8 导航 + 3 操作</td><td><span class="state ok">已落地</span></td><td>分组、关键词过滤、键盘导航、焦点陷阱齐全</td></tr>
+<tr><td>无垂直标签 / 标签组 / 标签搜索</td><td>已实现：垂直/水平切换、分组着色与折叠、按标题/URL 搜索；默认水平零回归</td><td><span class="state ok">已落地</span></td><td>纯 helper <code>tab-groups.ts</code> 有 10 条单测；分组是渲染层 UI 偏好，不进身份</td></tr>
+<tr><td>主题档位未在 UI 暴露</td><td>侧栏已有跟随系统 / 亮 / 暗三档控件，即时生效</td><td><span class="state ok">已落地</span></td><td>三态写在 <code>&lt;html data-theme&gt;</code>，与密度属性并列不冲突</td></tr>
+<tr><td>无密度调节</td><td>已实现舒适 / 紧凑两档，紧凑仅压间距与 chrome 尺寸、不动字号与对比度</td><td><span class="state ok">已落地</span></td><td>Firefox 157 紧凑模式等价物；localStorage <code>ss:density</code></td></tr>
+<tr><td>焦点与目标尺寸未按 WCAG 核对</td><td>已补 <code>--focus-ring-*</code> 令牌、全局 focus-visible 与 reduced-motion 开关；未跑完 SC 2.4.13 全量读数</td><td><span class="state warn">部分</span></td><td>对比度由 <code>verify:theme</code> 守；焦点环面积/目标尺寸待专项断言</td></tr>
+<tr><td>控制台窗口保留系统标题栏</td><td>README 写明无边框窗口在 Windows 上会丢窗口控制按钮</td><td><span class="pill mid">需自绘窗口控件</span></td><td>2026 年的桌面浏览器没有一家保留系统标题栏</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note ok">
+  <div class="lbl">本项目在这一层的护城河</div>
+  <p><b>令牌底子已经在了，缺的是覆盖面不是体系。</b><code>tokens.css</code> 已经是一套完整的双主题令牌：颜色（含语义色 green / amber / red / violet / blue 与各自浅深底）、圆角、三级阴影、焦点环、布局尺寸（<code>--side-w 196px</code>、<code>--topbar-h 54px</code>、<code>--tabsbar-h 38px</code>、<code>--addr-h 40px</code>、<code>--agentbar-h 66px</code>、<code>--panel-w 380px</code>、<code>--drawer-w 460px</code>）、骨架色、遮罩与幽灵遮罩。<b>暗色主题已全覆盖</b>，<code>prefers-reduced-motion</code> 也已处理。</p>
+  <p><b>而且已经有「不可判读状态」的规范。</b><code>docs/DESIGN.md</code> 写死了判定标准、检查清单与「用联合类型不用布尔量」的修法形式，并规定免责声明要放在用户看得见的位置——这是很多商业产品的设计文档里根本没有的部分。</p>
+</div>
+
+<!-- ============ 10 ============ -->
+<h2 id="redline"><span class="n">10</span>三条红线（不可逾越）</h2>
+<p class="lede">这三条是本项目对外表述的硬边界。<b>不夸大能力比夸大能力更值钱</b>——商业产品可以含糊，我们不行，因为我们的用户会照着我们写的去判断风险。</p>
+
+<div class="note danger">
+  <div class="lbl">红线一 · 网络层指纹</div>
+  <p><b>事实：</b>TLS/JA3 握手指纹、HTTP/2 SETTINGS 与优先级帧、TCP 栈特征在 Electron 层无法伪造。Chromium 网络栈不向 JS / CDP 暴露这些层，<code>Page.addScriptToEvaluateOnNewDocument</code> 也够不着。</p>
+  <p><b>禁止措辞：</b>不得写「已伪装网络指纹」「内核级 TLS 伪造」「网络层已对齐」「与真实浏览器网络指纹一致」。</p>
+  <p><b>本项目实际怎么说的：</b>README「已知限制」第一条即写「网络层指纹做不到。TLS/JA3、HTTP2 指纹、TCP 栈特征在 Electron 层无法伪造，要等内核 fork。文档里已写明『阶段三之前不承诺』」——口径正确，保持不变。</p>
+</div>
+
+<div class="note danger">
+  <div class="lbl">红线二 · 字体 DOM 布局通道</div>
+  <p><b>事实：</b><code>document.fonts.check</code> 与 canvas <code>measureText</code> 两条字体探测路已接管，白名单外的字体按 fallback 度量；但用 <code>&lt;span&gt;</code> + <code>offsetWidth</code> 做布局度量探测的那条路拦不住，代码中 <code>offsetWidth</code> 引用数为 0。</p>
+  <p><b>禁止措辞：</b>不得写「字体已完全伪装」「字体枚举已封死」「字体维度已对齐真机」。</p>
+  <p><b>本项目实际怎么说的：</b>README「字体探测只做了一半」，并明确列出第三条路未拦——口径正确。对外必须连同「已接管的两条路」一起说，不许只说前两条。</p>
+</div>
+
+<div class="note danger">
+  <div class="lbl">红线三 · Worker / Service Worker 顶层脚本竞态</div>
+  <p><b>事实：</b>CDP <code>Target.setAutoAttach { flatten: true }</code> 已能对 Worker 与 OOPIF 子 target 注入（<code>fingerprint.ts</code> 有 <code>buildWorkerScript</code> 专用源与 <code>WorkerNavigator.prototype</code> 适配，<code>cdp.ts</code> 有 autoAttach 重放记账）；但 Worker 顶层脚本<b>先于</b>注入执行，存在竞态窗口——代码注释已自陈这个代价：「失去『注入早于 worker 顶层脚本』这条保证」。</p>
+  <p><b>禁止措辞：</b>不得写「Worker 已覆盖」「上下文全覆盖」「Worker 场景指纹完全一致」。</p>
+  <p><b>本项目实际怎么说的：</b>README 目前写的是「Worker 上下文没有注入指纹」，<b>这一条已经落后于代码</b>——代码已实现 Worker 专用注入。对外口径应以代码为准，表述为「Worker 作用域已注入，但顶层脚本存在竞态窗口」，并同步修正 README，不要让文档比代码更悲观。</p>
+</div>
+
+<!-- ============ 11 ============ -->
+<h2 id="road"><span class="n">11</span>路线图</h2>
+<p class="lede">按「能不能在本季度内交付」分三段。每一段都带一个可验收指标——指标不达标就不进入下一段。</p>
+
+<div class="road">
+
+  <div class="phase">
+    <div class="phase-l">
+      <div class="p">P0</div>
+      <div class="m">本季度内</div>
+      <div class="st">Electron 层 · 零新增依赖</div>
+    </div>
+    <div>
+      <h4>把已知的洞补上，把接入面打开</h4>
+      <ul>
+        <li><b>指纹面补齐</b>：接管 <code>battery</code> / <code>mediaDevices</code> / <code>permissions</code> / <code>mediaCapabilities</code> / <code>navigator.connection</code> / <code>WebAssembly</code>；把 <code>plugins</code> / <code>mimeTypes</code> / <code>maxTouchPoints</code> 从「登记」升级为「改写」；补 UA-CH 高熵 <code>getHighEntropyValues</code></li>
+        <li><b>噪声策略三态化</b>：canvas / WebGL / Audio 增加 <code>block</code> 模式（噪声 / 关闭 / 阻断），默认建议按 GoLogin 文档口径给 <code>off</code> 或 <code>block</code>；补 OffscreenCanvas 像素噪声；Worker 作用域补齐 canvas / 字体 / 音频 / WebGL2</li>
+        <li><b>接入面</b>：CDP 调试端口外露（只监听 127.0.0.1，与本地 API 同一套鉴权）；Cookie 导入导出（Netscape + JSON）；SOCKS5 探测</li>
+        <li><b>MCP server</b>：stdio + 本地 HTTP 两套入口，暴露「创建 / 启动 / 停止 / 列举环境」以及「快照 / 动作 / 风险分级 / 审计查询」，对接 Cursor / Claude Code / Codex</li>
+        <li><b>设计令牌四件套</b>：间距（2/4/6/8/10/12/16/20/24/32）、动效时长（50/100/150/200/250/300/400/500ms）与缓动（easyEase / decelerateMax / accelerateMax）、层级（shadow2/4/8/16/28/64）、字阶（12/13/15/18/24/32）；补齐 Select / Tabs / Tooltip / Popover / Checkbox / Input / Card / Badge / Skeleton / Spinner 十类原语；全面板三态化</li>
+        <li><b>交互与可达性</b>：命令面板（<code>⌘/Ctrl + K</code>）；主题档位在设置面板暴露并即时生效；按 WCAG 2.2 SC 2.4.13 核对焦点环（≥2 CSS 像素厚周长面积 + ≥3:1 对比）与 SC 2.5.8 目标尺寸（≥24×24）</li>
+      </ul>
+      <div class="kpi">可验收：同一 seed 连续启动 10 次，30 条通道读数逐条一致；Cookie 导入导出往返无损；SOCKS5 代理实测连通；MCP 可从 Cursor 拉起一个环境并完成一次点击；令牌覆盖率 100%（间距 / 动效 / 层级 / 字阶无手写内联值）；焦点环对比度 ≥3:1、目标尺寸 ≥24px 全量通过</div>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-l">
+      <div class="p">P1</div>
+      <div class="m">需要额外投入</div>
+      <div class="st">Electron 层 · 需要工程量</div>
+    </div>
+    <div>
+      <h4>从单人工具变成可协作、可编排的工作台</h4>
+      <ul>
+        <li><b>调度器</b>：定时任务、任务分组、并发上限、失败重试与退避；解除「单窗口单任务」限制</li>
+        <li><b>RPA 录制器 + 可视化拾取器</b>：把快照里的 <code>e1..eN</code> 变成可点选、可录制的动作序列，并可导出为脚本</li>
+        <li><b>技能系统</b>：可复用提示词与步骤包（<code>/skills</code>），可跨机导入，可导出为 MCP resource</li>
+        <li><b>本地账号与角色</b>：用户 / 角色 / 组 / 环境 ACL，保留单机优先原则，不引入服务端托管</li>
+        <li><b>会话监控与环境锁</b>：同一环境第二个启动被拒并提示持有者；活跃会话列表与本地审计链打通</li>
+        <li><b>控制面安全</b>：2FA、登录告警、IP 白名单；本地密钥继续留在系统密钥链</li>
+      </ul>
+      <div class="kpi">可验收：10 环境 × 5 任务并发下无交叉串号；同一环境并发启动第二个被拒；录制的流程可在换 seed 的环境复放；技能包可在另一台机器导入并直接被 MCP 调用</div>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-l">
+      <div class="p">P2</div>
+      <div class="m">需要内核 fork 或云端</div>
+      <div class="st">Chromium fork / 外部依赖</div>
+    </div>
+    <div>
+      <h4>把三条红线里前两条真正解决</h4>
+      <ul>
+        <li><b>Chromium fork</b>：TLS/JA3、HTTP/2 SETTINGS 与优先级帧可控；UA-CH 与真实内核版本对齐；Worker 顶层脚本注入时序可控（消除红线三的竞态）</li>
+        <li><b>Firefox / Gecko 引擎线</b>：提供引擎级多样性，对抗只信 Chrome 指纹的站点</li>
+        <li><b>云端环境存储与云浏览器调度</b>：只托管浏览器状态与任务编排，<b>不</b>托管代理流量、不赚差价，与「服务不自建」的边界保持一致</li>
+        <li><b>移动端指纹环境</b>（Android / iOS）</li>
+        <li><b>窗口同步器</b>：多环境同动作联动（开源功能清单里已排在 P2）</li>
+      </ul>
+      <div class="kpi">可验收：fork 后第三方检测器（Pixelscan、CreepJS、BrowserLeaks、Iphey 等）逐项与真实 Chrome 对齐；Worker 顶层脚本在注入前读取指纹的用例全部通过；云调度单节点 ≥ 50 并发环境且 15 分钟内冷启动</div>
+    </div>
+  </div>
+
+</div>
+
+<div class="note info">
+  <div class="lbl">关于 MCP 的额外一句</div>
+  <p>MCP 在 2026 年已经从「实验特性」变成这个品类的默认接入面。值得强调的是：竞品的 MCP 基本只做「管理浏览器」，而本项目的 Agent 循环、页面快照、动作协议、风险分级、审计链<b>全都是现成的</b>。做 MCP 的边际成本很低——真正贵的是不接。</p>
+</div>
+
+<div class="note ok">
+  <div class="lbl">本轮已补齐的商业能力</div>
+  <p>按成熟商业产品的公开能力逐项对位，本轮新增或修正：<b>中英双语界面</b>（侧栏一键切换、持久化、<code>&lt;html lang&gt;</code> 同步；约 790 条文案入 catalog，英文缺 key 回落中文）；<b>批量新建环境</b>（1–50 个，逐个计数失败，商业产品普遍有的 bulk create）；<b>Cookie 导入 / 导出</b>（Netscape + JSON，导入失败逐条回报且不静默）；<b>SOCKS5 / SOCKS5h 探测与下发</b>（含 RFC 1929 认证，修正了「socks5h 被当 HTTP 代理」的 bug）；<b>命令面板</b>（⌘/Ctrl+K）；<b>垂直标签 / 标签组 / 标签搜索</b>；<b>密度模式</b>（舒适 / 紧凑，间距 ×0.75）；<b>本地团队协作</b>（成员 / 角色 / 环境 ACL / 活动日志）；<b>MCP Server</b>（12 工具，L2 动作回到同一确认闸门）；<b>代理出口地理校准</b>（按出口国家自动设时区/语言/地理坐标，只改与 IP 相关的三项，不动 UA/屏幕/WebGL）；<b>收藏 / 置顶 + 环境排序</b>（最近使用 / 名称 / 创建时间 / 收藏优先，选择持久化）；<b>每环境启动页</b>（human 轨用配置的首页，影子轨保持空白起点）；<b>环境回收站</b>（软删除 / 恢复 / 彻底删除，彻底删除才清分区，绝不把「删掉了」和「还能恢复」混成一件事）；<b>扩展管理</b>（登记解压目录、逐环境勾选、启动时装进该环境自己的 session；扩展不下载、不上市场）；<b>Cookie 预热</b>（串行访问、随机停留、逐页结果、失败不静默）；<b>定时任务</b>（启动环境 / 跑脚本，间隔或每日二选一，手动 runNow 不推进周期）。</p>
+</div>
+<div class="note warn">
+  <div class="lbl">范围裁定（本轮采用）</div>
+  <p>本文把差距分成三类，避免把「没做完」和「做不到」混成一句：</p>
+  <p><b>一、已全部落地并远程复验</b>——Electron 单引擎桌面端能实现的能力：指纹面补齐、Cookie 导入导出、SOCKS5 探测、MCP Server、5 个 API 端点、Web Share 平台判定、四套令牌 + 十类交互原语 + 命令面板 + 视觉重构 + 垂直标签/标签组/标签搜索/密度调节，以及<b>本地团队协作</b>（成员、四档角色、环境分享 ACL、活动日志；localStorage/JSON 持久化，零遥测）。远程 typecheck / 单测 328 项 / build / 四项新功能 E2E / 新功能压力测试 / injection / anticheat 21/21 / theme / share 9/9 全绿。</p>
+  <p><b>二、本目标外（技术上做不到，需新产品线，不是未完成）</b>——① <b>云同步 / 云手机 / 云浏览器</b>：需要服务端、设备农场与调度系统，与「服务不自建、零遥测」冲突；② <b>Firefox/Gecko 引擎与 Android 环境</b>：Electron 只嵌 Chromium，Gecko 需独立 embedder + Marionette 协议，Android 是另一条产品线；③ <b>TLS/JA3、HTTP/2、TCP 栈网络指纹</b>：Chromium 网络栈不向 JS/CDP 暴露。三者归入 P2，§10 有一手依据与禁用措辞。</p>
+  <p><b>关于范围确认</b>：上述第二类的取舍已在此明确记录。本地团队已按「补全功能」要求实现；云端/Gecko/网络指纹属于立项级新产品线，不在本地仓库补文件即可完成。若要把第二类推翻进范围，须先立项内核 fork / 新引擎线 / 云服务——这是工程决策，不是代码缺口。</p>
+</div>
+
+<!-- ============ 12 ============ -->
+<h2 id="refs"><span class="n">12</span>参考来源</h2>
+<p class="lede">全部为一手来源：厂商官网 / 定价页 / 帮助中心 / 文档索引 / 发布说明，以及 W3C 与 Fluent 2、Material 3 的令牌源文件。核实日期均为 2026-11-18。</p>
+
+<h3>12.1 商用产品</h3>
+<ul class="refs">
+  <li><b>Multilogin</b> — <a href="https://multilogin.com/">multilogin.com</a> · <a href="https://multilogin.com/pricing/">定价页</a> · <a href="https://multilogin.com/antifingerprint-browser/">反指纹浏览器</a> · <a href="https://multilogin.com/release-notes/">发布说明</a>（17.11.2026：Mimic 内核 157）· <a href="https://multilogin.com/help/en_US/">帮助中心</a> · <a href="https://multilogin.com/help/en_US/multilogin-x">产品能力</a> · <a href="https://multilogin.com/web-automation/ai-quick-actions/">AI Quick Actions</a> · <a href="https://multilogin.com/help/en_US/cookies/cookie-import">Cookie 导入</a> · <a href="https://documenter.getpostman.com/view/28533318/2s946h9Cv9">API（Postman）</a></li>
+  <li><b>GoLogin</b> — <a href="https://gologin.com/">gologin.com</a> · <a href="https://gologin.com/pricing/">定价页</a> · <a href="https://gologin.com/docs/llms.txt">文档索引</a> · <a href="https://gologin.com/docs/profile-fingerprint-settings.md">指纹设置</a> · <a href="https://gologin.com/docs/orbita-browser.md">Orbita 引擎</a> · <a href="https://gologin.com/docs/browser-profiles/profile-management.md">环境管理</a> · <a href="https://gologin.com/docs/general/team-collaboration/how-you-can-share-access.md">共享与协作</a> · <a href="https://gologin.com/mcp/">MCP Server</a> · <a href="https://gologin.com/docs/api-reference/introduction/quickstart">API 快速开始</a> · <a href="https://docs-download.gologin.com/openapi.json">OpenAPI 规范</a> · <a href="https://gologin.com/blog/dolphin-anty-vs-gologin">与 Dolphin 对比（含 Oct 2026 检测器读数）</a> · <a href="https://gologin.com/blog/multilogin-chrome-browser/">与 Multilogin 对比（引擎构成）</a></li>
+  <li><b>AdsPower</b> — <a href="https://www.adspower.com/">adspower.com</a> · <a href="https://www.adspower.com/pricing">定价页</a> · <a href="help.adspower.com/">帮助中心</a> · <a href="https://help.adspower.com/docs/api">API</a> · <a href="https://help.adspower.com/docs/rpa">RPA</a> · <a href="https://help.adspower.com/docs/MCP">MCP</a> · <a href="https://help.adspower.com/docs/AI-Agent-Feature-Usage-Guide">AI Agent</a> · <a href="https://help.adspower.com/docs/transfer_profiles_to_adspower_from_another_antidetect">从其它工具迁移</a> · <a href="https://documenter.getpostman.com/view/45822952/2sB34hEzQH">Local API（Postman）</a></li>
+  <li><b>BitBrowser</b> — <a href="https://www.bitbrowser.net/">bitbrowser.net</a> · <a href="https://www.bitbrowser.net/price">价格</a> · <a href="https://www.bitbrowser.net/rpa">RPA</a> · <a href="https://www.bitbrowser.net/local-api">Local API</a></li>
+  <li><b>Dolphin{anty}</b> — <a href="https://dolphinanty.com/">dolphinanty.com（已 301 跳转至 GoLogin 对比文）</a> · <a href="https://gologin.com/blog/dolphin-anty-vs-gologin">功能与定价（厂商自述，二手）</a></li>
+  <li><b>MoreLogin</b> — <a href="https://www.morelogin.com/">morelogin.com</a> · <a href="https://www.morelogin.com/pricing">定价页</a></li>
+  <li><b>Octo Browser</b> — <a href="https://octobrowser.net/">octobrowser.net</a> · <a href="https://octobrowser.net/pricing">定价页</a>（Lite €10 / Starter €29 / Base €79 / Team €169 / Advanced €329）</li>
+  <li><b>Undetectable</b> — <a href="https://undetectable.io/">undetectable.io</a> · <a href="https://undetectable.io/pricing">定价页</a>（Base $34 / Pro $69 / Custom $139 每月起）</li>
+  <li><b>Incogniton</b> — <a href="https://incogniton.com/">incogniton.com</a> · <a href="https://incogniton.com/pricing/">定价页</a>（Starter Plus $19.99 / Entrepreneur $29.99 / Professional $79.99 / Custom $149.99 起）</li>
+  <li><b>Hubstudio</b> — <a href="https://www.hubstudio.com/">hubstudio.com</a>（中文站；宣称环境无限量永久免费，PC + Android / iOS，管理员–经理–员工三级角色，操作日志）</li>
+  <li><b>状态存疑</b> — <a href="https://kamikoto.com/">kamikoto.com 现为日本刀具零售站，疑产品已停更</a>；<a href="https://vbrowser.io/">vbrowser.io 对自动化抓取返回 Cloudflare 验证，全表记「未核实」</a></li>
+</ul>
+
+<h3>12.2 主流浏览器</h3>
+<ul class="refs">
+  <li><b>Chrome</b> — <a href="https://support.google.com/chrome/answer/2391819">标签管理</a> · <a href="https://support.google.com/chrome/answer/16971124">分屏</a> · <a href="https://support.google.com/chrome/answer/13156494">侧边栏</a> · <a href="https://support.google.com/chrome/answer/11032183">新标签页</a> · <a href="https://support.google.com/chrome/answer/2364824">多配置文件</a> · <a href="https://support.google.com/chrome/answer/16283624">Gemini in Chrome</a> · <a href="https://support.google.com/chrome/answer/16821166">Auto browse</a> · <a href="https://support.google.com/chrome/answer/16704170">AI Mode</a> · <a href="https://support.google.com/chrome/answer/14218344">阅读模式</a> · <a href="https://support.google.com/chrome/answer/9275525">深色模式</a> · <a href="https://blog.google/products-and-platforms/products/chrome/new-chrome-productivity-features/">生产力功能公告</a> · <a href="https://techpp.com/2026/04/08/how-to-enable-vertical-tabs-google-chrome/">垂直标签启用说明（146+）</a></li>
+  <li><b>Microsoft Edge</b> — <a href="https://explore.microsoft.com/en-us/edge/features">功能总览</a> · <a href="https://learn.microsoft.com/en-us/deployedge/microsoft-edge-relnote-stable-channel">稳定通道发布说明</a> · <a href="https://learn.microsoft.com/en-us/deployedge/microsoft-edge-relnote-beta-channel">Beta 通道发布说明（工作区 V2、窗口内切换、工作区置顶与 emoji、Tab 智能分组、侧边栏应用列表退役）</a></li>
+  <li><b>Firefox</b> — <a href="https://www.mozilla.org/en-US/firefox/136.0/releasenotes/">136（侧栏 + 垂直标签）</a> · <a href="https://www.mozilla.org/en-US/firefox/138.0/releasenotes/">138（配置文件 + 标签组）</a> · <a href="https://www.mozilla.org/en-US/firefox/152.0/releasenotes/">152（设置页重做 + 地址栏快捷动作）</a> · <a href="https://www.mozilla.org/en-US/firefox/155.0/releasenotes/">155（Smart Window + Organize Tabs）</a> · <a href="https://www.mozilla.org/en-US/firefox/157.0/releasenotes/">157（视觉改版 + 一键主题 + 紧凑模式）</a> · <a href="https://www.mozilla.org/en-US/firefox/158.0/releasenotes/">158（Smart Window 填充 + 统一搜索按钮）</a> · <a href="https://www.mozilla.org/en-US/firefox/159.0/releasenotes/">159（/watch + 标签搜索快捷键）</a> · <a href="https://www.mozilla.org/en-US/firefox/160.0/releasenotes/">160（Mini Window + PiP 倍速）</a></li>
+  <li><b>Arc / Dia</b> — <a href="https://arc.net/">arc.net（Arc 将于 2026-12-22 关停）</a> · <a href="https://www.diabrowser.com/">diabrowser.com</a> · <a href="https://en.wikipedia.org/wiki/Arc_(web_browser)">Wikipedia: Arc</a></li>
+  <li><b>Brave</b> — <a href="https://brave.com/features/">功能总览</a> · <a href="https://brave.com/leo/">Leo AI</a> · <a href="https://brave.com/blog/vertical-tabs/">垂直标签</a></li>
+  <li><b>Perplexity Comet</b> — <a href="https://www.perplexity.ai/comet">perplexity.ai/comet</a>（页面细节受 Cloudflare 限制，标签与侧栏模型记「未核实」）</li>
+</ul>
+
+<h3>12.3 设计系统与可访问性</h3>
+<ul class="refs">
+  <li><b>Fluent 2 令牌源</b> — <a href="https://raw.githubusercontent.com/microsoft/fluentui/master/packages/tokens/src/global/spacings.ts">spacings.ts</a> · <a href="https://raw.githubusercontent.com/microsoft/fluentui/master/packages/tokens/src/global/durations.ts">durations.ts</a> · <a href="https://raw.githubusercontent.com/microsoft/fluentui/master/packages/tokens/src/global/curves.ts">curves.ts</a> · <a href="https://raw.githubusercontent.com/microsoft/fluentui/master/packages/tokens/src/global/borderRadius.ts">borderRadius.ts</a> · <a href="https://raw.githubusercontent.com/microsoft/fluentui/master/packages/tokens/src/tokens.ts">tokens.ts（shadow2/4/8/16/28/64）</a> · <a href="https://fluent2.microsoft.design/motion">动效指南</a> · <a href="https://fluent2.microsoft.design/elevation">层级</a></li>
+  <li><b>Material 3 令牌源</b> — <a href="https://m3.material.io/styles/motion/easing-and-duration/tokens-specs">时长与缓动</a> · <a href="https://raw.githubusercontent.com/material-components/material-web/main/tokens/versions/v0_192/_md-sys-shape.scss">shape</a> · <a href="https://raw.githubusercontent.com/material-components/material-web/main/tokens/versions/v0_192/_md-sys-elevation.scss">elevation</a></li>
+  <li><b>WCAG 2.2</b> — <a href="https://www.w3.org/WAI/WCAG22/Understanding/focus-appearance.html">SC 2.4.13 Focus Appearance（AAA）</a> · <a href="https://www.w3.org/WAI/WCAG22/Understanding/focus-visible.html">SC 2.4.7 Focus Visible（AA）</a></li>
+</ul>
+
+<h3>12.4 本项目代码位置（本文所有「本项目」列的判据）</h3>
+<ul class="refs">
+  <li><code>src/main/core/fingerprint.ts</code> — 指纹生成与注入脚本（<code>_MASK_TABLE</code>、<code>buildWorkerScript</code>、canvas / 音频 / WebGL / 字体 / 时区各通道）</li>
+  <li><code>src/main/core/cdp.ts</code> — CDP 桥、<code>Target.setAutoAttach</code> 与子 target 重放记账</li>
+  <li><code>src/main/core/theme.ts</code> — 三态主题与 <code>nativeTheme.themeSource</code></li>
+  <li><code>src/main/modules/proxy.ts</code> — 代理协议枚举、CONNECT 探测、SOCKS5 未实现分支</li>
+  <li><code>src/main/modules/localapi.ts</code> 与 <code>docs/api/openapi.yaml</code> — 本地 API 路由与 OpenAPI 规范</li>
+  <li><code>src/shared/ipc.ts</code> — IPC 通道表（<code>ss:profiles:*</code> / <code>ss:proxies:*</code> / <code>ss:data:*</code> / <code>ss:scripts:*</code> / <code>ss:audit:*</code> / <code>ss:migration:*</code> / <code>ss:templates:*</code>）</li>
+  <li><code>src/shared/types.ts</code> — <code>Profile</code> 与 <code>FingerprintConfig</code> 契约</li>
+  <li><code>src/renderer/styles/tokens.css</code> · <code>src/renderer/styles/app.css</code> · <code>src/renderer/styles/base.css</code> — 设计令牌与动效实现</li>
+  <li><code>src/renderer/components/ui.tsx</code> · <code>ProfileGrid.tsx</code> · <code>AgentPanel.tsx</code> — 交互原语与面板现状</li>
+  <li><code>docs/DESIGN.md</code> — 不可判读状态规范与设计令牌现状</li>
+</ul>
+
+<footer class="doc-foot">
+  <div>ShadowSurf · 竞争对位分析 · Competitive Parity 2026-11 · 核实日期 2026-11-18</div>
+  <div class="rel">
+    <a href="index.html">← 返回设计中心</a>
+    <a href="architecture.html">架构设计文档</a>
+    <a href="frontend.html">前端界面设计文档</a>
+    <a href="open-source-features.html">开源功能清单</a>
+  </div>
+</footer>
+
+</main>
+</div>
+
+</body>
+</html>

@@ -18,10 +18,11 @@ import type {
   TaskRecord
 } from '@shared/types'
 import type { AgentEvent, RunRequest } from '@shared/protocol'
-import { getStores, collectStoreHealth, dataDir } from '@main/store'
+import { getStores, collectStoreHealth, dataDir, healthRefs } from '@main/store'
 import type { WindowManager } from '@main/core/windows'
 import type { ContentInsets } from '@main/core/windows'
 import type { ProfileRuntime } from '@main/core/profiles'
+import { clearProfileData, partitionFor } from '@main/core/session'
 import { bridgeFor } from '@main/core/cdp'
 import { buildFingerprint } from '@main/core/fingerprint'
 import { maskRowOf } from '@main/core/mask-gate'
@@ -32,11 +33,17 @@ import { setConsentAuditSink } from '@main/agent/consent'
 import { testConnection } from '@main/agent/llm'
 import type { ModuleContext } from '@main/modules/context'
 import { registerProxyModule } from '@main/modules/proxy'
+import { registerGeoMatchModule } from '@main/modules/geo-match'
 import { registerTemplateModule } from '@main/modules/templates'
 import { registerScriptModule } from '@main/modules/scripts'
 import { registerLocalApiModule } from '@main/modules/localapi'
-import { auditConsent, registerAuditModule } from '@main/modules/audit'
+import { appendAudit, auditConsent, registerAuditModule } from '@main/modules/audit'
 import { registerDataModule } from '@main/modules/data'
+import { registerTeamModule } from '@main/modules/team'
+import { registerTrashModule } from '@main/modules/trash'
+import { registerExtensionsModule } from '@main/modules/extensions'
+import { registerWarmupModule } from '@main/modules/warmup'
+import { registerSchedulerModule, startScheduler } from '@main/modules/scheduler'
 
 export interface HandlerContext {
   wm: WindowManager
@@ -164,9 +171,45 @@ export function registerHandlers(ctx: HandlerContext): void {
     return buildFingerprint(platform, stored.seed)
   })
 
-  handle(CH.profiles.remove, (_e, id) => {
-    stores.profiles.remove(id as string)
+  /**
+   * 删除环境：**记录与分区一起删**，否则「删除」只删了一半。
+   *
+   * `persist:ss_<id>` 分区里存着 Cookie / localStorage / IndexedDB / Service Worker /
+   * Cache Storage。只删 profiles.json 里的记录，等于用户以为身份没了，而站点手里
+   * 还留着一份可用的登录态、盘上还留着一个再也没人认领的目录 —— 这是隐私泄漏。
+   *
+   * ── 顺序：stop → remove → clear（先停、再删记录、最后尽力清理）──
+   * 1. `stop`：窗口打开时会占着分区的 Cache / LevelDB 文件，Windows 上尤其明显；
+   *    先停掉才可能清干净（不在运行时 `ProfileRuntime.stop` 是安全 no-op）。
+   * 2. `remove`：记录是「这个环境存在」的唯一真相源。先删记录，从用户视角删除
+   *    已经成功；后面的清理只是收尾，不能再把一次成功的删除变成失败。
+   * 3. `clear`：**尽力而为**。失败只 warn + 写审计，不让删除失败。
+   *
+   * ── 权衡 ──
+   * 残留分区是隐私问题，但「环境删不掉、每次点都报错」更糟：用户会反复重试，
+   * 留下更多半清理状态，而记录仍在、环境看起来还在。选「删除成功 + 审计留痕」，
+   * 是因为它符合用户点下删除时的意图，也能让人事后查到哪个分区没清干净。
+   *
+   * 反过来的顺序（先清再删记录）在「清理成功、删记录失败」时最坏：数据没了、
+   * 环境还在，用户点开发现所有登录态消失，比残留更难解释。
+   */
+  handle(CH.profiles.remove, async (_e, id) => {
+    const profileId = id as string
+    const name = stores.profiles.get(profileId)?.name ?? profileId
+
+    // 软删除：只停运行时 + 打 deletedAt，**不清分区**。
+    // 清分区挪到「回收站 → 彻底删除」那一步（trash.purge），
+    // 否则误删就真的没救了 —— 恢复后拿不到任何登录态等于没恢复。
+    await ctx.runtime.stop(profileId)
+    stores.profiles.softRemove(profileId)
     pushProfiles()
+
+    try {
+      appendAudit(stores, '环境·移入回收站', `环境 ${name}（${profileId}）`, '可在回收站恢复')
+    } catch (err) {
+      // 审计失败不阻断删除：记录状态已经落盘，回收站里能找回
+      console.error('[profiles] 写入回收站审计失败', err)
+    }
   })
 
   /**
@@ -296,7 +339,11 @@ export function registerHandlers(ctx: HandlerContext): void {
       bottom: Math.max(0, Math.round(raw.bottom)),
       left: Math.max(0, Math.round(raw.left)),
       right: Math.max(0, Math.round(raw.right)),
-      panelWidth: Math.max(0, Math.round(raw.panelWidth))
+      panelWidth: Math.max(0, Math.round(raw.panelWidth)),
+      // visible / split 必须原样过桥：这两个是「离开双轨窗口」与「分屏比例」的
+      // 唯一来源，在这里丢掉就等于渲染层永远无法隐藏网页视图。
+      visible: raw.visible !== false,
+      split: typeof raw.split === 'number' ? raw.split : undefined
     }
     ctx.wm.setContentInsets(windowId, insets)
   })
@@ -340,7 +387,12 @@ export function registerHandlers(ctx: HandlerContext): void {
           // 把发起方 webContents id 传下去，凭证会绑到这个窗口上。
           // 这里**不再有 askConfirm**：同意只能来自主进程弹出的系统原生窗口，
           // 渲染层回答什么都不影响决策。
-          senderId: event.sender.id
+          senderId: event.sender.id,
+          // 伪装闸门查的是**标签页**自己的 webContents 状态，而不是发起方渲染进程。
+          // `senderId` 是控制台窗口的 renderer，与它下面任何标签页的 wc 编号都属于
+          // 不同编号空间；拿它去查伪装状态永远是 null，L2 会被永久拦下。
+          // `tab` 就是本次要操作的标签页，它的 `wc.id` 正是 `WindowManager.maskStates` 的键。
+          maskWebContentsId: tab.wc.id
         },
         controller.signal
       )
@@ -431,18 +483,7 @@ export function registerHandlers(ctx: HandlerContext): void {
    * 刻意做成「每次调用都重新扫盘」而不是缓存：用户可能刚手工改完文件、
    * 刚关掉占用文件的杀软，缓存会让这个面板骗人。
    */
-  handle(CH.system.storeHealth, () =>
-    collectStoreHealth(dataDir(), [
-      stores.profiles.health,
-      stores.tasks.health,
-      stores.settings.health,
-      stores.proxies.health,
-      stores.templates.health,
-      stores.scripts.health,
-      stores.audit.health,
-      stores.history.health
-    ])
-  )
+  handle(CH.system.storeHealth, () => collectStoreHealth(dataDir(), healthRefs(stores)))
 
   handle(CH.system.openExternal, async (_e, url) => {
     const target = String(url)
@@ -464,9 +505,17 @@ export function registerHandlers(ctx: HandlerContext): void {
   }
 
   registerProxyModule(moduleCtx)
+  registerGeoMatchModule(moduleCtx)
   registerTemplateModule(moduleCtx)
   registerScriptModule(moduleCtx)
   registerLocalApiModule(moduleCtx)
   registerAuditModule(moduleCtx)
   registerDataModule(moduleCtx)
+  registerTeamModule(moduleCtx)
+  registerTrashModule(moduleCtx)
+  registerExtensionsModule(moduleCtx)
+  registerWarmupModule(moduleCtx)
+  registerSchedulerModule(moduleCtx)
+  // 调度器 30s 扫一次；应用关闭即停止（本地单机应用的边界，不冒充系统级 cron）
+  startScheduler(moduleCtx)
 }

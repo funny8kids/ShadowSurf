@@ -116,6 +116,37 @@ const IFRAME_INJECTION_ENABLED = true
  */
 const SERVICE_WORKER_EVAL_TIMEOUT = 2_000
 
+/**
+ * 注入脚本缓存。
+ *
+ * 为什么需要：`buildInjectionScript` 每次要拼 1000+ 行字符串（page 约 52.6KB、
+ * worker 约 17KB）。同一环境每开一个 Worker / OOPIF 都重新构建一次，几秒内
+ * 就能拼几十次。脚本只由 `profile.fingerprint + seed` 决定，而这两者变化时
+ * `profile.updatedAt` 必然变 —— 所以 (id, updatedAt, target) 是完备的缓存键，
+ * 环境一改自动失效，不会注到旧指纹。
+ *
+ * 上限 64 条：正常同时运行的环境数远小于此；超出按插入顺序淘汰最旧，
+ * 避免长期运行把内存撑大。
+ */
+const SCRIPT_CACHE_MAX = 64
+const scriptCache = new Map<string, string>()
+
+function cachedInjectionScript(
+  profile: StoredProfile,
+  target: 'page' | 'worker' | 'iframe'
+): string {
+  const key = `${profile.id}:${profile.updatedAt}:${target}`
+  const hit = scriptCache.get(key)
+  if (hit !== undefined) return hit
+  const source = buildInjectionScript(profile, target)
+  if (scriptCache.size >= SCRIPT_CACHE_MAX) {
+    const oldest = scriptCache.keys().next().value
+    if (oldest !== undefined) scriptCache.delete(oldest)
+  }
+  scriptCache.set(key, source)
+  return source
+}
+
 export interface TabHandle {
   windowId: string
   tabId: string
@@ -166,6 +197,23 @@ export interface ContentInsets {
   left: number
   right: number
   panelWidth: number
+  /**
+   * 渲染层是否处在一个「双轨窗口」里。
+   *
+   * `false` = 当前界面不是双轨窗口（例如控制台），网页视图必须整体隐藏 ——
+   * 这是「离开双轨窗口」的**唯一**实现路径。之前这个字段在主进程不存在，
+   * 渲染层传了也被丢掉，于是 `visible:false` 从来不通电，视图永远显示。
+   * 缺省（undefined）按 `true` 处理：老版本渲染层不报这个字段时保持原行为。
+   */
+  visible?: boolean
+  /**
+   * 人轨 / 影子轨的宽度占比（0–1）。
+   *
+   * **暂未实现**：布局仍用固定的 `SHADOW_RATIO`（影子轨 43%），这个字段只被
+   * 存下来不生效。保留它是为了不切断渲染层已经在上报的契约 —— 字段丢了，
+   * 将来接入时两侧要同时改；留在结构里则只改布局一处。
+   */
+  split?: number
 }
 
 interface WindowRecord {
@@ -204,6 +252,17 @@ interface WindowManagerOptions {
    * 这条是「这个环境现在是什么状态」的**状态**。渲染层标红、门禁禁 L2 要读后者。
    */
   onMaskState?: (record: MaskStateRecord) => void
+  /**
+   * 环境扩展加载。由组合根注入（`extensions.ts` 的 `applyExtensionsToSession`），
+   * windows.ts 不 import store/modules —— 它会被 `probe-mask.cjs` 在纯 electron
+   * 脚本里单独加载，多引一条依赖就多一个探针起不来的理由。
+   *
+   * 不传 = 不加载扩展（探针、无扩展的旧调用方照常工作）。
+   */
+  applyExtensions?: (
+    ses: Electron.Session,
+    profile: StoredProfile
+  ) => Promise<{ loaded: number; failed: Array<{ name: string; error: string }> } | void>
 }
 
 /**
@@ -253,8 +312,12 @@ export class WindowManager {
    * **不幂等**（`_maskOne` 会把已经包过的函数再包一层），重复注入会把函数身份
    * 越包越歪。所以在这里挡一道。
    *
-   * 只增不减：targetId 是 Chromium 侧的一次性标识，worker 销毁后不会复用。
+   * 为什么要设上限：targetId 是 Chromium 的一次性标识、worker 销毁后不会复用，
+   * 所以「记过就永不删」在正确性上没问题；但长会话里每个 shared_worker 留一条
+   * （~40 字节），跑几天就是一份只增不减的内存。超过上限按插入顺序淘汰最旧 ——
+   * 被淘汰的 targetId 早已销毁，不会再收到它的 targetCreated，所以不会重复注入。
    */
+  private static readonly SW_ATTACHED_MAX = 2048
   private readonly swAttached = new Set<string>()
   private readonly opts: WindowManagerOptions
 
@@ -327,8 +390,17 @@ export class WindowManager {
     this.loadShell(win, windowId, profileId)
 
     try {
-      // 双轨是产品形态本身：一开窗就给人轨和影子轨各一个页面
-      const humanTabId = await this.newTab(windowId, initialUrl ?? DEFAULT_URL, 'human')
+      // 双轨是产品形态本身：一开窗就给人轨和影子轨各一个页面。
+      //
+      // **只有人轨吃 profile.startUrl**：影子轨是给 Agent 的空白起点，
+      // 用户配的首页会污染任务 —— Agent 的第一步应该是自己导航到目标站，
+      // 而不是在一个已经打开的页面上猜「这算不算任务的一部分」。
+      // 所以下面影子轨仍然固定用 SHADOW_START_URL，两轨的起点是两件事。
+      const humanTabId = await this.newTab(
+        windowId,
+        profile.startUrl?.trim() || DEFAULT_URL,
+        'human'
+      )
       await this.newTab(windowId, SHADOW_START_URL, 'shadow')
       await this.activateTab(windowId, humanTabId)
     } catch (err) {
@@ -412,8 +484,24 @@ export class WindowManager {
 
     this.wire(rec, handle)
 
-    // 顺序不能变：先落到正确的 session（UA/代理），再注入指纹，最后才发第一个请求
+    // 顺序不能变：先落到正确的 session（UA/代理），再装扩展，再注入指纹，最后才发第一个请求
     await applyProfileToSession(wc.session, profile)
+    // 扩展失败不能拦住环境启动：坏扩展是「功能缺失」，不是「环境不可用」。
+    // 明细由 applyExtensions 自己记审计；这里只留一行日志方便现场排查。
+    if (this.opts.applyExtensions) {
+      try {
+        const res = await this.opts.applyExtensions(wc.session, profile)
+        if (res && res.failed.length > 0) {
+          console.warn(
+            `[windows] 扩展未全部加载 profile=${profile.id} loaded=${res.loaded} failed=${res.failed
+              .map((f) => `${f.name}:${f.error}`)
+              .join(',')}`
+          )
+        }
+      } catch (err) {
+        console.error('[windows] 扩展加载异常', err)
+      }
+    }
     await this.injectFingerprint(wc, profile)
 
 
@@ -523,7 +611,16 @@ export class WindowManager {
       bottom: Math.max(0, Math.round(insets.bottom)),
       left: Math.max(0, Math.round(insets.left)),
       right: Math.max(0, Math.round(insets.right)),
-      panelWidth: Math.max(0, Math.round(insets.panelWidth))
+      panelWidth: Math.max(0, Math.round(insets.panelWidth)),
+      // 只在显式 false 时隐藏：字段缺失（老渲染层）必须保持「显示」，
+      // 否则一次契约升级就会把所有网页视图永久藏掉。
+      visible: insets.visible !== false,
+      // split 暂未参与布局（见 ContentInsets.split 的注释），但收下并夹到 0–1，
+      // 避免渲染层传什么就存什么、将来接入时还得再做一次归一化。
+      split:
+        typeof insets.split === 'number' && Number.isFinite(insets.split)
+          ? Math.min(1, Math.max(0, insets.split))
+          : undefined
     }
     this.layout(rec)
   }
@@ -537,6 +634,15 @@ export class WindowManager {
    */
   private layout(rec: WindowRecord): void {
     if (rec.win.isDestroyed()) return
+
+    // 「不在双轨窗口里」是渲染层明确上报的状态，不是布局参数缺失。
+    // 必须在算 bounds 之前拦下来：此时窗口里画的是控制台 UI，任何网页视图
+    // 只要 setVisible(true) 就会盖在上面。
+    if (rec.insets.visible === false) {
+      for (const handle of rec.tabs.values()) handle.view.setVisible(false)
+      return
+    }
+
     const [width, height] = rec.win.getContentSize()
     const { top, bottom, left, right } = rec.insets
 
@@ -693,7 +799,7 @@ export class WindowManager {
       // 但它**只作用于 frame**，管不到 Worker —— 实测 worker target 上
       // Page 域根本不存在（`'Page.addScriptToEvaluateOnNewDocument' wasn't found`）。
       // Worker / OOPIF 由下面的 attachChildTargets 走另一条通道。
-      const source = buildInjectionScript(profile)
+      const source = cachedInjectionScript(profile, 'page')
       await bridge.send('Page.addScriptToEvaluateOnNewDocument', { source })
 
       // 台账回读必须挂在**每次**文档加载之后：注入脚本是 addScriptToEvaluateOnNewDocument，
@@ -797,6 +903,11 @@ export class WindowManager {
     if (!targetId) return
     if (this.swAttached.has(targetId)) return
     this.swAttached.add(targetId)
+    // 超上限按插入顺序淘汰最旧（Set 保序）；被淘汰的 targetId 已销毁，不会重来。
+    if (this.swAttached.size > WindowManager.SW_ATTACHED_MAX) {
+      const oldest = this.swAttached.values().next().value
+      if (oldest !== undefined) this.swAttached.delete(oldest)
+    }
     try {
       // flatten:true 才能拿到可直接下命令的 session；非 flatten 要再走
       // Target.sendMessageToTarget，多一层且与本文件其余部分不一致。
@@ -996,7 +1107,7 @@ export class WindowManager {
       )
       .catch(() => undefined)
 
-    const source = buildInjectionScript(profile, 'worker')
+    const source = cachedInjectionScript(profile, 'worker')
     const outcome = await bridge.evaluate(source, sessionId, timeoutMs)
     if (!outcome.ok) {
       // 这一步是本次修复最容易假阳性的地方：Runtime.evaluate 在脚本抛错时
@@ -1119,7 +1230,7 @@ export class WindowManager {
     sessionId: string
   ): Promise<void> {
     await bridge.send('Page.enable', {}, sessionId).catch(() => undefined)
-    const source = buildInjectionScript(profile, 'iframe')
+    const source = cachedInjectionScript(profile, 'iframe')
     await bridge.send('Page.addScriptToEvaluateOnNewDocument', { source }, sessionId)
   }
 

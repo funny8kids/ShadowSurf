@@ -14,6 +14,38 @@ import { StoreCorruptError } from './json-file'
 const MAX_TASKS = 200
 
 /**
+ * 摘要视图每条最多保留的步数：前 5 步 + 后 5 步。
+ *
+ * 为什么只留头尾：列表页真正要回答的是「这条任务是什么、跑成什么样、花了多久」，
+ * 中间的步骤对这三个问题没有贡献；而完整 steps 是这份数据里最占体积的部分
+ * （每步带 label / thought / result）。200 条任务 × 25 步 ≈ 3.77MB，
+ * 每次读列表都要 structuredClone 一遍再走一次 IPC 序列化。
+ *
+ * 详情必须能拿到全量 —— 走 `get(id)`，那里从不裁剪。
+ */
+const LIST_STEPS_HEAD = 5
+const LIST_STEPS_TAIL = 5
+
+/**
+ * 把一条任务裁成摘要：只保留头 `LIST_STEPS_HEAD` 步 + 尾 `LIST_STEPS_TAIL` 步。
+ *
+ * 加 `truncated` 标记不是为了好看：静默少给数据是这份代码里最容易被忽略的一类错误，
+ * 消费方（列表 / 导出）看到标记才知道「这不是全部，要全量去 get」。
+ * 步数不足时原样返回，不做无意义的标记。
+ */
+function truncateSteps(task: TaskRecord): TaskRecord {
+  const { steps, ...rest } = task
+  if (steps.length <= LIST_STEPS_HEAD + LIST_STEPS_TAIL) return structuredClone(task)
+  // 只克隆留下来的步骤：整份 structuredClone 再丢掉 2/3 是白花开销
+  const kept = [...steps.slice(0, LIST_STEPS_HEAD), ...steps.slice(-LIST_STEPS_TAIL)].map((s) =>
+    structuredClone(s)
+  )
+  // 用 Object.assign 而不是对象字面量：`truncated` 不在 TaskRecord 里，
+  // 直接写进字面量会被 TS 的多余属性检查拦下（类型文件本次不改）。
+  return Object.assign({ ...structuredClone(rest), steps: kept }, { truncated: true })
+}
+
+/**
  * 任务历史：形状不对的条目丢掉。
  *
  * 和 profiles 的严格校验不同，这里**刻意宽容**：任务历史是「最近发生了什么」
@@ -56,10 +88,26 @@ export class TaskStore {
     }
   }
 
-  list(): TaskRecord[] {
+  /**
+   * 列表读取。
+   *
+   * `includeSteps = false` 时每条只保留前 5 + 后 5 步并打上 `truncated` 标记
+   * （见 `truncateSteps`），用于「只要列表、不要时间线」的场景。
+   *
+   * 默认仍然是全量：TaskList 的回放时间线和 ScriptPanel 的「从任务导入」都直接
+   * 读 `list()` 里的 steps，静默截断会让这两处少掉步骤 —— 那属于改功能语义。
+   * 所以摘要是一条**显式**通道（`listSummary()`），等渲染层改成「列表读摘要、
+   * 点开再 `get(id)`」之后再把调用点切过去，而不是在这里替所有调用方做决定。
+   */
+  list(includeSteps: boolean = true): TaskRecord[] {
     const all = this.store.read().slice()
     all.sort((a, b) => b.startedAt - a.startedAt)
-    return all.map((t) => structuredClone(t))
+    return all.map((t) => (includeSteps ? structuredClone(t) : truncateSteps(t)))
+  }
+
+  /** 列表摘要：等价于 `list(false)`，给「只看列表」的调用方用 */
+  listSummary(): TaskRecord[] {
+    return this.list(false)
   }
 
   get(id: string): TaskRecord | null {

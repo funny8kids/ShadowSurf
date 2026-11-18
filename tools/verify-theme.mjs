@@ -24,8 +24,8 @@
 import { _electron as electron } from 'playwright-core'
 import { mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { electronExecutable, ROOT } from './platform-paths.mjs'
 
-const ROOT = resolve(import.meta.dirname, '..')
 const SHOTS = resolve(ROOT, 'artifacts/theme')
 mkdirSync(SHOTS, { recursive: true })
 
@@ -149,8 +149,16 @@ const AUDIT = () => {
 const env = { ...process.env, NODE_ENV: 'production' }
 delete env.ELECTRON_RUN_AS_NODE
 
+// Electron 是必需依赖：跨平台路径交给 platform-paths.mjs（Windows 优先 .exe，其他用无后缀名）。
+// 找不到就是真错误（脚本/环境问题），不是「跳过比较」，不能记成通过。
+const exe = electronExecutable(ROOT)
+if (!exe) {
+  console.error('找不到 Electron 可执行文件：' + resolve(ROOT, 'node_modules/electron/dist') + '（electron.exe / electron 都不存在）')
+  process.exit(2)
+}
+
 const app = await electron.launch({
-  executablePath: resolve(ROOT, 'node_modules/electron/dist/electron.exe'),
+  executablePath: exe,
   args: ['.'],
   cwd: ROOT,
   env,

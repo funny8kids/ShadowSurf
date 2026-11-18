@@ -9,16 +9,38 @@
  * 否则多个模块并行开发时会互相覆盖。
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import type { FingerprintTemplate, OSKind, Profile } from '@shared/types'
 import type { MigrationAdoptReport } from '@shared/ipc'
 import { Button, Icon, Modal, cx, useToast } from '@renderer/components/ui'
 import { bridge, errorMessage, hasBridge } from '@renderer/lib/api'
+import { useI18n } from '@renderer/lib/i18n'
 import './template.css'
 
 export interface PanelProps {
   profiles: Profile[]
+}
+
+/**
+ * 模板列表读取的三态（DESIGN.md §不可判读状态）。
+ * 「读失败」和「确实为空」不能共用 loading=false + 空数组这一个组合，
+ * 用联合类型逼每一态都必须回答「画什么」。
+ */
+type TemplateListState =
+  | { kind: 'loading' }
+  | { kind: 'error'; message: string }
+  | { kind: 'ready'; templates: FingerprintTemplate[] }
+
+/**
+ * 剥掉 Electron 给 IPC 失败套的通道名外壳。
+ * DESIGN.md「错误原文不要带协议噪音」：原始消息形如
+ * `Error invoking remote method 'ss:templates:list': Error: EACCES: ...`。
+ * AuditPanel 内有一份同样的正则但没导出；按同口径内联，不为此新建共享文件。
+ */
+function cleanIpcMessage(raw: string): string {
+  const m = /Error invoking remote method '[^']*':\s*(?:Error:\s*)?([\s\S]*)$/.exec(raw)
+  return (m?.[1] ?? raw).trim()
 }
 
 const OS_LABEL: Record<OSKind, string> = {
@@ -38,14 +60,23 @@ const OS_LABEL: Record<OSKind, string> = {
 const MIN_PASS = 8
 
 /** 卡片摘要：只挑「一眼能看出两台机器像不像」的四个参数 */
-function summarize(template: FingerprintTemplate): Array<{ k: string; v: string }> {
+function summarize(
+  template: FingerprintTemplate,
+  t: (key: string, vars?: Record<string, string | number>) => string
+): Array<{ k: string; v: string }> {
   const fp = template.fingerprint
   const chrome = /Chrome\/(\d+)/.exec(fp.userAgent)
   return [
     { k: 'Chrome', v: chrome ? chrome[1] : fp.uaVersion.split('.')[0] },
-    { k: '时区', v: fp.timezone },
-    { k: '分辨率', v: `${fp.screen.width}×${fp.screen.height}` },
-    { k: 'CPU', v: `${fp.hardware.cpuCores} 核 / ${fp.hardware.memoryGB}G` }
+    { k: t('template.summary.timezone'), v: fp.timezone },
+    { k: t('template.summary.screen'), v: `${fp.screen.width}×${fp.screen.height}` },
+    {
+      k: t('template.summary.cpu'),
+      v: t('template.summary.cpuValue', {
+        cores: fp.hardware.cpuCores,
+        mem: fp.hardware.memoryGB
+      })
+    }
   ]
 }
 
@@ -74,10 +105,42 @@ function downloadJson(text: string, filename: string): void {
 
 export function TemplatePanel({ profiles }: PanelProps) {
   const toast = useToast()
+  const { t } = useI18n()
 
-  const [templates, setTemplates] = useState<FingerprintTemplate[]>([])
-  const [loading, setLoading] = useState(true)
+  const [list, setList] = useState<TemplateListState>({ kind: 'loading' })
+  // 读不到时按「没有」处理，所有读 templates 的地方（计数、排序）照旧，
+  // 但「画什么」由下面的 list.kind 三态分支决定。
+  const templates = list.kind === 'ready' ? list.templates : []
   const [busy, setBusy] = useState<string | null>(null)
+
+  // 无桥接时主进程根本没起来，和「读失败」一样是「不知道」，落到 error 态而不是空态
+  const reload = useCallback(async (): Promise<void> => {
+    if (!hasBridge()) {
+      setList({ kind: 'error', message: t('template.error.noBridge') })
+      return
+    }
+    setList({ kind: 'loading' })
+    try {
+      const loaded = await bridge().templates.list()
+      setList({ kind: 'ready', templates: loaded })
+    } catch (err) {
+      // 读失败是权威结论，留在原地；不弹会消失的 toast，否则又退化成「空」
+      setList({ kind: 'error', message: cleanIpcMessage(errorMessage(err)) })
+    }
+  }, [t])
+
+  useEffect(() => {
+    void reload()
+  }, [reload])
+
+  /**
+   * 变更成功后就地回填列表。
+   * 不退回 loading：逐条回填才不会让正在看的卡片跳位。
+   * 非 ready 态里成功变更也算「列表现在可读了」，直接落到 ready，行为和改造前一致。
+   */
+  function updateTemplates(fn: (prev: FingerprintTemplate[]) => FingerprintTemplate[]): void {
+    setList((prev) => ({ kind: 'ready', templates: fn(prev.kind === 'ready' ? prev.templates : []) }))
+  }
 
   // 面板内的环境列表独立维护一份：应用模板 / 导入迁移包之后需要立刻看到新指纹，
   // 而父组件的列表只在首屏和批量操作时刷新，等它自己更新会滞后。
@@ -114,27 +177,6 @@ export function TemplatePanel({ profiles }: PanelProps) {
     setLocalProfiles(profiles)
   }, [profiles])
 
-  useEffect(() => {
-    let alive = true
-    if (!hasBridge()) {
-      setLoading(false)
-      return
-    }
-    void (async () => {
-      try {
-        const list = await bridge().templates.list()
-        if (alive) setTemplates(list)
-      } catch (err) {
-        if (alive) toast.push(errorMessage(err), 'err')
-      } finally {
-        if (alive) setLoading(false)
-      }
-    })()
-    return () => {
-      alive = false
-    }
-  }, [toast])
-
   const sorted = useMemo(
     () =>
       [...templates].sort((a, b) => {
@@ -159,7 +201,7 @@ export function TemplatePanel({ profiles }: PanelProps) {
   async function apply(template: FingerprintTemplate): Promise<void> {
     const targetId = targets[template.id]
     if (!targetId) {
-      toast.push('请先选择要应用到的环境', 'info')
+      toast.push(t('template.err.needProfile'), 'info')
       return
     }
     const targetName = localProfiles.find((p) => p.id === targetId)?.name ?? targetId
@@ -167,7 +209,7 @@ export function TemplatePanel({ profiles }: PanelProps) {
     try {
       await bridge().templates.apply(template.id, targetId)
       await refreshProfiles()
-      toast.push(`已把「${template.name}」的指纹应用到「${targetName}」`, 'ok')
+      toast.push(t('template.toast.applied', { template: template.name, profile: targetName }), 'ok')
     } catch (err) {
       toast.push(errorMessage(err), 'err')
     } finally {
@@ -181,8 +223,8 @@ export function TemplatePanel({ profiles }: PanelProps) {
     setBusy(`remove:${target.id}`)
     try {
       await bridge().templates.remove(target.id)
-      setTemplates((prev) => prev.filter((t) => t.id !== target.id))
-      toast.push(`已删除模板「${target.name}」`, 'ok')
+      updateTemplates((prev) => prev.filter((t) => t.id !== target.id))
+      toast.push(t('template.toast.deleted', { name: target.name }), 'ok')
       setPendingDelete(null)
     } catch (err) {
       toast.push(errorMessage(err), 'err')
@@ -194,11 +236,11 @@ export function TemplatePanel({ profiles }: PanelProps) {
   async function saveTemplate(): Promise<void> {
     const name = saveName.trim()
     if (!saveFromId) {
-      toast.push('请先选择来源环境', 'info')
+      toast.push(t('template.err.needSource'), 'info')
       return
     }
     if (!name) {
-      toast.push('请填写模板名称', 'info')
+      toast.push(t('template.err.needName'), 'info')
       return
     }
     setBusy('save')
@@ -208,10 +250,10 @@ export function TemplatePanel({ profiles }: PanelProps) {
         name,
         saveDesc.trim() || undefined
       )
-      setTemplates((prev) => [...prev, created])
+      updateTemplates((prev) => [...prev, created])
       setSaveName('')
       setSaveDesc('')
-      toast.push(`已保存模板「${created.name}」`, 'ok')
+      toast.push(t('template.toast.saved', { name: created.name }), 'ok')
     } catch (err) {
       toast.push(errorMessage(err), 'err')
     } finally {
@@ -221,24 +263,24 @@ export function TemplatePanel({ profiles }: PanelProps) {
 
   async function exportSelected(): Promise<void> {
     if (exportIds.length === 0) {
-      toast.push('请先勾选要导出的环境', 'info')
+      toast.push(t('template.err.needSelection'), 'info')
       return
     }
     // 口令在渲染层先自检一遍：不是为了安全（main 才是判定的地方），
     // 是为了不在用户点完之后才告诉他「少了一个字符」。
     if (exportPass.length < MIN_PASS) {
-      toast.push(`口令至少 ${MIN_PASS} 个字符`, 'info')
+      toast.push(t('template.err.passShort', { n: MIN_PASS }), 'info')
       return
     }
     if (exportPass !== exportPass2) {
-      toast.push('两次输入的口令不一致', 'err')
+      toast.push(t('template.err.passMismatch'), 'err')
       return
     }
     setBusy('export')
     try {
       const json = await bridge().migration.export(exportIds, exportPass)
       downloadJson(json, `shadowsurf-${dateStamp()}.json`)
-      toast.push(`已导出 ${exportIds.length} 个环境（口令加密，代理密码留空）`, 'ok')
+      toast.push(t('template.toast.exported', { n: exportIds.length }), 'ok')
     } catch (err) {
       toast.push(errorMessage(err), 'err')
     } finally {
@@ -256,11 +298,11 @@ export function TemplatePanel({ profiles }: PanelProps) {
   async function runImport(text: string, accept = false): Promise<void> {
     const payload = text.trim()
     if (!payload) {
-      toast.push('请粘贴迁移包 JSON 或选择文件', 'info')
+      toast.push(t('template.err.needPayload'), 'info')
       return
     }
     if (importPass.length < MIN_PASS) {
-      toast.push(`口令至少 ${MIN_PASS} 个字符`, 'info')
+      toast.push(t('template.err.passShort', { n: MIN_PASS }), 'info')
       return
     }
     setBusy('import')
@@ -279,8 +321,11 @@ export function TemplatePanel({ profiles }: PanelProps) {
       // 「写了几行」和「身份对不对」是两件事，所以分成两句说。
       toast.push(
         bad === 0
-          ? `导入完成：环境 ${result.profiles} 个，代理 ${result.proxies} 个，身份核对全部通过`
-          : `导入完成：环境 ${result.profiles} 个，但 ${bad} 个身份核对不一致，详见下方`,
+          ? t('template.toast.importOk', {
+              profiles: result.profiles,
+              proxies: result.proxies
+            })
+          : t('template.toast.importMismatch', { profiles: result.profiles, bad }),
         bad === 0 ? 'ok' : 'err'
       )
     } catch (err) {
@@ -316,7 +361,7 @@ export function TemplatePanel({ profiles }: PanelProps) {
     // 名字留空时用「环境名 + 模板」预填，用户直接点保存也有意义的名字
     if (saveName.trim() === '') {
       const profile = localProfiles.find((p) => p.id === id)
-      if (profile) setSaveName(`${profile.name} 模板`)
+      if (profile) setSaveName(t('template.save.defaultName', { name: profile.name }))
     }
   }
 
@@ -328,14 +373,14 @@ export function TemplatePanel({ profiles }: PanelProps) {
     <div className="tool-panel">
       <header className="tool-head">
         <div>
-          <h2>指纹模板与迁移</h2>
-          <p>
-            把一套指纹参数存成模板反复使用，或打包成迁移包搬到另一台机器。
-            应用模板等于克隆同一身份，需要新身份请回环境页重掷指纹。
-          </p>
+          <h2>{t('template.title')}</h2>
+          <p>{t('template.subtitle')}</p>
         </div>
         <div className="tpl-count">
-          内置 {templates.length - customCount} · 自定义 {customCount}
+          {t('template.counts', {
+            builtin: templates.length - customCount,
+            custom: customCount
+          })}
         </div>
       </header>
 
@@ -343,17 +388,25 @@ export function TemplatePanel({ profiles }: PanelProps) {
         {/* ── 模板库 ── */}
         <section className="tpl-sec">
           <div className="tpl-sec-head">
-            <h3>模板库</h3>
-            <span className="tpl-sec-hint">内置模板只读，自定义模板可随时删除</span>
+            <h3>{t('template.library')}</h3>
+            <span className="tpl-sec-hint">{t('template.library.hint')}</span>
           </div>
 
-          {loading ? (
-            <div className="tpl-empty">正在读取模板…</div>
-          ) : sorted.length === 0 ? (
-            <div className="tpl-empty">
-              还没有任何模板。先在下方向「从环境保存为模板」里挑一个环境，
-              它的 UA、时区、分辨率、字体清单会被整份存下来。
+          {list.kind === 'loading' ? (
+            <div className="tpl-empty">{t('template.loading')}</div>
+          ) : list.kind === 'error' ? (
+            /* 读不到 ≠ 没有模板。琥珀态 + 重试入口，和空态一眼可分。
+               用 warn 不用 red：读不到是「不知道」，不是确认坏了（DESIGN.md §不可判读状态）。 */
+            <div className="tpl-err">
+              <b>{t('template.error.title')}</b>
+              <p>{t('template.error.reason', { message: list.message })}</p>
+              <p className="tpl-err-hint">{t('template.error.hint')}</p>
+              <Button variant="ghost" icon="reload" onClick={() => void reload()}>
+                {t('common.retry')}
+              </Button>
             </div>
+          ) : sorted.length === 0 ? (
+            <div className="tpl-empty">{t('template.empty')}</div>
           ) : (
             <div className="tpl-grid">
               {sorted.map((template) => {
@@ -363,7 +416,9 @@ export function TemplatePanel({ profiles }: PanelProps) {
                   <article className="tpl-card" key={template.id}>
                     <div className="tpl-card-top">
                       <span className="tpl-os">{OS_LABEL[template.os]}</span>
-                      {template.builtin ? <span className="tpl-badge">内置</span> : null}
+                      {template.builtin ? (
+                        <span className="tpl-badge">{t('template.builtin')}</span>
+                      ) : null}
                     </div>
 
                     <h4 className="tpl-name">{template.name}</h4>
@@ -372,7 +427,7 @@ export function TemplatePanel({ profiles }: PanelProps) {
                     ) : null}
 
                     <div className="tpl-meta">
-                      {summarize(template).map((item) => (
+                      {summarize(template, t).map((item) => (
                         <div key={item.k}>
                           <span>{item.k}</span>
                           <b title={item.v}>{item.v}</b>
@@ -383,13 +438,13 @@ export function TemplatePanel({ profiles }: PanelProps) {
                     <div className="tpl-foot">
                       <select
                         className="tpl-select"
-                        aria-label={`把 ${template.name} 应用到环境`}
+                        aria-label={t('template.apply.aria', { name: template.name })}
                         value={target}
                         onChange={(e) =>
                           setTargets((prev) => ({ ...prev, [template.id]: e.target.value }))
                         }
                       >
-                        <option value="">选择环境…</option>
+                        <option value="">{t('template.selectProfile')}</option>
                         {localProfiles.map((profile) => (
                           <option key={profile.id} value={profile.id}>
                             {profile.name}
@@ -402,13 +457,17 @@ export function TemplatePanel({ profiles }: PanelProps) {
                         disabled={!target || applying}
                         onClick={() => void apply(template)}
                       >
-                        {applying ? '应用中' : '应用'}
+                        {applying ? t('template.applying') : t('template.apply')}
                       </Button>
                       <button
                         type="button"
                         className="tpl-del"
-                        title={template.builtin ? '内置模板不可删除' : '删除模板'}
-                        aria-label={`删除模板 ${template.name}`}
+                        title={
+                          template.builtin
+                            ? t('template.delete.builtinDisabled')
+                            : t('template.delete.title')
+                        }
+                        aria-label={t('template.delete.aria', { name: template.name })}
                         disabled={template.builtin || busy === `remove:${template.id}`}
                         onClick={() => setPendingDelete(template)}
                       >
@@ -425,14 +484,14 @@ export function TemplatePanel({ profiles }: PanelProps) {
         {/* ── 从环境保存 ── */}
         <section className="tpl-sec">
           <div className="tpl-sec-head">
-            <h3>从环境保存为模板</h3>
-            <span className="tpl-sec-hint">存的是当前指纹快照，之后改环境不会影响模板</span>
+            <h3>{t('template.save.title')}</h3>
+            <span className="tpl-sec-hint">{t('template.save.hint')}</span>
           </div>
           <div className="tpl-form">
             <label className="tpl-field">
-              <span>来源环境</span>
+              <span>{t('template.save.source')}</span>
               <select value={saveFromId} onChange={(e) => pickSaveSource(e.target.value)}>
-                <option value="">选择环境…</option>
+                <option value="">{t('template.selectProfile')}</option>
                 {localProfiles.map((profile) => (
                   <option key={profile.id} value={profile.id}>
                     {profile.name}
@@ -441,18 +500,18 @@ export function TemplatePanel({ profiles }: PanelProps) {
               </select>
             </label>
             <label className="tpl-field">
-              <span>模板名称</span>
+              <span>{t('template.save.name')}</span>
               <input
                 value={saveName}
-                placeholder="例：美国站 · 常用配置"
+                placeholder={t('template.save.namePlaceholder')}
                 onChange={(e) => setSaveName(e.target.value)}
               />
             </label>
             <label className="tpl-field">
-              <span>描述（可选）</span>
+              <span>{t('template.save.desc')}</span>
               <input
                 value={saveDesc}
-                placeholder="备注这套参数适合什么场景"
+                placeholder={t('template.save.descPlaceholder')}
                 onChange={(e) => setSaveDesc(e.target.value)}
               />
             </label>
@@ -462,7 +521,7 @@ export function TemplatePanel({ profiles }: PanelProps) {
               disabled={busy === 'save'}
               onClick={() => void saveTemplate()}
             >
-              {busy === 'save' ? '保存中' : '保存为模板'}
+              {busy === 'save' ? t('template.save.saving') : t('template.save.submit')}
             </Button>
           </div>
         </section>
@@ -470,16 +529,14 @@ export function TemplatePanel({ profiles }: PanelProps) {
         {/* ── 迁移包 ── */}
         <section className="tpl-sec">
           <div className="tpl-sec-head">
-            <h3>迁移包</h3>
-            <span className="tpl-sec-hint">
-              只带走名称、平台、备注与指纹；代理密码留空，导入后需自行补齐
-            </span>
+            <h3>{t('template.mig.title')}</h3>
+            <span className="tpl-sec-hint">{t('template.mig.hint')}</span>
           </div>
 
           <div className="tpl-mig">
             <div className="tpl-col">
               <div className="tpl-col-head">
-                <h4>导出</h4>
+                <h4>{t('template.export.title')}</h4>
                 <button
                   type="button"
                   className="tpl-link"
@@ -492,16 +549,16 @@ export function TemplatePanel({ profiles }: PanelProps) {
                   }
                 >
                   {exportIds.length === localProfiles.length && localProfiles.length > 0
-                    ? '清空'
-                    : '全选'}
+                    ? t('template.export.clear')
+                    : t('template.export.selectAll')}
                 </button>
-                <span className="tpl-col-meta">已选 {exportIds.length}</span>
+                <span className="tpl-col-meta">
+                  {t('template.export.selected', { n: exportIds.length })}
+                </span>
               </div>
 
               {localProfiles.length === 0 ? (
-                <div className="tpl-empty tpl-empty-sm">
-                  还没有环境可导出。先到环境页新建一个，或在右侧直接导入别人的迁移包。
-                </div>
+                <div className="tpl-empty tpl-empty-sm">{t('template.export.empty')}</div>
               ) : (
                 <div className="tpl-pick scroll-thin">
                   {localProfiles.map((profile) => {
@@ -526,24 +583,24 @@ export function TemplatePanel({ profiles }: PanelProps) {
                   这个包就永远打不开了，而包里只有密文，没有任何找回途径。 */}
               <div className="tpl-form tpl-pass">
                 <label className="tpl-field">
-                  <span>加密口令（至少 {MIN_PASS} 位）</span>
+                  <span>{t('template.export.passLabel', { n: MIN_PASS })}</span>
                   <input
                     type="password"
                     value={exportPass}
                     autoComplete="new-password"
                     spellCheck={false}
-                    placeholder="导出后需要用它才能导回来"
+                    placeholder={t('template.export.passPlaceholder')}
                     onChange={(e) => setExportPass(e.target.value)}
                   />
                 </label>
                 <label className="tpl-field">
-                  <span>再输一次</span>
+                  <span>{t('template.export.passRepeat')}</span>
                   <input
                     type="password"
                     value={exportPass2}
                     autoComplete="new-password"
                     spellCheck={false}
-                    placeholder="两次必须一致"
+                    placeholder={t('template.export.passRepeatPlaceholder')}
                     onChange={(e) => setExportPass2(e.target.value)}
                   />
                 </label>
@@ -556,27 +613,31 @@ export function TemplatePanel({ profiles }: PanelProps) {
                   disabled={busy === 'export' || exportIds.length === 0}
                   onClick={() => void exportSelected()}
                 >
-                  {busy === 'export' ? '导出中' : `导出 ${exportIds.length} 个环境`}
+                  {busy === 'export'
+                    ? t('template.export.exporting')
+                    : t('template.export.button', { n: exportIds.length })}
                 </Button>
-                <span className="tpl-col-meta">文件名 shadowsurf-{dateStamp()}.json</span>
+                <span className="tpl-col-meta">
+                  {t('template.export.fileName', { file: `shadowsurf-${dateStamp()}.json` })}
+                </span>
               </div>
             </div>
 
             <div className="tpl-col">
               <div className="tpl-col-head">
-                <h4>导入</h4>
-                <span className="tpl-col-meta">v2 口令加密 · v1 需确认身份损失</span>
+                <h4>{t('template.import.title')}</h4>
+                <span className="tpl-col-meta">{t('template.import.colHint')}</span>
               </div>
 
               <div className="tpl-form tpl-pass">
                 <label className="tpl-field">
-                  <span>包口令</span>
+                  <span>{t('template.import.passLabel')}</span>
                   <input
                     type="password"
                     value={importPass}
                     autoComplete="current-password"
                     spellCheck={false}
-                    placeholder="导出这个包时设的口令"
+                    placeholder={t('template.import.passPlaceholder')}
                     onChange={(e) => setImportPass(e.target.value)}
                   />
                 </label>
@@ -586,7 +647,7 @@ export function TemplatePanel({ profiles }: PanelProps) {
                 className="tpl-json"
                 value={importText}
                 spellCheck={false}
-                placeholder={'把迁移包 JSON 粘贴到这里，或选择文件…'}
+                placeholder={t('template.import.jsonPlaceholder')}
                 onChange={(e) => setImportText(e.target.value)}
               />
 
@@ -597,16 +658,18 @@ export function TemplatePanel({ profiles }: PanelProps) {
                   disabled={busy === 'import'}
                   onClick={() => void runImport(importText)}
                 >
-                  {busy === 'import' ? '导入中' : '导入'}
+                  {busy === 'import'
+                    ? t('template.import.importing')
+                    : t('template.import.submit')}
                 </Button>
                 <label className="tpl-file">
                   <input type="file" accept=".json,application/json" onChange={onPickFile} />
                   <Icon name="folder" size={12} />
-                  选择 JSON 文件
+                  {t('template.import.chooseFile')}
                 </label>
                 {importText ? (
                   <button type="button" className="tpl-link" onClick={() => setImportText('')}>
-                    清空
+                    {t('template.export.clear')}
                   </button>
                 ) : null}
               </div>
@@ -621,11 +684,15 @@ export function TemplatePanel({ profiles }: PanelProps) {
                       <span className="tpl-adopt-name">{a.name}</span>
                       <span className="tpl-adopt-verdict">
                         {a.ok
-                          ? `身份一致（核对 ${a.compared.length} 个字段）`
-                          : `不一致：${a.compared
-                              .filter((c) => c.from !== c.to)
-                              .map((c) => c.field)
-                              .join('、') || '未知字段'}`}
+                          ? t('template.adopt.ok', { n: a.compared.length })
+                          : t('template.adopt.bad', {
+                              fields:
+                                a.compared
+                                  .filter((c) => c.from !== c.to)
+                                  .map((c) => c.field)
+                                  .join(t('template.adopt.separator')) ||
+                                t('template.adopt.unknownField')
+                            })}
                       </span>
                     </div>
                   ))}
@@ -638,13 +705,13 @@ export function TemplatePanel({ profiles }: PanelProps) {
 
       <Modal
         open={pendingDelete !== null}
-        title="删除模板"
+        title={t('template.delete.title')}
         icon="trash"
         onClose={() => setPendingDelete(null)}
         footer={
           <>
             <Button variant="ghost" onClick={() => setPendingDelete(null)}>
-              取消
+              {t('common.cancel')}
             </Button>
             <Button
               variant="danger"
@@ -652,15 +719,12 @@ export function TemplatePanel({ profiles }: PanelProps) {
               disabled={busy === `remove:${pendingDelete?.id ?? ''}`}
               onClick={() => void confirmDelete()}
             >
-              删除
+              {t('common.delete')}
             </Button>
           </>
         }
       >
-        <p>
-          确定删除模板「{pendingDelete?.name ?? ''}」？已经应用到环境的指纹不会回滚，
-          只是这份快照以后不能再用了。
-        </p>
+        <p>{t('template.delete.confirm', { name: pendingDelete?.name ?? '' })}</p>
       </Modal>
 
       {/* v1 包缺身份的确认框。
@@ -669,13 +733,13 @@ export function TemplatePanel({ profiles }: PanelProps) {
           而「canvas / webgl / audio 会变」是可核对的具体后果。 */}
       <Modal
         open={legacyLoss !== null}
-        title="这个包不含身份参数"
+        title={t('template.legacy.title')}
         icon="alert"
         onClose={() => setLegacyLoss(null)}
         footer={
           <>
             <Button variant="ghost" onClick={() => setLegacyLoss(null)}>
-              取消
+              {t('common.cancel')}
             </Button>
             <Button
               variant="danger"
@@ -688,25 +752,19 @@ export function TemplatePanel({ profiles }: PanelProps) {
                 void runImport(json, true)
               }}
             >
-              仍然导入
+              {t('template.legacy.importAnyway')}
             </Button>
           </>
         }
       >
-        <p>
-          这是一个 version 1 的迁移包，里面没有指纹参数。导入会成功，但导入后的环境
-          与包里那台机器**不是同一个身份** —— 站点会把它当成一台全新的设备。
-        </p>
+        <p>{t('template.legacy.body')}</p>
         <p className="tpl-loss-fields">
-          以下参数会重新随机生成：
+          {t('template.legacy.fields')}
           {legacyLoss?.lostFields.map((f) => (
             <code key={f}>{f}</code>
           ))}
         </p>
-        <p className="tpl-loss-note">
-          如果原意只是「把环境搬到另一台机器」，应该用本版本重新导出一次（导出时已包含身份）。
-          当前这一步不会写入任何东西，取消是安全的。
-        </p>
+        <p className="tpl-loss-note">{t('template.legacy.note')}</p>
       </Modal>
     </div>
   )

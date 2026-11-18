@@ -15,6 +15,9 @@ import type { ThemeMode } from '@shared/types'
 
 export type ResolvedTheme = 'light' | 'dark'
 
+/** 密度两档。紧凑只压间距，不动字号/对比度（见 tokens.css 的 [data-density]） */
+export type DensityMode = 'comfortable' | 'compact'
+
 const DARK_QUERY = '(prefers-color-scheme: dark)'
 
 function darkQuery(): MediaQueryList | null {
@@ -32,6 +35,15 @@ export function resolveTheme(mode: ThemeMode): ResolvedTheme {
 /** 唯一的写入点。组件里不要自己碰 document.documentElement */
 export function applyTheme(theme: ResolvedTheme): void {
   document.documentElement.dataset['theme'] = theme
+}
+
+/**
+ * 密度的唯一写入点，和 applyTheme 同理：属性挂 <html>，CSS 只认 data-density。
+ * 舒适档用 'comfortable' 显式写出（而不是删属性），这样 localStorage 里的值
+ * 与 DOM 状态一一对应，读回来不用做「属性不存在」的分支。
+ */
+export function applyDensity(density: DensityMode): void {
+  document.documentElement.dataset['density'] = density
 }
 
 /**

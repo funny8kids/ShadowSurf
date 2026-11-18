@@ -65,7 +65,7 @@
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
   color: var(--ink-3);
-  transition: border-color 0.14s;
+  transition: border-color var(--dur-3) var(--ease-easy);
 }
 
 .dp-select:hover {
@@ -113,7 +113,9 @@
   border: 1px solid transparent;
   font-size: 12px;
   color: var(--ink-2);
-  transition: background 0.14s, color 0.14s, border-color 0.14s;
+  transition: background var(--dur-3) var(--ease-easy),
+    color var(--dur-3) var(--ease-easy),
+    border-color var(--dur-3) var(--ease-easy);
 }
 
 .dp-tab:hover {
@@ -159,6 +161,58 @@
   text-align: center;
   font-size: 12px;
   color: var(--ink-3);
+}
+
+/* ────────────────────────────── 读失败态 ────────────────────────────── */
+
+/* 读不到 ≠ 没有。DESIGN.md #1 要求「遮住文字也能区分」：
+   空态是 .dp-empty——居中、灰底、圆形图标、没有可点按钮；
+   这里是琥珀躯干 + 琥珀左实线边框 + 左对齐 + 带「重试」按钮，
+   快速扫视时靠容器形状和颜色就能和空态分开，不必读字。
+   用琥珀而不是红色：读不到是「不知道」的状态，不是「坏了」的结论
+   （DESIGN.md「不知道不能用坏的颜色」）。 */
+.dp-err {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 16px;
+  padding: 16px 18px;
+  border: 1px solid var(--amber-line);
+  border-left: 3px solid var(--amber);
+  border-radius: var(--r-sm);
+  background: var(--amber-2);
+  font-size: 12px;
+  line-height: 1.7;
+  text-align: left;
+}
+
+.dp-err b {
+  color: var(--amber);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+/* 错误原因原文单独一行、等宽字体：这是用户拿去排查的第一手信息，
+   不能和下面那句解释混成同一种颜色。 */
+.dp-err-reason {
+  margin: 0;
+  color: var(--amber-ink);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  word-break: break-all;
+}
+
+/* 「这不等于没有」是这条状态下最重要的一句，用中性墨色突出，
+   让用户在技术问题之外读到「先别据此清空 / 重建」的提醒。 */
+.dp-err-hint {
+  margin: 0;
+  max-width: 560px;
+  color: var(--ink-2);
+}
+
+.dp-err button {
+  margin-top: 2px;
 }
 
 /* ────────────────────────────── 空状态 ────────────────────────────── */
@@ -276,7 +330,9 @@
   font-size: 11px;
   color: var(--ink-3);
   text-align: left;
-  transition: background 0.14s, border-color 0.14s, color 0.14s;
+  transition: background var(--dur-3) var(--ease-easy),
+    border-color var(--dur-3) var(--ease-easy),
+    color var(--dur-3) var(--ease-easy);
 }
 
 .dp-val:hover {
@@ -462,7 +518,7 @@
   height: 100%;
   border-radius: 999px;
   background: var(--accent);
-  transition: width 0.22s;
+  transition: width var(--dur-5);
 }
 
 .dp-bar.completed i {

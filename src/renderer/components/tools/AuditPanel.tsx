@@ -33,16 +33,19 @@ import type {
 } from '@shared/types'
 import { Button, cx, useToast } from '@renderer/components/ui'
 import { ACTION_LABEL, formatClock, formatDate } from '@renderer/lib/format'
+import { useI18n } from '@renderer/lib/i18n'
 import './audit.css'
 
 export interface PanelProps {
   profiles: Profile[]
 }
 
-const SEVERITY_TEXT: Record<CheckSeverity, string> = {
-  pass: '通过',
-  warn: '注意',
-  fail: '失败'
+type Translate = (key: string, vars?: Record<string, string | number>) => string
+
+const SEVERITY_KEY: Record<CheckSeverity, string> = {
+  pass: 'audit.severity.pass',
+  warn: 'audit.severity.warn',
+  fail: 'audit.severity.fail'
 }
 
 /** 一次最多拉多少条。超出的更早记录不显示，但「验证完整性」统计的是全量。 */
@@ -57,47 +60,47 @@ const LOG_LIMIT = 200
  */
 interface VerifyKindView {
   /** 徽章上的两三个字，回答「是哪一类」 */
-  label: string
+  labelKey: string
   /** 第二句：这意味着什么、以及本页能/不能为你做什么 */
-  hint: string
+  hintKey: string
   /** unreadable 是「不知道」，不是「坏了」——两者不能用同一个颜色 */
   tone: 'bad' | 'warn'
 }
 
 const VERIFY_KIND: Record<AuditVerifyKind, VerifyKindView> = {
   'head-truncated': {
-    label: '链首缺失',
-    hint: '最早的记录不在了。如果记录数没到 5000 条上限，说明链头被删过；校验只能定位到断点，无法还原被删的内容。',
+    labelKey: 'audit.kind.headTruncated.label',
+    hintKey: 'audit.kind.headTruncated.hint',
     tone: 'bad'
   },
   'seq-gap': {
-    label: '序号不连续',
-    hint: '中间有记录被删除。校验能指出断在哪里，但无法还原被删的那几条。',
+    labelKey: 'audit.kind.seqGap.label',
+    hintKey: 'audit.kind.seqGap.hint',
     tone: 'bad'
   },
   'prev-mismatch': {
-    label: '前序被改动',
-    hint: '这一条指向的上一条哈希对不上，说明它之前的内容被改过或删过。',
+    labelKey: 'audit.kind.prevMismatch.label',
+    hintKey: 'audit.kind.prevMismatch.hint',
     tone: 'bad'
   },
   'content-mismatch': {
-    label: '内容与哈希不符',
-    hint: '这条记录的内容被改过，但没有重算哈希。这是本页确实能发现的那一类改动。',
+    labelKey: 'audit.kind.contentMismatch.label',
+    hintKey: 'audit.kind.contentMismatch.hint',
     tone: 'bad'
   },
   unreadable: {
-    label: '无法判断',
-    hint: '没读到审计文件的内容，所以这次没能判断链是否完整。这不等于记录损坏，也不等于没有记录。',
+    labelKey: 'audit.kind.unreadable.label',
+    hintKey: 'audit.kind.unreadable.hint',
     tone: 'warn'
   },
   'tail-truncated': {
-    label: '尾部对不上',
-    hint: '最后一条和「链头锚点」（记在设置文件里）对不上：可能最新几条被删了，也可能是上次写入中断留下的锚点落后 —— 后者下一次写入会自动对齐，前者不能。',
+    labelKey: 'audit.kind.tailTruncated.label',
+    hintKey: 'audit.kind.tailTruncated.hint',
     tone: 'bad'
   },
   unanchored: {
-    label: '锚点刚建立',
-    hint: '这次之前还没有锚点（旧版本数据，或设置文件被删），所以没法判断尾部有没有被删。已按当前最后一条建立锚点，从下次校验起尾部可验证；此前的记录只能验证「内部是否自洽」。',
+    labelKey: 'audit.kind.unanchored.label',
+    hintKey: 'audit.kind.unanchored.hint',
     tone: 'warn'
   }
 }
@@ -128,12 +131,12 @@ type VerifyState =
  * 记录清掉或改写掉，这个函数连同它的测试可以整个删掉。在那之前它必须留着——
  * 删了以后历史记录会重新露出 `navigate https://…` 和 `click #e7`。
  */
-function formatAuditTarget(target?: string): string | null {
-  const tokens = (target ?? '').trim().split(/\s+/).filter((t) => t.length > 0)
+function formatAuditTarget(target: string | undefined, t: Translate): string | null {
+  const tokens = (target ?? '').trim().split(/\s+/).filter((token) => token.length > 0)
   if (tokens.length === 0) return null
 
   const humanize = (token: string): string =>
-    token.startsWith('#') ? '某个元素' : token
+    token.startsWith('#') ? t('audit.target.someElement') : token
 
   const verb = ACTION_LABEL[tokens[0] as keyof typeof ACTION_LABEL]
   if (!verb) return tokens.map(humanize).join(' ')
@@ -160,15 +163,15 @@ function scoreTone(score: number): 'ok' | 'warn' | 'bad' {
  *
  * 兜底句也必须读手里的字段，不能假设「没有 kind 就什么都没有」。
  */
-function fallbackHint(r: AuditVerifyResult): string {
+function fallbackHint(r: AuditVerifyResult, t: Translate): string {
   if (r.brokenAt !== undefined) {
     // 只说「停在哪」，不说「前面都核对过了」——`brokenAt` 有八种产生方式
     // （`audit-chain.ts:108/143/159/168/179/195/206/217`），其中 `head-truncated`
     // 的断点指向的是「现存最早的一条」，它前面的记录压根不存在，说「逐条核对过」
     // 是在替不存在的记录背书。没有 kind 就分不清是哪一种，所以只能陈述最弱的事实。
-    return `校验在第 ${r.brokenAt} 条停下；从这一条起的内容，这次没能证明是完好的。`
+    return t('audit.fallback.brokenAt', { n: r.brokenAt })
   }
-  return '这次没有拿到断点位置，所以既不能说它是完整的，也不能说它断在某一条。'
+  return t('audit.fallback.unknown')
 }
 
 function readError(err: unknown): string {
@@ -199,23 +202,31 @@ function cleanIpcMessage(raw: string): string {
  * 空链没有任何东西可校验，此时点亮一个绿色或琥珀色徽章，都是在替
  * 「我们什么都没读到」这件事背书。空态自己会说「还没有闸门记录」。
  */
-function verifyBadge(verify: VerifyState): { text: string; tone: 'bad' | 'warn' } | null {
-  if (verify.kind === 'error') return { text: '无法判断', tone: 'warn' }
+function verifyBadge(
+  verify: VerifyState,
+  t: Translate
+): { text: string; tone: 'bad' | 'warn' } | null {
+  if (verify.kind === 'error') return { text: t('audit.verdict.cannotDetermine'), tone: 'warn' }
   if (verify.kind !== 'done') return null
   const r = verify.result
   if (r.consistent) {
     if (r.total === 0) return null
-    return { text: '未发现不一致', tone: 'warn' }
+    return { text: t('audit.verdict.consistent'), tone: 'warn' }
   }
   // 没有 kind 说明主进程还是旧版本。有 brokenAt 才敢说「断在第几条」，
   // 否则只能是「不知道」——把「不知道」写成「断在第 ? 条」是在编一个断点。
-  if (r.kind) return { text: VERIFY_KIND[r.kind].label, tone: VERIFY_KIND[r.kind].tone }
-  if (r.brokenAt !== undefined) return { text: `断在第 ${r.brokenAt} 条`, tone: 'bad' }
-  return { text: '无法判断', tone: 'warn' }
+  if (r.kind) {
+    return { text: t(VERIFY_KIND[r.kind].labelKey), tone: VERIFY_KIND[r.kind].tone }
+  }
+  if (r.brokenAt !== undefined) {
+    return { text: t('audit.verdict.brokenAt', { n: r.brokenAt }), tone: 'bad' }
+  }
+  return { text: t('audit.verdict.cannotDetermine'), tone: 'warn' }
 }
 
 export function AuditPanel({ profiles }: PanelProps) {
   const toast = useToast()
+  const { t } = useI18n()
   const [profileId, setProfileId] = useState<string>(profiles[0]?.id ?? '')
   const [running, setRunning] = useState(false)
   const [report, setReport] = useState<ConsistencyReport | null>(null)
@@ -256,7 +267,7 @@ export function AuditPanel({ profiles }: PanelProps) {
 
   async function runCheck(): Promise<void> {
     if (!profileId) {
-      toast.push('请先选择一个环境', 'info')
+      toast.push(t('audit.check.needProfile'), 'info')
       return
     }
     setRunning(true)
@@ -300,7 +311,7 @@ export function AuditPanel({ profiles }: PanelProps) {
         typeof (r as AuditVerifyResult).consistent !== 'boolean' ||
         typeof (r as AuditVerifyResult).total !== 'number'
       ) {
-        setVerify({ kind: 'error', message: '校验没有返回可读的结论（返回体形状不对）' })
+        setVerify({ kind: 'error', message: t('audit.verify.badShape') })
         return
       }
       setVerify({ kind: 'done', result: r as AuditVerifyResult })
@@ -312,22 +323,22 @@ export function AuditPanel({ profiles }: PanelProps) {
   const entries = log.kind === 'ready' ? log.entries : []
   const verdict = verify.kind === 'done' ? verify.result : null
   const view = verdict && !verdict.consistent && verdict.kind ? VERIFY_KIND[verdict.kind] : null
-  const badge = verifyBadge(verify)
+  const badge = verifyBadge(verify, t)
 
   return (
     <div className="au">
       <div className="page-head">
         <div>
-          <h2>审计与自检</h2>
-          <p>在真实页面里核对指纹，并按哈希链校验每一条操作记录</p>
+          <h2>{t('audit.title')}</h2>
+          <p>{t('audit.subtitle')}</p>
         </div>
       </div>
 
       <section className="au-sec">
         <div className="au-head">
           <div className="au-title">
-            <h3>指纹一致性自检</h3>
-            <span>对照环境配置与页面实际读数，逐项给结论</span>
+            <h3>{t('audit.check.title')}</h3>
+            <span>{t('audit.check.subtitle')}</span>
           </div>
           <div className="au-pick">
             <select
@@ -335,13 +346,13 @@ export function AuditPanel({ profiles }: PanelProps) {
               value={profileId}
               disabled={profiles.length === 0 || running}
               onChange={(e) => setProfileId(e.target.value)}
-              aria-label="选择要自检的环境"
+              aria-label={t('audit.check.profileAria')}
             >
-              {profiles.length === 0 ? <option value="">暂无环境</option> : null}
+              {profiles.length === 0 ? <option value="">{t('audit.check.noProfiles')}</option> : null}
               {profiles.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
-                  {p.status === 'running' ? '（运行中）' : ''}
+                  {p.status === 'running' ? t('audit.check.runningSuffix') : ''}
                 </option>
               ))}
             </select>
@@ -351,22 +362,24 @@ export function AuditPanel({ profiles }: PanelProps) {
               disabled={running || !profileId}
               onClick={() => void runCheck()}
             >
-              {running ? '自检中…' : '开始自检'}
+              {running ? t('audit.check.running') : t('audit.check.start')}
             </Button>
           </div>
         </div>
 
         {active && active.status !== 'running' ? (
           <p className="au-note">
-            自检需要读取页面内的真实值，请先打开 <b>{active.name}</b> 的窗口再开始。
+            {t('audit.check.needWindow.lead')}
+            <b>{active.name}</b>
+            {t('audit.check.needWindow.tail')}
           </p>
         ) : null}
 
         {checkError ? (
           <p className="au-note bad">
-            <b>这次自检没有跑完：</b>
+            <b>{t('audit.check.failed')}</b>
             {checkError}
-            <span className="au-note-sub">这不等于自检结果正常，也不等于没有自检过。</span>
+            <span className="au-note-sub">{t('audit.check.failedHint')}</span>
           </p>
         ) : null}
 
@@ -375,28 +388,37 @@ export function AuditPanel({ profiles }: PanelProps) {
             <div className="au-score">
               <div className={cx('au-score-v', scoreTone(report.score))}>
                 {report.score}
-                <small>分</small>
+                <small>{t('audit.score.unit')}</small>
               </div>
               <div className="au-score-meta">
                 <div className="au-score-t">
                   {report.profileName}
                   <span className={cx('au-pill', scoreTone(report.score))}>
-                    {report.score >= 90 ? '参数自洽' : report.score >= 70 ? '存在疑点' : '容易被识破'}
+                    {report.score >= 90
+                      ? t('audit.score.consistent')
+                      : report.score >= 70
+                        ? t('audit.score.questionable')
+                        : t('audit.score.easilyDetected')}
                   </span>
                 </div>
                 <div className="au-score-d">
-                  {formatDate(report.checkedAt)} {formatClock(report.checkedAt)} · 通过 {summary.pass} · 注意{' '}
-                  {summary.warn} · 失败 {summary.fail} · 共 {summary.total} 项
+                  {formatDate(report.checkedAt)} {formatClock(report.checkedAt)} ·{' '}
+                  {t('audit.score.breakdown', {
+                    pass: summary.pass,
+                    warn: summary.warn,
+                    fail: summary.fail,
+                    total: summary.total
+                  })}
                 </div>
               </div>
             </div>
 
             <div className="au-table au-check">
               <div className="au-tr au-th">
-                <span>检查项</span>
-                <span>期望</span>
-                <span>实际</span>
-                <span>结果</span>
+                <span>{t('audit.table.check')}</span>
+                <span>{t('audit.table.expected')}</span>
+                <span>{t('audit.table.actual')}</span>
+                <span>{t('audit.table.result')}</span>
               </div>
               {report.items.map((i) => (
                 <div key={i.key} className={cx('au-tr', i.severity)}>
@@ -410,18 +432,15 @@ export function AuditPanel({ profiles }: PanelProps) {
                   <span className="au-mono" title={i.actual}>
                     {i.actual}
                   </span>
-                  <span className={cx('au-tag', i.severity)}>{SEVERITY_TEXT[i.severity]}</span>
+                  <span className={cx('au-tag', i.severity)}>{t(SEVERITY_KEY[i.severity])}</span>
                 </div>
               ))}
             </div>
           </>
         ) : checkError ? null : (
           <div className="au-empty">
-            <b>还没有自检结果</b>
-            <p>
-              选中一个已打开的环境并开始自检，会逐项比对 UA、时区、屏幕、WebGL、WebRTC、字体等读数，
-              给出这套指纹是否自洽的分数。
-            </p>
+            <b>{t('audit.empty.noResult.title')}</b>
+            <p>{t('audit.empty.noResult.body')}</p>
           </div>
         )}
       </section>
@@ -429,8 +448,8 @@ export function AuditPanel({ profiles }: PanelProps) {
       <section className="au-sec">
         <div className="au-head">
           <div className="au-title">
-            <h3>审计日志</h3>
-            <span>按时间顺序追加，每条携带上一条的哈希</span>
+            <h3>{t('audit.log.title')}</h3>
+            <span>{t('audit.log.subtitle')}</span>
           </div>
           <div className="au-pick">
             {badge ? (
@@ -444,30 +463,32 @@ export function AuditPanel({ profiles }: PanelProps) {
               disabled={verify.kind === 'running'}
               onClick={() => void runVerify()}
             >
-              {verify.kind === 'running' ? '校验中…' : '验证完整性'}
+              {verify.kind === 'running' ? t('audit.verify.running') : t('audit.verify.run')}
             </Button>
           </div>
         </div>
 
         {/* 范围：先说清这里记什么，后面的「还没有」才是一句可以相信的话 */}
         <p className="au-scope">
-          <b>这里记录的是闸门判定与指纹自检</b>
-          {'。环境的新建、修改、删除，普通页面操作，以及脚本回放的每一步，都不在这里。'}
+          <b>{t('audit.log.scope.bold')}</b>
+          {t('audit.log.scope.tail')}
         </p>
 
         {/* 免责常驻：不能只在「有数据」时才出现——用户第一次打开这页时它是空的，
             而那正是他形成印象的时刻 */}
         <p className="au-disclaim">
-          <b>无法验证完整性</b>
+          <b>{t('audit.disclaim.title')}</b>
           {/* 只陈述**永远成立**的事。原来这里还有半句「锚点缺失时核对不了，那种
               情况会单独报『锚点刚建立』而不是通过」——那半句是随状态变化的信息，
               而这段在加载中 / 失败 / 空 / 有数据四种状态下都常驻：用户读到它时屏幕上
               多半没有那个徽章，他会去找一个不存在的东西。该说的话由 unanchored 的
               hint 自己说（见上方 VERIFY_KIND），那里徽章和解释同时在场。 */}
-          {'：摘要无密钥，整条链可被整体重算。本页能发现「改了内容但没有重算哈希」，以及「整份 / 尾部被删」——后者靠链头锚点（记在设置文件里）核对。'}
+          {t('audit.disclaim.body')}
           {/* 数字不确定就不印。`共 undefined 条` 比不印更坏：它会让用户
               怀疑整页所有数字都是编的 */}
-          {verdict && typeof verdict.total === 'number' ? `共 ${verdict.total} 条。` : ''}
+          {verdict && typeof verdict.total === 'number'
+            ? t('audit.disclaim.total', { n: verdict.total })
+            : ''}
         </p>
 
         {/* 校验没通过的详情。message 由主进程按 kind 写，这里只补「所以呢」——
@@ -475,74 +496,70 @@ export function AuditPanel({ profiles }: PanelProps) {
         {verdict && !verdict.consistent ? (
           <p className={cx('au-note', view?.tone ?? 'warn')}>
             <b>{verdict.message}</b>
-            <span className="au-note-sub">{view?.hint ?? fallbackHint(verdict)}</span>
+            <span className="au-note-sub">
+              {view ? t(view.hintKey) : fallbackHint(verdict, t)}
+            </span>
           </p>
         ) : null}
 
         {verify.kind === 'error' ? (
           <p className="au-note warn">
-            <b>这次校验没有跑完：</b>
+            <b>{t('audit.verify.failed')}</b>
             {verify.message}
-            <span className="au-note-sub">
-              没有拿到结论，所以现在既不能说它完整，也不能说它断了。可以再点一次「验证完整性」。
-            </span>
+            <span className="au-note-sub">{t('audit.verify.failedHint')}</span>
           </p>
         ) : null}
 
         {log.kind === 'loading' ? (
           <div className="au-empty">
-            <b>正在读取审计记录…</b>
+            <b>{t('audit.log.loading')}</b>
           </div>
         ) : log.kind === 'error' ? (
           <div className="au-empty bad">
-            <b>读不到审计记录</b>
+            <b>{t('audit.log.error.title')}</b>
             <p>{log.message}</p>
-            <p className="au-empty-hint">
-              这不等于「没有记录」。文件可能被杀毒软件或索引服务占用，也可能没有读权限。
-            </p>
+            <p className="au-empty-hint">{t('audit.log.error.hint')}</p>
             <Button variant="ghost" onClick={() => void refreshLog()}>
-              重新读取
+              {t('common.retryRead')}
             </Button>
           </div>
         ) : entries.length === 0 ? (
           <div className="au-empty">
-            <b>还没有闸门记录</b>
-            <p>
-              这个环境还没触发过风险判定，也没跑过自检。跑一次自检，或者让影子执行一个动作，
-              记录就会出现在这里。
-            </p>
+            <b>{t('audit.log.empty.title')}</b>
+            <p>{t('audit.log.empty.body')}</p>
           </div>
         ) : (
           <>
             <div className="au-table au-log">
               <div className="au-tr au-th">
-                <span>时间</span>
-                <span>动作</span>
-                <span>目标</span>
-                <span>哈希</span>
+                <span>{t('common.time')}</span>
+                <span>{t('audit.log.table.action')}</span>
+                <span>{t('audit.log.table.target')}</span>
+                <span>{t('audit.log.table.hash')}</span>
               </div>
-              {entries.map((e) => (
-                <div key={e.id} className="au-tr">
-                  <span className="au-mono au-time">
-                    {formatDate(e.at)} {formatClock(e.at)}
-                  </span>
-                  <span className="au-act">{e.action}</span>
-                  <span className="au-target" title={e.detail ?? formatAuditTarget(e.target) ?? ''}>
-                    {formatAuditTarget(e.target) ?? '—'}
-                    {e.detail ? <em>{e.detail}</em> : null}
-                  </span>
-                  <span className="au-mono au-hash" title={`${e.hash}\nprev ${e.prev}`}>
-                    {e.hash.slice(0, 8)}
-                    <i>#{e.seq}</i>
-                  </span>
-                </div>
-              ))}
+              {entries.map((e) => {
+                const target = formatAuditTarget(e.target, t)
+                return (
+                  <div key={e.id} className="au-tr">
+                    <span className="au-mono au-time">
+                      {formatDate(e.at)} {formatClock(e.at)}
+                    </span>
+                    <span className="au-act">{e.action}</span>
+                    <span className="au-target" title={e.detail ?? target ?? ''}>
+                      {target ?? '—'}
+                      {e.detail ? <em>{e.detail}</em> : null}
+                    </span>
+                    <span className="au-mono au-hash" title={`${e.hash}\nprev ${e.prev}`}>
+                      {e.hash.slice(0, 8)}
+                      <i>#{e.seq}</i>
+                    </span>
+                  </div>
+                )
+              })}
             </div>
             <p className="au-foot">
-              最多显示最近 {LOG_LIMIT} 条；哈希显示前 8 位，悬停可看完整值与上一条哈希。
-              {entries.length >= LOG_LIMIT
-                ? `已到上限，更早的记录没有显示；「验证完整性」统计的是全量。`
-                : ''}
+              {t('audit.log.foot', { n: LOG_LIMIT })}
+              {entries.length >= LOG_LIMIT ? t('audit.log.foot.limit') : ''}
             </p>
           </>
         )}

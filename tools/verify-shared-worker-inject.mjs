@@ -37,6 +37,7 @@
  */
 
 import { _electron as electron } from 'playwright-core'
+import { gpuFallbackArgs } from './gpu-flags.mjs'
 import { createServer } from 'node:http'
 import { resolve } from 'node:path'
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -162,7 +163,7 @@ let app = null
 try {
   app = await electron.launch({
     executablePath: resolve(ROOT, 'node_modules/electron/dist/electron.exe'),
-    args: ['.', '--user-data-dir=' + resolve(ART, 'shared-worker-inject-ud')],
+    args: ['.', '--user-data-dir=' + resolve(ART, 'shared-worker-inject-ud'), ...gpuFallbackArgs()],
     cwd: ROOT,
     env,
     timeout: 40000

@@ -6,11 +6,19 @@
  * 时区↔经纬度、语言↔地区、UA↔平台 各扣分，输出 0–100 与一句结论。
  */
 
-import { useEffect, useMemo, useState } from 'react'
-import type { FingerprintConfig, InjectionIssue, Profile } from '@shared/types'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
+import type {
+  ExtensionRecord,
+  FingerprintConfig,
+  InjectionIssue,
+  Profile,
+  ProxyProtocol
+} from '@shared/types'
 import { OS_TEMPLATES, PROFILE_COLORS, TIMEZONE_GEO } from '@shared/presets'
-import { Button, Field, Icon, Toggle, cssVars, useToast } from './ui'
+import { Button, Field, Icon, Modal, Toggle, cssVars, useToast } from './ui'
 import { bridge, errorMessage } from '@renderer/lib/api'
+import { useI18n } from '@renderer/lib/i18n'
 import {
   formatDate,
   formatRelative,
@@ -22,11 +30,11 @@ import {
 
 type Tab = 'basic' | 'fingerprint' | 'proxy' | 'shadow'
 
-const TABS: Array<{ id: Tab; label: string }> = [
-  { id: 'basic', label: '基础' },
-  { id: 'fingerprint', label: '指纹' },
-  { id: 'proxy', label: '代理' },
-  { id: 'shadow', label: '影子' }
+const TABS: Array<{ id: Tab; labelKey: string }> = [
+  { id: 'basic', labelKey: 'fp.tab.basic' },
+  { id: 'fingerprint', labelKey: 'fp.tab.fingerprint' },
+  { id: 'proxy', labelKey: 'fp.tab.proxy' },
+  { id: 'shadow', labelKey: 'fp.tab.shadow' }
 ]
 
 const TIMEZONES = Object.keys(TIMEZONE_GEO)
@@ -55,11 +63,63 @@ function cloneProfile(p: Profile): Profile {
   }
 }
 
+/* ────────────────────────────── 焦点辅助 ──────────────────────────────
+ *
+ * 为什么这里重写一份、而不是从 './ui' import：
+ * ui.tsx 里的 focusableIn / trapFocus 是**模块私有**的（没有 export），
+ * Modal 在用它们，但把它们导出去等于给整个渲染层开一个只有抽屉需要的口子。
+ * 本轮改动范围被限定在抽屉和 ApiPanel 两个文件里，所以照抄一份等价实现。
+ * 代价是两份实现必须同步改 —— 所以选择器字符串逐字保持一致，
+ * 否则键盘行为会在抽屉和弹窗之间分叉（同一个产品里两种 Tab 语义最难查）。 */
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+/** 取容器内当前可见、可聚焦的元素（隐藏元素拿不到焦点，必须滤掉） */
+function focusableIn(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+    (el) => el.offsetWidth > 0 || el.offsetHeight > 0 || el === document.activeElement
+  )
+}
+
+/** 把 Tab / Shift+Tab 挡在容器内循环，容器自身需要带 tabIndex=-1 兜底 */
+function trapFocus(container: HTMLElement, event: ReactKeyboardEvent): void {
+  if (event.key !== 'Tab') return
+  const items = focusableIn(container)
+  if (items.length === 0) {
+    // 没有任何可聚焦元素时锁在容器自身，否则焦点会掉到抽屉背后的页面
+    event.preventDefault()
+    container.focus()
+    return
+  }
+  const first = items[0]
+  const last = items[items.length - 1]
+  const active = document.activeElement
+  if (event.shiftKey) {
+    if (active === first || !container.contains(active)) {
+      event.preventDefault()
+      last.focus()
+    }
+  } else if (active === last || !container.contains(active)) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
 export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: FingerprintDrawerProps) {
   const toast = useToast()
+  const { t } = useI18n()
   const [tab, setTab] = useState<Tab>('fingerprint')
   const [draft, setDraft] = useState<Profile | null>(null)
   const [busy, setBusy] = useState(false)
+  /** 地理校准的独立忙碌位：它探测代理可能耗时数秒，不能和保存共用 busy */
+  const [geoBusy, setGeoBusy] = useState(false)
+
+  /* 抽屉本体（焦点陷阱的作用域）与「打开前的焦点」（关闭时还原的目标）。 */
+  const drawerRef = useRef<HTMLElement | null>(null)
+  const restoreRef = useRef<HTMLElement | null>(null)
+  /* 有未保存修改时，关闭动作先转到这里弹确认，不直接 onClose。 */
+  const [discardOpen, setDiscardOpen] = useState(false)
 
   /* 伪装闸门豁免的三个状态。
    *
@@ -74,6 +134,36 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
   const [pendingExempt, setPendingExempt] = useState(false)
   const [exemptName, setExemptName] = useState('')
   const [exemptBusy, setExemptBusy] = useState(false)
+
+  /* 本环境可选的扩展目录。`null` = 还没读到（加载中或读取失败）。
+   *
+   * 为什么不用 `[]` 表示读取失败：保存时会把 `extensionIds` 过滤成「仍然存在」
+   * 的集合，而空数组会让每一份绑定都被判成「已删除」—— 一次读取失败 + 一次
+   * 保存就会静默清空环境的扩展绑定。三态是这里的正确形状。
+   *
+   * 只读**已启用**的扩展：停用的扩展在启动流程里会被跳过，把它摆出来让用户
+   * 勾选等于承诺一件不会发生的事。 */
+  const [extensions, setExtensions] = useState<ExtensionRecord[] | null | undefined>(undefined)
+  useEffect(() => {
+    if (!profile) {
+      setExtensions(undefined)
+      return
+    }
+    let alive = true
+    setExtensions(undefined)
+    void (async () => {
+      try {
+        const all = await bridge().extensions.list()
+        if (alive) setExtensions(Array.isArray(all) ? all.filter((e) => e.enabled) : [])
+      } catch {
+        // 保持 null：界面说「读不到」，保存时原样保留已有绑定
+        if (alive) setExtensions(null)
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [profile?.id])
 
   /* 本次会话的注入失败台账。
    *
@@ -106,12 +196,70 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
     setExemptOn(profile?.allowUnmaskedL2 === true)
     setPendingExempt(false)
     setExemptName('')
+    // 换环境时残留的确认框必须收掉：它的文案属于上一个环境
+    setDiscardOpen(false)
   }, [profile])
 
   const report = useMemo(() => {
     if (!draft) return null
     return scoreFingerprint(draft.fingerprint, draft.proxy !== null)
   }, [draft])
+
+  /* 抽屉是否真的开着（有草稿才算开 —— 没草稿时下面走「关着」的早退分支）。 */
+  const open = draft !== null && report !== null
+
+  /* 打开时把焦点收进抽屉，关闭时还原到打开前的那个元素。
+   *
+   * 为什么必须做：抽屉是覆盖层，但焦点默认留在触发它的按钮上。
+   * 那一刻键盘用户按 Tab，走的是抽屉**下面**的页面 —— 抽屉等于对键盘不存在。
+   * 还原同样重要：不还原的话焦点会掉到 body，关闭后得从页面第一个控件重新 Tab。
+   *
+   * 依赖只放 open：profile/draft 每次编辑都会换引用，放它们会让焦点被反复抢回抽屉，
+   * 用户正在输入的字段会失焦。 */
+  useEffect(() => {
+    if (!open) return
+    restoreRef.current = document.activeElement as HTMLElement | null
+    const drawer = drawerRef.current
+    if (drawer) {
+      const first = focusableIn(drawer)[0]
+      // 没有可聚焦元素时聚焦抽屉自身（它带 tabIndex=-1），保证焦点确实进了抽屉
+      ;(first ?? drawer).focus()
+    }
+    return () => {
+      const back = restoreRef.current
+      // 触发按钮可能已经不在文档里（列表重渲染过），这时还原会无效，直接跳过
+      if (back && document.contains(back)) back.focus()
+    }
+  }, [open])
+
+  /**
+   * 关闭抽屉的统一入口：遮罩、关闭按钮、Esc 都走这里。
+   *
+   * 草稿是本地 state，原来这三个入口都是直接 onClose —— 一次误触就静默丢掉
+   * 整轮编辑，且没有任何提示。所以先比草稿与 profile，有差异就先问。
+   * 用 JSON.stringify 比较是刻意的省事：draft 由 cloneProfile + 浅合并产生，
+   * 键序稳定，序列化结果可比；这里不需要深比较库。
+   */
+  const requestClose = (): void => {
+    const dirty =
+      draft !== null && profile !== null && JSON.stringify(draft) !== JSON.stringify(profile)
+    if (dirty) {
+      setDiscardOpen(true)
+      return
+    }
+    onClose()
+  }
+
+  /* 抽屉内键盘：Esc 走关闭流程，其余按键交给焦点陷阱。 */
+  const onDrawerKeyDown = (event: ReactKeyboardEvent<HTMLElement>): void => {
+    if (event.key === 'Escape') {
+      event.stopPropagation()
+      requestClose()
+      return
+    }
+    const drawer = drawerRef.current
+    if (drawer) trapFocus(drawer, event)
+  }
 
   if (!draft || !report) {
     return (
@@ -142,14 +290,24 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
         tags: draft.tags,
         color: draft.color,
         fingerprint: draft.fingerprint,
-        proxy: draft.proxy
+        proxy: draft.proxy,
+        // 空串表示「没配启动页」：undefined 在 update 的合并语义里等于「不改」，
+        // 传它会导致用户清空后旧值永远清不掉。主进程启动时按 trim 后是否为空回落默认。
+        startUrl: draft.startUrl?.trim() ?? '',
+        // 只提交当前仍然存在的扩展：登记表里被删掉的 id 清掉，
+        // 否则它会一直挂在这个环境上，每次启动都多一条失败记录。
+        // 列表没读到（null）时原样提交，避免一次读取失败把绑定清空。
+        extensionIds:
+          extensions == null
+            ? draft.extensionIds
+            : (draft.extensionIds ?? []).filter((id) => extensions.some((e) => e.id === id))
       })
       onSaved(next)
       if (launch) {
         await bridge().profiles.launch(next.id)
         onLaunch(next.id)
       }
-      toast.push(launch ? '已保存并启动' : '已保存', 'ok')
+      toast.push(launch ? t('fp.toast.savedAndLaunched') : t('fp.toast.saved'), 'ok')
       onClose()
     } catch (err) {
       toast.push(errorMessage(err), 'err')
@@ -175,7 +333,7 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
       setExemptName('')
       onSaved(next)
       toast.push(
-        next.allowUnmaskedL2 ? '已开启伪装闸门豁免，已记入审计' : '已关闭伪装闸门豁免',
+        next.allowUnmaskedL2 ? t('fp.toast.exemptOn') : t('fp.toast.exemptOff'),
         next.allowUnmaskedL2 ? 'info' : 'ok'
       )
     } catch (err) {
@@ -195,13 +353,50 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
     void applyExemption(false, '')
   }
 
+  /**
+   * 按当前挂载代理的出口校准地理字段。
+   *
+   * ── 为什么只动时区 / 语言 / 语言列表 / 经纬度 ──
+   * 这四项是页面能从出口 IP 推断出来的东西。UA、屏幕、WebGL 是浏览器与硬件
+   * 特征，和出口国家没有对应关系：按国家改 UA 等于伪造一个不存在的版本组合，
+   * 换代理就换屏换显卡则会让同一台「机器」显得比不换更异常 —— 改了反而制造矛盾。
+   *
+   * 主进程成功时已经落盘并审计；这里只把同一次结果合并进草稿，
+   * 让抽屉立刻显示新值。用户点「仅保存 / 保存并启动」才把草稿写回，
+   * 不会因为点一下校准就顺手保存其它未完成的编辑。
+   */
+  async function matchGeo(): Promise<void> {
+    if (!draft) return
+    setGeoBusy(true)
+    try {
+      const res = await bridge().profiles.matchGeo(draft.id)
+      // 返回值没有坐标，按主进程同一张 TIMEZONE_GEO 表推导：
+      // 表里没有的时区在主进程侧就是 geolocation=null，这里保持一致。
+      const geo = TIMEZONE_GEO[res.timezone]
+      patchFp({
+        timezone: res.timezone,
+        locale: res.locale,
+        languages: [...res.languages],
+        geolocation: geo ? { latitude: geo.latitude, longitude: geo.longitude } : null
+      })
+      toast.push(
+        t('fp.matchGeoOk', { country: res.country || '—', ip: res.ip || '—' }),
+        'ok'
+      )
+    } catch (err) {
+      toast.push(errorMessage(err), 'err')
+    } finally {
+      setGeoBusy(false)
+    }
+  }
+
   async function regenerate(): Promise<void> {
     if (!draft) return
     setBusy(true)
     try {
       const next = await bridge().profiles.regenerate(draft.id)
       setDraft(cloneProfile(next))
-      toast.push('已重掷指纹种子', 'ok')
+      toast.push(t('fp.toast.reseeded'), 'ok')
     } catch (err) {
       toast.push(errorMessage(err), 'err')
     } finally {
@@ -239,13 +434,21 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
 
   return (
     <>
-      <div className="mask on" onClick={onClose} />
-      <aside className="drawer on" aria-label="环境配置">
+      <div className="mask on" onClick={requestClose} />
+      <aside
+        ref={drawerRef}
+        className="drawer on"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t('fp.aria')}
+        tabIndex={-1}
+        onKeyDown={onDrawerKeyDown}
+      >
         <div className="drawer-head">
           <div className="r1">
             <h3>{draft.name}</h3>
             <span className="id">{profileNo(draft.id)}</span>
-            <button type="button" className="x" onClick={onClose} aria-label="关闭">
+            <button type="button" className="x" onClick={requestClose} aria-label={t('common.close')}>
               <Icon name="close" size={13} strokeWidth={2} />
             </button>
           </div>
@@ -253,26 +456,29 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
             <span className={draft.status === 'running' ? 'status run' : 'status'}>
               <i />
               {draft.status === 'running'
-                ? '运行中'
+                ? t('fp.status.running')
                 : draft.status === 'error'
-                  ? '启动失败'
-                  : '影子待命'}
+                  ? t('fp.status.failed')
+                  : t('fp.status.idle')}
             </span>
-            · 创建于 {formatDate(draft.createdAt)} · 最后使用 {formatRelative(draft.lastUsedAt)}
+            {' · '}
+            {t('fp.meta.created', { date: formatDate(draft.createdAt) })}
+            {' · '}
+            {t('fp.meta.lastUsed', { time: formatRelative(draft.lastUsedAt) })}
           </div>
         </div>
 
         <div className="dtabs" role="tablist">
-          {TABS.map((t) => (
+          {TABS.map((item) => (
             <button
-              key={t.id}
+              key={item.id}
               type="button"
               role="tab"
-              aria-selected={tab === t.id}
-              className={`dtab${tab === t.id ? ' on' : ''}`}
-              onClick={() => setTab(t.id)}
+              aria-selected={tab === item.id}
+              className={`dtab${tab === item.id ? ' on' : ''}`}
+              onClick={() => setTab(item.id)}
             >
-              {t.label}
+              {t(item.labelKey)}
             </button>
           ))}
         </div>
@@ -282,28 +488,28 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
             <>
               <div className="fieldset">
                 <div className="fs-head">
-                  <h4>标识</h4>
+                  <h4>{t('fp.section.identity')}</h4>
                 </div>
-                <Field label="名称">
+                <Field label={t('common.name')}>
                   <input
                     className="val"
                     value={draft.name}
                     onChange={(e) => patch({ name: e.target.value })}
                   />
                 </Field>
-                <Field label="分组">
+                <Field label={t('fp.field.group')}>
                   <input
                     className="val"
                     value={draft.group}
-                    placeholder="未分组"
+                    placeholder={t('fp.group.placeholder')}
                     onChange={(e) => patch({ group: e.target.value })}
                   />
                 </Field>
-                <Field label="标签">
+                <Field label={t('fp.field.tags')}>
                   <input
                     className="val"
                     value={draft.tags.join(', ')}
-                    placeholder="用逗号分隔"
+                    placeholder={t('fp.tags.placeholder')}
                     onChange={(e) =>
                       patch({
                         tags: e.target.value
@@ -314,7 +520,49 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                     }
                   />
                 </Field>
-                <Field label="标识色">
+                <Field label={t('fp.startUrl')} hint={t('fp.startUrlHint')}>
+                  <input
+                    className="val mono"
+                    value={draft.startUrl ?? ''}
+                    placeholder={t('fp.startUrlPlaceholder')}
+                    onChange={(e) => patch({ startUrl: e.target.value })}
+                  />
+                </Field>
+                <Field label={t('fp.extensions')} hint={t('fp.extensionsHint')}>
+                  {extensions === undefined ? (
+                    <span className="ext-empty">{t('common.loading')}</span>
+                  ) : extensions === null ? (
+                    <span className="ext-empty">{t('fp.extensionsUnavailable')}</span>
+                  ) : extensions.length === 0 ? (
+                    <span className="ext-empty">{t('fp.extensionsEmpty')}</span>
+                  ) : (
+                    <div className="ext-pick">
+                      {extensions.map((ext) => {
+                        const on = (draft.extensionIds ?? []).includes(ext.id)
+                        return (
+                          <button
+                            key={ext.id}
+                            type="button"
+                            className={`ext-chip${on ? ' on' : ''}`}
+                            aria-pressed={on}
+                            title={ext.path}
+                            onClick={() => {
+                              const cur = draft.extensionIds ?? []
+                              patch({
+                                extensionIds: on
+                                  ? cur.filter((id) => id !== ext.id)
+                                  : [...cur, ext.id]
+                              })
+                            }}
+                          >
+                            {ext.name}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                </Field>
+                <Field label={t('fp.field.color')}>
                   <div className="color-row">
                     {PROFILE_COLORS.map((c) => (
                       <button
@@ -322,7 +570,7 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                         type="button"
                         className={`color-dot${draft.color === c ? ' on' : ''}`}
                         style={cssVars({ background: c })}
-                        aria-label={`选择颜色 ${c}`}
+                        aria-label={t('fp.color.aria', { color: c })}
                         onClick={() => patch({ color: c })}
                       />
                     ))}
@@ -332,14 +580,14 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
 
               <div className="fieldset">
                 <div className="fs-head">
-                  <h4>备注</h4>
+                  <h4>{t('fp.section.note')}</h4>
                 </div>
-                <Field label="用途说明">
+                <Field label={t('fp.field.note')}>
                   <textarea
                     className="val wrap"
                     rows={3}
                     value={draft.note}
-                    placeholder="例如：Amazon 美区主号，仅用于价格采集"
+                    placeholder={t('fp.note.placeholder')}
                     onChange={(e) => patch({ note: e.target.value })}
                   />
                 </Field>
@@ -347,15 +595,15 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
 
               <div className="fieldset">
                 <div className="fs-head">
-                  <h4>指纹种子</h4>
+                  <h4>{t('fp.section.seed')}</h4>
                 </div>
                 <Field
-                  label="种子指纹"
+                  label={t('fp.field.seed')}
                   action={
                     <button
                       type="button"
                       className="dice"
-                      title="重掷种子并重新生成整套参数"
+                      title={t('fp.seed.reroll')}
                       onClick={() => void regenerate()}
                       disabled={busy}
                     >
@@ -367,11 +615,7 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                     {draft.seedHint}
                   </div>
                 </Field>
-                <div className="note">
-                  种子由主密钥与环境 ID 经 HKDF 派生，不可手工编辑，也**不出主进程** ——
-                  这里显示的是它的哈希前缀，用来核对「这两个环境是不是同一个种子」。
-                  同一个种子永远解析出同一套参数，因此备份恢复、跨机迁移后指纹完全一致。
-                </div>
+                <div className="note">{t('fp.seed.desc')}</div>
               </div>
             </>
           ) : null}
@@ -380,19 +624,19 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
             <>
               <div className="fieldset">
                 <div className="fs-head">
-                  <h4>系统与浏览器</h4>
+                  <h4>{t('fp.section.system')}</h4>
                   <span className={`badge${scoreTone === 'bad' ? ' bad' : scoreTone === 'warn' ? ' warn' : ''}`}>
-                    一致性 {report.score}
+                    {t('fp.consistency.badge', { score: report.score })}
                   </span>
                 </div>
 
                 <Field
-                  label="操作系统"
+                  label={t('fp.field.os')}
                   action={
                     <button
                       type="button"
                       className="dice"
-                      title="按平台模板重置"
+                      title={t('fp.os.reset')}
                       disabled={busy}
                       onClick={() => void resetToPlatform(draft.platform)}
                     >
@@ -414,7 +658,7 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                   </select>
                 </Field>
 
-                <Field label="系统版本">
+                <Field label={t('fp.field.osLabel')}>
                   <input
                     className="val"
                     value={fp.osLabel}
@@ -423,12 +667,12 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                 </Field>
 
                 <Field
-                  label="User-Agent"
+                  label={t('fp.field.userAgent')}
                   action={
                     <button
                       type="button"
                       className="dice"
-                      title="使用平台模板 UA"
+                      title={t('fp.ua.template')}
                       onClick={() => patchFp({ userAgent: tpl.userAgent })}
                     >
                       <Icon name="dice" size={12} strokeWidth={2} />
@@ -444,12 +688,12 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                 </Field>
 
                 <Field
-                  label="浏览器版本"
+                  label={t('fp.field.browserVersion')}
                   action={
                     <button
                       type="button"
                       className="dice"
-                      title="与内置 Chromium 对齐"
+                      title={t('fp.uaVersion.align')}
                       onClick={() => patchFp({ uaVersion: tpl.userAgent.match(/Chrome\/([\d.]+)/)?.[1] ?? fp.uaVersion })}
                     >
                       <Icon name="dice" size={12} strokeWidth={2} />
@@ -466,16 +710,16 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
 
               <div className="fieldset">
                 <div className="fs-head">
-                  <h4>区域与语言</h4>
+                  <h4>{t('fp.section.region')}</h4>
                 </div>
 
                 <Field
-                  label="时区"
+                  label={t('fp.field.timezone')}
                   action={
                     <button
                       type="button"
                       className="dice"
-                      title="使用模板时区"
+                      title={t('fp.tz.template')}
                       onClick={() => patchFp({ timezone: tpl.timezone })}
                     >
                       <Icon name="dice" size={12} strokeWidth={2} />
@@ -505,7 +749,7 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                   </select>
                 </Field>
 
-                <Field label="语言">
+                <Field label={t('fp.field.locale')}>
                   <input
                     className="val"
                     value={fp.locale}
@@ -514,12 +758,12 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                 </Field>
 
                 <Field
-                  label="语言列表"
+                  label={t('fp.field.languages')}
                   action={
                     <button
                       type="button"
                       className="dice"
-                      title="使用模板语言列表"
+                      title={t('fp.languages.template')}
                       onClick={() => patchFp({ languages: [...tpl.languages] })}
                     >
                       <Icon name="dice" size={12} strokeWidth={2} />
@@ -542,11 +786,11 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                 </Field>
 
                 <Field
-                  label="地理位置"
+                  label={t('fp.field.geolocation')}
                   action={
                     <Toggle
                       checked={fp.geolocation !== null}
-                      label="启用地理位置伪装"
+                      label={t('fp.geo.toggle')}
                       onChange={(on) =>
                         patchFp({
                           geolocation: on
@@ -562,7 +806,7 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                       <input
                         className="val"
                         value={fp.geolocation.latitude}
-                        aria-label="纬度"
+                        aria-label={t('fp.geo.lat')}
                         onChange={(e) =>
                           patchFp({
                             geolocation: {
@@ -575,7 +819,7 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                       <input
                         className="val"
                         value={fp.geolocation.longitude}
-                        aria-label="经度"
+                        aria-label={t('fp.geo.lng')}
                         onChange={(e) =>
                           patchFp({
                             geolocation: {
@@ -588,7 +832,7 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                     </div>
                   ) : (
                     <div className="val" style={{ color: 'var(--ink-4)' }}>
-                      已关闭 · 站点会退回真实 IP 定位
+                      {t('fp.geo.off')}
                     </div>
                   )}
                 </Field>
@@ -596,15 +840,15 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
 
               <div className="fieldset">
                 <div className="fs-head">
-                  <h4>硬件指纹</h4>
+                  <h4>{t('fp.section.hardware')}</h4>
                 </div>
 
-                <Field label="分辨率">
+                <Field label={t('fp.field.screen')}>
                   <div style={{ display: 'flex', gap: 6, minWidth: 0 }}>
                     <input
                       className="val"
                       value={fp.screen.width}
-                      aria-label="宽度"
+                      aria-label={t('fp.screen.width')}
                       onChange={(e) =>
                         patchFp({ screen: { ...fp.screen, width: Number(e.target.value) || 0 } })
                       }
@@ -612,7 +856,7 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                     <input
                       className="val"
                       value={fp.screen.height}
-                      aria-label="高度"
+                      aria-label={t('fp.screen.height')}
                       onChange={(e) =>
                         patchFp({ screen: { ...fp.screen, height: Number(e.target.value) || 0 } })
                       }
@@ -620,7 +864,7 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                     <input
                       className="val"
                       value={fp.screen.dpr}
-                      aria-label="像素比"
+                      aria-label={t('fp.screen.dpr')}
                       onChange={(e) =>
                         patchFp({ screen: { ...fp.screen, dpr: Number(e.target.value) || 1 } })
                       }
@@ -628,12 +872,12 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                   </div>
                 </Field>
 
-                <Field label="CPU / 内存">
+                <Field label={t('fp.field.cpuMemory')}>
                   <div style={{ display: 'flex', gap: 6, minWidth: 0 }}>
                     <input
                       className="val"
                       value={fp.hardware.cpuCores}
-                      aria-label="CPU 核心数"
+                      aria-label={t('fp.hw.cores')}
                       onChange={(e) =>
                         patchFp({
                           hardware: { ...fp.hardware, cpuCores: Number(e.target.value) || 1 }
@@ -643,7 +887,7 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                     <input
                       className="val"
                       value={fp.hardware.memoryGB}
-                      aria-label="内存 GB"
+                      aria-label={t('fp.hw.memory')}
                       onChange={(e) =>
                         patchFp({
                           hardware: { ...fp.hardware, memoryGB: Number(e.target.value) || 1 }
@@ -654,12 +898,12 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                 </Field>
 
                 <Field
-                  label="WebGL 渲染器"
+                  label={t('fp.field.webglRenderer')}
                   action={
                     <button
                       type="button"
                       className="dice"
-                      title="使用模板渲染器"
+                      title={t('fp.webgl.template')}
                       onClick={() => patchFp({ webgl: { ...tpl.webgl } })}
                     >
                       <Icon name="dice" size={12} strokeWidth={2} />
@@ -675,7 +919,7 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                   />
                 </Field>
 
-                <Field label="GPU 厂商">
+                <Field label={t('fp.field.gpuVendor')}>
                   <input
                     className="val mono"
                     value={fp.webgl.vendor}
@@ -686,39 +930,41 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
 
               <div className="fieldset">
                 <div className="fs-head">
-                  <h4>隐私噪声</h4>
+                  <h4>{t('fp.section.privacy')}</h4>
                 </div>
 
-                <Field label="Canvas">
+                <Field label={t('fp.field.canvas')}>
                   <select
                     className="val"
                     value={fp.canvas}
                     onChange={(e) => patchFp({ canvas: e.target.value as FingerprintConfig['canvas'] })}
                   >
-                    <option value="noise">噪声模式 · 每次会话一致</option>
-                    <option value="off">关闭 · 暴露真实指纹</option>
+                    <option value="noise">{t('fp.canvas.noise')}</option>
+                    <option value="block">{t('fp.canvas.block')}</option>
+                    <option value="off">{t('fp.canvas.off')}</option>
                   </select>
                 </Field>
 
-                <Field label="AudioContext">
+                <Field label={t('fp.field.audioContext')}>
                   <select
                     className="val"
                     value={fp.audio}
                     onChange={(e) => patchFp({ audio: e.target.value as FingerprintConfig['audio'] })}
                   >
-                    <option value="noise">噪声模式</option>
-                    <option value="off">关闭</option>
+                    <option value="noise">{t('fp.audio.noise')}</option>
+                    <option value="block">{t('fp.audio.block')}</option>
+                    <option value="off">{t('fp.audio.off')}</option>
                   </select>
                 </Field>
 
                 <Field
-                  label="WebRTC"
+                  label={t('fp.field.webrtc')}
                   hint={
                     fp.webrtc === 'disabled'
-                      ? '接口保留、候选全部丢弃 —— 与真实浏览器一致：WebRTC 是整特性开关，主世界和 Worker 里同真同假。'
+                      ? t('fp.webrtc.hint.disabled')
                       : fp.webrtc === 'proxy'
-                        ? '本地地址与 srflx（STUN 看到的真实公网 IP）全部丢弃，只放行非私有的 host 候选。'
-                        : '不拦截任何候选，页面能拿到真实内网地址与公网 IP。'
+                        ? t('fp.webrtc.hint.proxy')
+                        : t('fp.webrtc.hint.real')
                   }
                 >
                   <select
@@ -728,19 +974,19 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                       patchFp({ webrtc: e.target.value as FingerprintConfig['webrtc'] })
                     }
                   >
-                    <option value="proxy">代理转发 · 屏蔽本地 IP</option>
-                    <option value="disabled">不产生候选 · 接口保留</option>
-                    <option value="real">暴露真实 IP</option>
+                    <option value="proxy">{t('fp.webrtc.proxy')}</option>
+                    <option value="disabled">{t('fp.webrtc.disabled')}</option>
+                    <option value="real">{t('fp.webrtc.real')}</option>
                   </select>
                 </Field>
 
                 <Field
-                  label="字体列表"
+                  label={t('fp.field.fonts')}
                   action={
                     <button
                       type="button"
                       className="dice"
-                      title="使用模板字体集"
+                      title={t('fp.fonts.template')}
                       onClick={() => patchFp({ fonts: [...tpl.fonts] })}
                     >
                       <Icon name="dice" size={12} strokeWidth={2} />
@@ -749,7 +995,10 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                 >
                   <input
                     className="val"
-                    value={`${fp.fonts.length} 项 · ${fp.fonts.slice(0, 3).join(' / ')}`}
+                    value={t('fp.fonts.summary', {
+                      n: fp.fonts.length,
+                      list: fp.fonts.slice(0, 3).join(' / ')
+                    })}
                     title={fp.fonts.join(', ')}
                     readOnly
                   />
@@ -763,20 +1012,17 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                 <div className="txt">
                   <b>
                     {report.score >= 95
-                      ? '指纹一致性良好'
+                      ? t('fp.score.good')
                       : report.score >= 80
-                        ? '指纹基本一致'
+                        ? t('fp.score.fair')
                         : report.score >= 60
-                          ? '存在明显矛盾'
-                          : '指纹不可信'}
+                          ? t('fp.score.warn')
+                          : t('fp.score.bad')}
                   </b>
                   <span>{report.verdict}</span>
                 </div>
               </div>
-              <div className="note">
-                评分口径：UA 与平台、UA 与浏览器版本、时区与经纬度、语言与地区、首选语言、WebRTC
-                策略、噪声开关、是否配置代理。命中一条扣一次分，最低 0 分。
-              </div>
+              <div className="note">{t('fp.score.note')}</div>
             </>
           ) : null}
 
@@ -784,28 +1030,29 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
             <>
               <div className="fieldset">
                 <div className="fs-head">
-                  <h4>出口代理</h4>
+                  <h4>{t('fp.section.proxy')}</h4>
                   <span className={`badge${draft.proxy ? '' : ' warn'}`}>
-                    {draft.proxy ? '已配置' : '直连'}
+                    {draft.proxy ? t('fp.proxy.configured') : t('fp.proxy.direct')}
                   </span>
                 </div>
 
-                <Field label="协议">
+                <Field label={t('fp.field.protocol')}>
                   <select
                     className="val"
                     value={draft.proxy?.type ?? 'http'}
                     onChange={(e) => {
-                      const type = e.target.value as 'http' | 'https' | 'socks5'
+                      const type = e.target.value as ProxyProtocol
                       patch({ proxy: { type, host: draft.proxy?.host ?? '', port: draft.proxy?.port ?? 8080 } })
                     }}
                   >
                     <option value="http">HTTP</option>
                     <option value="https">HTTPS</option>
                     <option value="socks5">SOCKS5</option>
+                    <option value="socks5h">{t('fp.proxy.socks5h')}</option>
                   </select>
                 </Field>
 
-                <Field label="主机">
+                <Field label={t('fp.field.host')}>
                   <input
                     className="val mono"
                     value={draft.proxy?.host ?? ''}
@@ -824,7 +1071,7 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                   />
                 </Field>
 
-                <Field label="端口">
+                <Field label={t('fp.field.port')}>
                   <input
                     className="val"
                     value={draft.proxy?.port ?? ''}
@@ -843,11 +1090,11 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                   />
                 </Field>
 
-                <Field label="用户名">
+                <Field label={t('fp.field.username')}>
                   <input
                     className="val"
                     value={draft.proxy?.username ?? ''}
-                    placeholder="可选"
+                    placeholder={t('fp.proxy.optional')}
                     onChange={(e) =>
                       patch({
                         proxy: {
@@ -862,12 +1109,12 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                   />
                 </Field>
 
-                <Field label="密码">
+                <Field label={t('fp.field.password')}>
                   <input
                     className="val"
                     type="password"
                     value={draft.proxy?.password ?? ''}
-                    placeholder="可选"
+                    placeholder={t('fp.proxy.optional')}
                     onChange={(e) =>
                       patch({
                         proxy: {
@@ -885,22 +1132,37 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
 
               <div className="fieldset">
                 <div className="fs-head">
-                  <h4>出口信息</h4>
+                  <h4>{t('fp.section.exit')}</h4>
                 </div>
-                <Field label="当前出口">
+                <Field label={t('fp.field.currentExit')}>
                   <div className="val mono">
-                    {draft.proxy ? `${draft.proxy.host}:${draft.proxy.port}` : '直连'}
+                    {draft.proxy ? `${draft.proxy.host}:${draft.proxy.port}` : t('fp.proxy.direct')}
                   </div>
                 </Field>
-                <Field label="地区匹配">
+                <Field label={t('fp.field.regionMatch')}>
                   <div className="val">
                     {localeCountry(fp.locale)} · {tzOffsetLabel(fp.timezone)}
                   </div>
                 </Field>
-                <div className="note">
-                  代理延迟由主进程拨测后回传，渲染层不发起探测请求。出口地区与指纹地区不一致时，
-                  上面的「一致性评分」会直接扣分。
+                {/*
+                  按代理出口校准。只在挂了代理时可用：直连环境没有「出口」可对齐，
+                  用本机时区校准等于什么都没做，而猜一个国家再写进去是凭空制造矛盾。
+                  禁用的原因放进 title，因为按钮变灰本身不解释为什么。
+                */}
+                <div style={{ marginTop: 8 }}>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon="globe"
+                    disabled={!draft.proxy || geoBusy || busy}
+                    title={draft.proxy ? t('fp.matchGeoHint') : t('fp.matchGeoDisabled')}
+                    onClick={() => void matchGeo()}
+                  >
+                    {t('fp.matchGeo')}
+                  </Button>
                 </div>
+                <div className="note">{t('fp.matchGeoHint')}</div>
+                <div className="note">{t('fp.proxy.note')}</div>
                 <div style={{ marginTop: 8 }}>
                   <Button
                     size="sm"
@@ -908,7 +1170,7 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                     icon="close"
                     onClick={() => patch({ proxy: null })}
                   >
-                    清除代理，改为直连
+                    {t('fp.proxy.clear')}
                   </Button>
                 </div>
               </div>
@@ -919,16 +1181,16 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
             <>
               <div className="fieldset">
                 <div className="fs-head">
-                  <h4>影子空间</h4>
+                  <h4>{t('fp.section.shadow')}</h4>
                 </div>
-                <Field label="独立会话">
-                  <div className="val">开启 · 影子拥有独立 Cookie 与存储</div>
+                <Field label={t('fp.shadow.isolated')}>
+                  <div className="val">{t('fp.shadow.isolatedValue')}</div>
                 </Field>
-                <Field label="绑定方式">
-                  <div className="val">打开窗口时自动新建影子标签</div>
+                <Field label={t('fp.shadow.binding')}>
+                  <div className="val">{t('fp.shadow.bindingValue')}</div>
                 </Field>
-                <Field label="风险动作">
-                  <div className="val">L2 动作一律弹窗确认，不可跳过</div>
+                <Field label={t('fp.shadow.riskActions')}>
+                  <div className="val">{t('fp.shadow.riskActionsValue')}</div>
                 </Field>
               </div>
 
@@ -937,30 +1199,30 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                   修环境（重开窗口 / 换 profile），不是「我知道有风险，继续」。 */}
               <div className="fieldset">
                 <div className="fs-head">
-                  <h4>伪装闸门</h4>
+                  <h4>{t('fp.section.maskGate')}</h4>
                 </div>
                 <Field
-                  label="L2 豁免"
+                  label={t('fp.exempt.field')}
                   action={
                     <Toggle
                       checked={exemptOn}
-                      label="伪装闸门豁免"
+                      label={t('fp.exempt.toggle')}
                       disabled={exemptBusy}
                       onChange={toggleExemption}
                     />
                   }
                 >
                   <div className={`val${exemptOn ? ' warn' : ''}`}>
-                    {exemptOn ? '已豁免：伪装不完整时仍可执行 L2' : '关闭（默认）'}
+                    {exemptOn ? t('fp.exempt.on') : t('fp.exempt.off')}
                   </div>
                 </Field>
                 {pendingExempt ? (
-                  <Field label="确认">
+                  <Field label={t('fp.exempt.confirm')}>
                     <div className="exempt-confirm">
                       <input
                         className="val"
                         value={exemptName}
-                        placeholder={`输入环境名「${draft.name}」以确认`}
+                        placeholder={t('fp.exempt.placeholder', { name: draft.name })}
                         onChange={(e) => setExemptName(e.target.value)}
                       />
                       <Button
@@ -968,62 +1230,56 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                         disabled={exemptBusy || exemptName.trim() !== draft.name}
                         onClick={() => void applyExemption(true, exemptName)}
                       >
-                        确认开启
+                        {t('fp.exempt.enable')}
                       </Button>
                     </div>
                   </Field>
                 ) : null}
                 <div className="note">
-                  开启后，「伪装是否完整」不再拦这个环境的不可逆动作 ——
-                  但 L2 仍然要你在系统窗口点允许，两者在审计里是分开的两列。
-                  伪装修好（状态回到 ok）时会自动收回，这条收回也会记审计。
-                  {pendingExempt ? ' 需要输入环境名确认：这个开关不该能顺手打开。' : ''}
+                  {t('fp.exempt.note')}
+                  {pendingExempt ? t('fp.exempt.notePending') : ''}
                 </div>
               </div>
 
               <div className="fieldset">
                 <div className="fs-head">
-                  <h4>反检测增强</h4>
+                  <h4>{t('fp.section.hardening')}</h4>
                 </div>
                 <Field
-                  label="ClientRects"
+                  label={t('fp.field.clientRects')}
                   action={
                     <Toggle
                       checked={fp.clientRectsNoise}
-                      label="ClientRects 噪声"
+                      label={t('fp.clientRects.toggle')}
                       onChange={(on) => patchFp({ clientRectsNoise: on })}
                     />
                   }
                 >
-                  <div className="val">{fp.clientRectsNoise ? '噪声模式' : '关闭'}</div>
+                  <div className="val">
+                    {fp.clientRectsNoise ? t('fp.state.noise') : t('fp.state.off')}
+                  </div>
                 </Field>
                 <Field
-                  label="WebGPU"
+                  label={t('fp.field.webgpu')}
                   action={
                     <Toggle
                       checked={fp.webgpu}
-                      label="WebGPU 上报"
+                      label={t('fp.webgpu.toggle')}
                       onChange={(on) => patchFp({ webgpu: on })}
                     />
                   }
                 >
-                  <div className="val">{fp.webgpu ? '按平台上报' : '禁用'}</div>
+                  <div className="val">{fp.webgpu ? t('fp.webgpu.on') : t('fp.webgpu.off')}</div>
                 </Field>
-                <div className="note">
-                  ClientRects 噪声会让元素边界产生亚像素级抖动，抵御基于布局测量的指纹；
-                  代价是极少数依赖精确坐标的站点可能出现 1px 偏移。
-                </div>
+                <div className="note">{t('fp.hardening.note')}</div>
               </div>
 
               <div className="fieldset">
                 <div className="fs-head">
-                  <h4>本次会话的注入问题</h4>
+                  <h4>{t('fp.section.injection')}</h4>
                 </div>
                 {issues.length === 0 ? (
-                  <div className="note">
-                    没有记录。这只说明本次会话没有报过问题 —— 伪装是否完整看卡片上的状态点，
-                    两者不是一回事。
-                  </div>
+                  <div className="note">{t('fp.injection.empty')}</div>
                 ) : (
                   <>
                     {issues
@@ -1035,9 +1291,8 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                         </Field>
                       ))}
                     <div className="note">
-                      共 {issues.length} 条，上面是最近 5 条。这些是**过程中报过的**事实，
-                      不会被后来的成功覆盖；重启应用后清空。
-                      {issues.length > 5 ? ' 更早的记录未显示。' : ''}
+                      {t('fp.injection.summary', { n: issues.length })}
+                      {issues.length > 5 ? t('fp.injection.olderHidden') : ''}
                     </div>
                   </>
                 )}
@@ -1045,12 +1300,12 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
 
               <div className="fieldset">
                 <div className="fs-head">
-                  <h4>最近使用</h4>
+                  <h4>{t('fp.section.recent')}</h4>
                 </div>
-                <Field label="最后启动">
+                <Field label={t('fp.field.lastLaunch')}>
                   <div className="val">{formatRelative(draft.lastUsedAt)}</div>
                 </Field>
-                <Field label="更新时间">
+                <Field label={t('fp.field.updated')}>
                   <div className="val">{formatDate(draft.updatedAt)}</div>
                 </Field>
               </div>
@@ -1064,17 +1319,44 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
             disabled={busy}
             onClick={() => void resetToPlatform(draft.platform)}
           >
-            重置为默认
+            {t('fp.footer.reset')}
           </Button>
           <div className="spacer" />
           <Button variant="ghost" disabled={busy} onClick={() => void save(false)}>
-            仅保存
+            {t('fp.footer.saveOnly')}
           </Button>
           <Button variant="primary" disabled={busy} onClick={() => void save(true)}>
-            保存并启动
+            {t('fp.footer.saveAndLaunch')}
           </Button>
         </div>
       </aside>
+
+      {/* 草稿确认。放在 aside 外面（同为 fragment 的子节点），
+          这样它的 keydown 不会冒泡进抽屉的 Esc 处理，两套关闭逻辑不会互相触发。 */}
+      <Modal
+        open={discardOpen}
+        title={t('fp.discard.title')}
+        icon="alert"
+        onClose={() => setDiscardOpen(false)}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setDiscardOpen(false)}>
+              {t('fp.discard.keep')}
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                setDiscardOpen(false)
+                onClose()
+              }}
+            >
+              {t('fp.discard.discard')}
+            </Button>
+          </>
+        }
+      >
+        {t('fp.discard.body')}
+      </Modal>
     </>
   )
 }

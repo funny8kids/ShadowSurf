@@ -10,10 +10,16 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
 import type { Profile, Settings, TaskRecord, WindowState, BrowserTab } from '@shared/types'
 import { AgentPanel } from './AgentPanel'
-import { Button, Icon, useToast } from './ui'
+import { Button, Icon, cssVars, useToast } from './ui'
 import { bridge, errorMessage, reportContentInsets } from '@renderer/lib/api'
+import { useI18n } from '@renderer/lib/i18n'
+import { filterTabs, groupColor, groupTabs } from '@renderer/lib/tab-groups'
+import type { TabGroupMap } from '@renderer/lib/tab-groups'
+import '../styles/browser-tabs.css'
+import '../styles/browser-shell-polish.css'
 import {
   chromeMajor,
   formatDuration,
@@ -25,6 +31,60 @@ import {
 /** 人轨占内容区宽度的比例，影子轨拿剩下的 43% */
 const HUMAN_SPLIT = 0.57
 const PROGRESS_CELLS = 20
+const GROUP_STORAGE_PREFIX = 'ss:tab-groups:'
+const LAYOUT_STORAGE_KEY = 'ss:tab-layout'
+
+/**
+ * 从 URL 拆出 origin（scheme://host）与 path（其余）。
+ * 为什么强调 origin：Chrome/Edge 都把 origin 加粗、路径弱化，让用户一眼
+ * 判断「在哪个站」——钓鱼域名与正确域名只差一两个字符，origin 强调能救命。
+ * 解析失败（about:/file:/data: 等）时整串当 path、origin 为空，原样显示。
+ */
+function originOf(url: string): string {
+  try {
+    const u = new URL(url)
+    if (u.protocol === 'http:' || u.protocol === 'https:') return `${u.protocol}//${u.host}`
+  } catch { /* 非 URL 原样 */ }
+  return ''
+}
+
+function pathOf(url: string): string {
+  const origin = originOf(url)
+  if (origin && url.startsWith(origin)) return url.slice(origin.length) || '/'
+  return url
+}
+
+/**
+ * 分组与布局偏好存在 localStorage 而不是走 IPC：
+ * 这一期分组只是渲染层的视觉组织，不是浏览器身份，主进程不拥有它的语义。
+ * 按 profileId 加前缀，避免 A 环境的分组串到 B 环境；读失败一律当空，
+ * 丢分组只是少一层整理，不该影响正常浏览。
+ */
+function readGroups(key: string): TabGroupMap {
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return {}
+    const parsed: unknown = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const out: TabGroupMap = {}
+      for (const [id, label] of Object.entries(parsed)) {
+        if (typeof label === 'string' && label.trim()) out[id] = label
+      }
+      return out
+    }
+  } catch {
+    // 读不到就当没有分组
+  }
+  return {}
+}
+
+function readLayout(): 'horizontal' | 'vertical' {
+  try {
+    return localStorage.getItem(LAYOUT_STORAGE_KEY) === 'vertical' ? 'vertical' : 'horizontal'
+  } catch {
+    return 'horizontal'
+  }
+}
 
 interface BrowserShellProps {
   state: WindowState | null
@@ -44,14 +104,56 @@ export function BrowserShell({
   onSettingsSaved
 }: BrowserShellProps) {
   const toast = useToast()
+  const { t } = useI18n()
   const [panelOpen, setPanelOpen] = useState(true)
   const [urlDraft, setUrlDraft] = useState('')
+  const [addrFocused, setAddrFocused] = useState(false)
+  const [tabLayout, setTabLayout] = useState<'horizontal' | 'vertical'>(readLayout)
+  // 影子轨宽度百分比（100 - 人轨）。可拖拽调整，clamp 到 [30, 70]，
+  // 避免拖到任一侧完全消失。默认 43（与 CSS 原值一致）。
+  const [shadowWidth, setShadowWidth] = useState(43)
+  const [search, setSearch] = useState('')
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const stageRef = useRef<HTMLDivElement | null>(null)
   const panelRef = useRef<HTMLDivElement | null>(null)
+  const bwBodyRef = useRef<HTMLDivElement | null>(null)
+
+  const groupsKey = `${GROUP_STORAGE_PREFIX}${state?.profileId ?? profile?.id ?? 'none'}`
+
+  /* 分组是 UI 偏好，存 localStorage 不进 IPC（主进程不拥有它的语义）。
+     state 里带着读取时的 key：切换环境时 key 变了，渲染期直接换成新环境的存档，
+     不用等 effect —— 这样旧环境的分组绝不会借着 setState 的空档写进新 key。 */
+  const [groupState, setGroupState] = useState(() => ({
+    key: groupsKey,
+    map: readGroups(groupsKey)
+  }))
+  const groups = groupState.key === groupsKey ? groupState.map : readGroups(groupsKey)
+
+  function setGroups(next: TabGroupMap | ((prev: TabGroupMap) => TabGroupMap)): void {
+    setGroupState((prev) => ({
+      key: groupsKey,
+      map: typeof next === 'function' ? next(prev.map) : next
+    }))
+  }
+
+  useEffect(() => {
+    setCollapsed({})
+    setSearch('')
+  }, [groupsKey])
+
+  /* 只在「当前内存分组确实属于这个 key」时落盘；写失败不影响使用 */
+  useEffect(() => {
+    if (groupState.key !== groupsKey) return
+    try {
+      localStorage.setItem(groupsKey, JSON.stringify(groupState.map))
+    } catch {
+      // 隐私模式 / 配额满：分组这次会话内仍在内存里，只是不落盘
+    }
+  }, [groupState, groupsKey])
 
   const tabs = state?.tabs ?? []
-  const humanTabs = tabs.filter((t) => t.track === 'human')
-  const shadowTabs = tabs.filter((t) => t.track === 'shadow')
+  const humanTabs = tabs.filter((tab) => tab.track === 'human')
+  const shadowTabs = tabs.filter((tab) => tab.track === 'shadow')
   const active = tabs.find((t) => t.id === state?.activeTabId) ?? null
   const shadowTab = shadowTabs[0] ?? null
   const shadowPending = !shadowTab || shadowTab.loading
@@ -59,6 +161,14 @@ export function BrowserShell({
   useEffect(() => {
     setUrlDraft(active?.url ?? '')
   }, [active?.id, active?.url])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LAYOUT_STORAGE_KEY, tabLayout)
+    } catch {
+      // 同上，布局偏好丢盘无伤大雅
+    }
+  }, [tabLayout])
 
   /* ── 把内容区矩形上报给主进程 ── */
   const report = useCallback(() => {
@@ -106,7 +216,7 @@ export function BrowserShell({
         split: HUMAN_SPLIT
       })
     }
-  }, [report, panelOpen])
+  }, [report, panelOpen, tabLayout])
 
   const fp = profile?.fingerprint
   const progress = useMemo(() => {
@@ -116,11 +226,12 @@ export function BrowserShell({
   }, [task])
 
   const lastStep = task?.steps[task.steps.length - 1]
-  const agentTitle = lastStep?.label ?? (task ? '影子正在执行' : '影子待命')
+  const agentTitle =
+    lastStep?.label ?? (task ? t('browser.agentBar.running') : t('browser.agentBar.idle'))
   const agentDesc = task
     ? task.summary ||
-      (lastStep?.result ? stepResultText(lastStep) : '影子在后台继续，左侧浏览不受影响')
-    : '打开一个任务后，影子会在这个独立空间里执行，不影响你当前浏览。'
+      (lastStep?.result ? stepResultText(lastStep) : t('browser.agentBar.descRunning'))
+    : t('browser.agentBar.descIdle')
 
   async function guard(fn: () => Promise<void>, fallback: string): Promise<void> {
     try {
@@ -132,12 +243,12 @@ export function BrowserShell({
 
   function selectTab(tab: BrowserTab): void {
     if (!state) return
-    void guard(() => bridge().window.activateTab(state.id, tab.id), '切换标签失败')
+    void guard(() => bridge().window.activateTab(state.id, tab.id), t('browser.err.switchTab'))
   }
 
   function closeTab(tab: BrowserTab): void {
     if (!state) return
-    void guard(() => bridge().window.closeTab(state.id, tab.id), '关闭标签失败')
+    void guard(() => bridge().window.closeTab(state.id, tab.id), t('browser.err.closeTab'))
   }
 
   function navigate(): void {
@@ -145,13 +256,186 @@ export function BrowserShell({
     const raw = urlDraft.trim()
     if (!raw) return
     const url = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`
-    void guard(() => bridge().window.navigate(state.id, active.id, url), '导航失败')
+    void guard(() => bridge().window.navigate(state.id, active.id, url), t('browser.err.navigate'))
+  }
+
+  /* 分屏拖拽：拖动 handle 调整影子轨宽度。
+     为什么用 window 级监听：拖拽期间鼠标可能移出 handle 本身，必须在 window 上
+     跟踪 move/up 才能稳定。拖拽时禁用文本选择，避免选中页面文字。 */
+  function onSplitMouseDown(e: ReactMouseEvent): void {
+    e.preventDefault()
+    const body = bwBodyRef.current
+    if (!body) return
+    const rect = body.getBoundingClientRect()
+    const onMove = (ev: MouseEvent): void => {
+      const pct = ((ev.clientX - rect.left) / rect.width) * 100
+      // 影子轨 = 右侧部分，clamp 到 [30,70] 避免任一侧消失
+      setShadowWidth(Math.min(70, Math.max(30, Math.round((100 - pct) * 10) / 10)))
+    }
+    const onUp = (): void => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      document.body.style.userSelect = ''
+    }
+    document.body.style.userSelect = 'none'
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
   }
 
   const trackIsShadow = active?.track === 'shadow'
 
+  /* ── 分组 / 搜索的派生数据与本地操作 ── */
+  const filteredHuman = filterTabs(humanTabs, search)
+  const filteredShadow = filterTabs(shadowTabs, search)
+  // 先筛再分组：搜索后没有命中的组不会生成 header，天然满足「空组头隐藏」
+  const groupedHuman = groupTabs(filteredHuman, groups)
+  const searchActive = search.trim().length > 0
+  const noMatch = searchActive && filteredHuman.length === 0 && filteredShadow.length === 0
+  const existingGroups = Array.from(
+    new Set(Object.values(groups).map((g) => g.trim()).filter(Boolean))
+  ).sort()
+
+  function changeGroup(tabId: string, value: string): void {
+    if (value === '__new__') {
+      // 新建分组用原生 prompt：这一期分组只是视觉整理，不值得为此引入一套弹窗状态机
+      const name = window.prompt(t('browser.group.prompt'))
+      if (name && name.trim()) setGroups((prev) => ({ ...prev, [tabId]: name.trim() }))
+      return
+    }
+    setGroups((prev) => {
+      const next = { ...prev }
+      if (value) next[tabId] = value
+      else delete next[tabId]
+      return next
+    })
+  }
+
+  function toggleGroup(label: string): void {
+    setCollapsed((prev) => ({ ...prev, [label]: !prev[label] }))
+  }
+
+  function groupControl(tab: BrowserTab) {
+    const label = (groups[tab.id] ?? '').trim()
+    const options = [
+      { value: '', label: t('browser.group.none') },
+      { value: '__new__', label: t('browser.group.new') },
+      ...existingGroups.map((name) => ({ value: name, label: name }))
+    ]
+    return (
+      <span
+        className={`tab-grp${label ? '' : ' ungrouped'}`}
+        style={cssVars({
+          '--grp-color': label ? `var(${groupColor(label)})` : 'var(--ink-5)'
+        })}
+        title={label ? t('browser.group.title', { name: label }) : t('browser.group.set')}
+        // 分组控件在标签内部：阻止冒泡，免得点下拉时误切换标签
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+      >
+        <i className="grp-dot" />
+        {label ? <span className="grp-label">{label}</span> : null}
+        <select
+          value={label}
+          aria-label={label ? t('browser.group.aria', { name: label }) : t('browser.group.setAria')}
+          onChange={(e) => changeGroup(tab.id, e.target.value)}
+        >
+          {options.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+      </span>
+    )
+  }
+
+  function closeControl(tab: BrowserTab) {
+    return (
+      <span
+        className="x"
+        role="button"
+        aria-label={t('browser.tab.close')}
+        tabIndex={0}
+        onClick={(e) => {
+          e.stopPropagation()
+          closeTab(tab)
+        }}
+        onKeyDown={(e) => {
+          // 关闭键自身要能 Enter/Space 触发，否则键盘用户只能靠标签根节点
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            e.stopPropagation()
+            closeTab(tab)
+          }
+        }}
+      >
+        <Icon name="close" size={9} strokeWidth={2.4} />
+      </span>
+    )
+  }
+
+  /* 标签根节点用 div[role=button] 而不是 button：内部要放原生 select，
+     button 里嵌交互元素是无效 DOM；顺带把焦点键盘激活补上，语义不变。
+     Delete / Backspace 也关闭：标签关闭不能只有鼠标这一条路。 */
+  function tabActivate(tab: BrowserTab) {
+    return {
+      role: 'button',
+      tabIndex: 0,
+      onClick: () => selectTab(tab),
+      onKeyDown: (e: ReactKeyboardEvent<HTMLDivElement>) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          selectTab(tab)
+        } else if (e.key === 'Delete' || e.key === 'Backspace') {
+          e.preventDefault()
+          closeTab(tab)
+        }
+      }
+    }
+  }
+
+  function humanTabNode(tab: BrowserTab) {
+    return (
+      <div
+        key={tab.id}
+        {...tabActivate(tab)}
+        className={`btab${tab.id === active?.id ? ' on' : ''}`}
+        title={tab.url}
+      >
+        <span className="fav">
+          {tab.favicon ? (
+            <img src={tab.favicon} alt="" width={12} height={12} referrerPolicy="no-referrer" />
+          ) : null}
+        </span>
+        <span className="txt">{tab.title || t('browser.tab.defaultHumanTitle')}</span>
+        {tab.loading ? <span className="spin" /> : null}
+        {groupControl(tab)}
+        {closeControl(tab)}
+      </div>
+    )
+  }
+
+  function shadowTabNode(tab: BrowserTab) {
+    return (
+      <div
+        key={tab.id}
+        {...tabActivate(tab)}
+        className={`btab shadow-tab${tab.id === active?.id ? ' on' : ''}`}
+        title={tab.url}
+      >
+        <span className="ic">
+          <Icon name="wave" size={9} strokeWidth={2.5} />
+        </span>
+        <span className="txt">{tab.title || t('browser.tab.defaultShadowTitle')}</span>
+        <span className="shadow-badge">{t('browser.tab.badge')}</span>
+        {tab.loading ? <span className="spin" /> : null}
+        {groupControl(tab)}
+      </div>
+    )
+  }
+
   return (
-    <div className="browser">
+    <div className={`browser${tabLayout === 'vertical' ? ' tab-vertical' : ''}`}>
       <div className="bw-title">
         <div className="lights">
           <i />
@@ -159,88 +443,133 @@ export function BrowserShell({
           <i />
         </div>
         <div className="t">
-          ShadowSurf · <b>{profile?.name ?? state?.profileName ?? '未命名环境'}</b>
+          ShadowSurf · <b>{profile?.name ?? state?.profileName ?? t('browser.window.untitled')}</b>
         </div>
         <div className="right">
           <span className="bw-chip">
             <i />
             {profile ? `Chrome ${chromeMajor(profile.browserVersion)}` : '—'}
           </span>
-          <button type="button" className="bw-x" onClick={onClose} aria-label="关闭双轨窗口">
+          <button type="button" className="bw-x" onClick={onClose} aria-label={t('browser.window.close')}>
             <Icon name="close" size={13} strokeWidth={2} />
           </button>
         </div>
       </div>
 
       <div className={`tabsbar${trackIsShadow ? ' is-shadow' : ''}`}>
-        <div className="tgroup human">
-          {humanTabs.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              className={`btab${tab.id === active?.id ? ' on' : ''}`}
-              onClick={() => selectTab(tab)}
-              title={tab.url}
-            >
-              <span className="fav" />
-              <span className="txt">{tab.title || '新标签页'}</span>
-              {tab.loading ? <span className="spin" /> : null}
-              <span
-                className="x"
-                role="button"
-                aria-label="关闭标签"
-                tabIndex={-1}
-                onClick={(e) => {
+        <div className="tabs-tools">
+          <div className="tab-search">
+            <Icon name="search" size={12} strokeWidth={2} />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => {
+                // Escape 只清搜索、不装全局 Ctrl+F：页面自己的查找不能被抢
+                if (e.key === 'Escape') {
                   e.stopPropagation()
-                  closeTab(tab)
+                  setSearch('')
+                }
+              }}
+              placeholder={t('browser.search.placeholder')}
+              aria-label={t('browser.search.placeholder')}
+              spellCheck={false}
+            />
+            {searchActive ? (
+              <span
+                className="search-clear"
+                role="button"
+                aria-label={t('browser.search.clear')}
+                tabIndex={0}
+                onClick={() => setSearch('')}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') setSearch('')
                 }}
               >
-                <Icon name="close" size={9} strokeWidth={2.4} />
+                <Icon name="close" size={10} strokeWidth={2.2} />
               </span>
-            </button>
-          ))}
+            ) : null}
+          </div>
+          <button
+            type="button"
+            className="tab-layout-toggle"
+            aria-label={t('browser.tabs.vertical')}
+            aria-pressed={tabLayout === 'vertical'}
+            title={tabLayout === 'vertical' ? t('browser.tabs.horizontal') : t('browser.tabs.vertical')}
+            onClick={() => setTabLayout((v) => (v === 'vertical' ? 'horizontal' : 'vertical'))}
+          >
+            <Icon name="list" size={14} strokeWidth={2} />
+          </button>
+        </div>
+
+        <div className="tgroup human">
+          {groupedHuman.map((item) => {
+            if (item.kind === 'header') {
+              const isCollapsed = Boolean(collapsed[item.label])
+              return (
+                <div
+                  key={item.key}
+                  role="button"
+                  tabIndex={0}
+                  className={`grp-head${isCollapsed ? ' collapsed' : ''}`}
+                  style={cssVars({ '--grp-color': `var(${item.color})` })}
+                  title={
+                    isCollapsed
+                      ? t('browser.group.expand', { name: item.label })
+                      : t('browser.group.collapse', { name: item.label })
+                  }
+                  onClick={() => toggleGroup(item.label)}
+                  onKeyDown={(e: ReactKeyboardEvent<HTMLDivElement>) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      toggleGroup(item.label)
+                    }
+                  }}
+                >
+                  <span className="grp-caret">
+                    <Icon name="chevronLeft" size={10} strokeWidth={2.4} />
+                  </span>
+                  <i className="grp-dot" />
+                  <span className="grp-name">{item.label}</span>
+                  <span className="grp-count">{item.count}</span>
+                </div>
+              )
+            }
+            if (collapsed[item.group ?? '']) return null
+            return humanTabNode(item.tab)
+          })}
           <button
             type="button"
             className="tab-new"
-            aria-label="新建标签页"
+            aria-label={t('browser.tabs.new')}
             onClick={() => {
               if (!state) return
               void guard(async () => {
                 await bridge().window.newTab(state.id)
-              }, '新建标签失败')
+              }, t('browser.err.newTab'))
             }}
           >
             <Icon name="plus" size={12} strokeWidth={2.2} />
           </button>
         </div>
 
-        <div className="tgroup shadow">
-          {shadowTabs.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              className={`btab shadow-tab${tab.id === active?.id ? ' on' : ''}`}
-              onClick={() => selectTab(tab)}
-              title={tab.url}
-            >
-              <span className="ic">
-                <Icon name="wave" size={9} strokeWidth={2.5} />
-              </span>
-              <span className="txt">{tab.title || '影子 · 新任务'}</span>
-              <span className="shadow-badge">影子</span>
-              {tab.loading ? <span className="spin" /> : null}
-            </button>
-          ))}
-          {shadowTabs.length === 0 ? (
-            <button type="button" className="btab shadow-tab" disabled title="尚未创建影子标签">
-              <span className="ic">
-                <Icon name="wave" size={9} strokeWidth={2.5} />
-              </span>
-              <span className="txt">影子 · 待命</span>
-              <span className="shadow-badge">影子</span>
-            </button>
-          ) : null}
-        </div>
+        {searchActive && filteredShadow.length > 0 ? (
+          <div className="tgroup shadow">{filteredShadow.map(shadowTabNode)}</div>
+        ) : !searchActive ? (
+          <div className="tgroup shadow">
+            {shadowTabs.map(shadowTabNode)}
+            {shadowTabs.length === 0 ? (
+              <div className="btab shadow-tab" title={t('browser.tab.standbyTitle')}>
+                <span className="ic">
+                  <Icon name="wave" size={9} strokeWidth={2.5} />
+                </span>
+                <span className="txt">{t('browser.tab.standby')}</span>
+                <span className="shadow-badge">{t('browser.tab.badge')}</span>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {noMatch ? <div className="tab-no-match">{t('browser.tab.noMatch')}</div> : null}
       </div>
 
       <div className={`bw-addr${trackIsShadow ? ' is-shadow' : ''}`}>
@@ -248,10 +577,10 @@ export function BrowserShell({
           type="button"
           className="nav-btn"
           disabled={!active?.canGoBack}
-          aria-label="后退"
+          aria-label={t('browser.nav.back')}
           onClick={() => {
             if (!state || !active) return
-            void guard(() => bridge().window.back(state.id, active.id), '后退失败')
+            void guard(() => bridge().window.back(state.id, active.id), t('browser.err.back'))
           }}
         >
           <Icon name="chevronLeft" size={13} strokeWidth={2} />
@@ -260,10 +589,10 @@ export function BrowserShell({
           type="button"
           className="nav-btn"
           disabled={!active?.canGoForward}
-          aria-label="前进"
+          aria-label={t('browser.nav.forward')}
           onClick={() => {
             if (!state || !active) return
-            void guard(() => bridge().window.forward(state.id, active.id), '前进失败')
+            void guard(() => bridge().window.forward(state.id, active.id), t('browser.err.forward'))
           }}
         >
           <Icon name="chevronRight" size={13} strokeWidth={2} />
@@ -271,36 +600,60 @@ export function BrowserShell({
         <button
           type="button"
           className="nav-btn"
-          aria-label="刷新"
+          aria-label={t('browser.nav.reload')}
           onClick={() => {
             if (!state || !active) return
-            void guard(() => bridge().window.reload(state.id, active.id), '刷新失败')
+            void guard(() => bridge().window.reload(state.id, active.id), t('browser.err.reload'))
           }}
         >
           <Icon name="reload" size={13} strokeWidth={2} />
         </button>
 
-        <div className="addr">
+        <div className="addr" data-focused={addrFocused}>
           <Icon name="lock" size={10} strokeWidth={2} />
+          {/* 地址栏未聚焦时，展示 origin 强调 + path 弱化的静态回显；
+              聚焦时隐藏回显、显示可编辑 input。这样既能一眼看出「在哪个站」，
+              又不影响输入。回显是纯展示，用户点击即聚焦 input。 */}
+          {!addrFocused && active?.url ? (
+            <span className="addr-display" aria-hidden="true">
+              <b className="addr-origin">{originOf(active.url)}</b>
+              <span className="addr-path">{pathOf(active.url)}</span>
+            </span>
+          ) : null}
           <input
+            className="addr-input"
             value={urlDraft}
             onChange={(e) => setUrlDraft(e.target.value)}
+            onFocus={() => setAddrFocused(true)}
+            onBlur={() => setAddrFocused(false)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') navigate()
               if (e.key === 'Escape') setUrlDraft(active?.url ?? '')
+              // Ctrl/Cmd+L 聚焦并全选地址栏；F5 / Ctrl/Cmd+R 刷新。
+              // 这两个是浏览器用户最肌肉记忆的键，缺失会让外壳「不像浏览器」。
+              if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'l') {
+                e.preventDefault()
+                e.currentTarget.select()
+              }
+              if (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'r')) {
+                e.preventDefault()
+                if (state && active) {
+                  void guard(() => bridge().window.reload(state.id, active.id), t('browser.err.reload'))
+                }
+              }
             }}
-            placeholder="输入地址或搜索"
-            aria-label="地址栏"
+            placeholder={t('browser.addr.placeholder')}
+            aria-label={t('browser.addr.aria')}
             spellCheck={false}
           />
         </div>
 
         <div className="addr-meta">
-          <span title={profile?.proxy ? '代理出口' : '直连'}>
-            {profile?.proxy ? `${profile.proxy.host}` : '直连'}
+          <span title={profile?.proxy ? t('browser.addr.proxyExit') : t('browser.addr.direct')}>
+            {profile?.proxy ? `${profile.proxy.host}` : t('browser.addr.direct')}
           </span>
           <span className="vline" />
-          <span title="指纹平台与时区">
+          <span title={t('browser.addr.fingerprint')}>
             {fp ? `${osShortLabel(fp)} · ${tzOffsetLabel(fp.timezone)}` : '—'}
           </span>
           <span className="vline" />
@@ -309,7 +662,7 @@ export function BrowserShell({
             className={`ai-toggle${panelOpen ? ' on' : ''}`}
             onClick={() => setPanelOpen((v) => !v)}
             aria-pressed={panelOpen}
-            title={panelOpen ? '收起 AI 侧栏' : '展开 AI 侧栏'}
+            title={panelOpen ? t('browser.ai.collapse') : t('browser.ai.expand')}
           >
             <Icon name="wave" size={11} strokeWidth={2.2} />
             AI
@@ -317,24 +670,35 @@ export function BrowserShell({
         </div>
       </div>
 
-      <div className="bw-body">
+      <div className="bw-body" ref={bwBodyRef}>
         <div className="stage" ref={stageRef}>
           <div className="stage-placeholder">
             <Icon name="globe" size={22} strokeWidth={1.5} />
             <div className="ph-title">
-              {state ? '网页视图由主进程渲染' : '等待主进程创建窗口'}
+              {state ? t('browser.stage.readyTitle') : t('browser.stage.waitTitle')}
             </div>
             <div className="ph-sub">
-              {state
-                ? '这块矩形已上报给主进程，WebContentsView 会精确覆盖在这里。'
-                : 'window.ss.window.open(profileId) 之后，标签与网页会出现在这里。'}
+              {state ? t('browser.stage.readyDesc') : t('browser.stage.waitDesc')}
             </div>
           </div>
 
-          <div className={`shadow-pane${shadowPending ? ' stripe' : ''}`}>
+          {/* 可拖拽分屏 handle：拖动调整人轨/影子轨比例。
+              为什么可拖：固定 57/43 在双轨浏览时很别扭，用户需要按内容调。
+              拖动只改比例，不改窗口结构；inset 上报在 report() 里跟着 ResizeObserver 走。 */}
+          <div
+            className="split-handle"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label={t('browser.stage.splitAria')}
+            onMouseDown={onSplitMouseDown}
+          >
+            <span className="split-handle-grip" />
+          </div>
+
+          <div className={`shadow-pane${shadowPending ? ' stripe' : ''}`} style={{ width: `${shadowWidth}%` }}>
             <div className="sp-badge">
               <Icon name="wave" size={10} strokeWidth={2.4} />
-              影子 Space · 独立会话
+              {t('browser.stage.shadowSpace')}
             </div>
             {shadowPending ? (
               <div className="sp-page" aria-hidden="true">
@@ -358,7 +722,7 @@ export function BrowserShell({
             <AgentPanel
               profileId={state?.profileId ?? profile?.id ?? null}
               tabId={active?.id ?? null}
-              pageTitle={active?.title || urlDraft || '未打开页面'}
+              pageTitle={active?.title || urlDraft || t('browser.page.none')}
               settings={settings}
               onSettingsSaved={onSettingsSaved}
               onClose={() => setPanelOpen(false)}
@@ -392,12 +756,12 @@ export function BrowserShell({
             variant="ghost"
             icon="pause"
             disabled={!task}
-            title="当前协议只提供取消，点击后影子会停止执行"
+            title={t('browser.agentBar.pauseTitle')}
             onClick={() => {
-              void guard(() => bridge().agent.cancel(), '停止失败')
+              void guard(() => bridge().agent.cancel(), t('browser.err.stop'))
             }}
           >
-            暂停
+            {t('browser.agentBar.pause')}
           </Button>
           <Button
             variant="take"
@@ -405,21 +769,24 @@ export function BrowserShell({
             onClick={() => {
               const human = humanTabs[0]
               if (human && state) {
-                void guard(() => bridge().window.activateTab(state.id, human.id), '切换失败')
-                toast.push('已切回人轨，影子继续在后台执行', 'ok')
+                void guard(() => bridge().window.activateTab(state.id, human.id), t('browser.err.switchTrack'))
+                toast.push(t('browser.agentBar.tookOver'), 'ok')
               } else {
-                toast.push('当前没有可切换的人轨标签', 'err')
+                toast.push(t('browser.agentBar.noHumanTab'), 'err')
               }
             }}
           >
-            接管
+            {t('browser.agentBar.takeOver')}
           </Button>
         </div>
       </div>
 
       {task ? (
         <span className="sr-only">
-          影子任务 {task.intent} · 已用 {formatDuration(Date.now() - task.startedAt)}
+          {t('browser.agentBar.sr', {
+            intent: task.intent,
+            time: formatDuration(Date.now() - task.startedAt)
+          })}
         </span>
       ) : null}
     </div>

@@ -1,0 +1,183 @@
+/* 命令面板样式。
+   颜色、间距、时长、层级、字号一律走 tokens.css 的新刻度。
+   进场走 --ease-enter（减速）/ --dur-2（100ms），
+   退场走 --ease-exit（加速）/ --dur-3（150ms）。 */
+
+.cp-mask {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-command);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  background: var(--scrim-ghost);
+  animation: cp-mask-in var(--dur-2) var(--ease-enter);
+}
+
+@keyframes cp-mask-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.cp-dialog {
+  width: calc(100% - var(--sp-32));
+  max-width: 560px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--sh-3);
+  animation: cp-dialog-in var(--dur-2) var(--ease-enter);
+}
+
+/* 关闭时由调用方在翻转 open 前给根节点加 .cp-closing，播放 150ms 加速退场。
+   组件本身保持受控、不自行延迟 onClose；这两个类把退场曲线固化下来，
+   需要动画的消费方可以直接用，不需要动画的可以瞬间卸载。 */
+@keyframes cp-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(calc(var(--sp-8) * -1)) scale(0.98);
+  }
+}
+
+@keyframes cp-dialog-out {
+  to {
+    opacity: 0;
+    transform: translateY(var(--sp-4)) scale(0.98);
+  }
+}
+
+@keyframes cp-mask-out {
+  to {
+    opacity: 0;
+  }
+}
+
+.cp-mask.cp-closing {
+  animation: cp-mask-out var(--dur-3) var(--ease-exit) forwards;
+}
+
+.cp-mask.cp-closing .cp-dialog {
+  animation: cp-dialog-out var(--dur-3) var(--ease-exit) forwards;
+}
+
+.cp-search {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-10);
+  height: 52px;
+  padding: 0 var(--sp-16);
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-4);
+}
+
+.cp-input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  font-size: var(--fs-15);
+  color: var(--ink);
+  background: none;
+}
+
+.cp-input::placeholder {
+  color: var(--ink-4);
+}
+
+.cp-esc,
+.cp-row-key {
+  font-family: var(--mono);
+  font-size: var(--fs-11);
+  color: var(--ink-3);
+  background: var(--surface-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-xs);
+  padding: var(--sp-2) var(--sp-6);
+}
+
+.cp-results {
+  overflow-y: auto;
+  padding: var(--sp-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+.cp-group {
+  padding: var(--sp-4) var(--sp-8) 0;
+  font-size: var(--fs-11);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+  color: var(--ink-4);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cp-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-10);
+  height: 40px;
+  padding: 0 var(--sp-10);
+  border-radius: var(--r-sm);
+  color: var(--ink-2);
+  cursor: pointer;
+  /* 4px 强调色洗色：默认透明，高亮时亮起，不用边框免得行高跳动 */
+  box-shadow: inset 3px 0 0 transparent;
+  transition: background var(--dur-2) var(--ease-easy),
+    color var(--dur-2) var(--ease-easy);
+}
+
+.cp-row:hover {
+  background: var(--wash-lift);
+}
+
+.cp-row.active {
+  background: var(--accent-wash);
+  color: var(--ink);
+  /* 4px 的强调色竖条作为「当前高亮」标记 */
+  box-shadow: inset 4px 0 0 var(--accent);
+}
+
+.cp-row-icon {
+  flex: none;
+  width: 18px;
+  display: grid;
+  place-items: center;
+  color: var(--ink-3);
+}
+
+.cp-row.active .cp-row-icon {
+  color: var(--accent);
+}
+
+.cp-row-label {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-13);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cp-row-hint {
+  font-size: var(--fs-11);
+  color: var(--ink-4);
+  white-space: nowrap;
+}
+
+.cp-row-key {
+  flex: none;
+}
+
+.cp-empty {
+  padding: var(--sp-32) var(--sp-16);
+  text-align: center;
+  font-size: var(--fs-13);
+  color: var(--ink-4);
+}

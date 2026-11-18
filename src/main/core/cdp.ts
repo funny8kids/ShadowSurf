@@ -65,9 +65,26 @@ export class CdpBridge {
   private autoAttachParams: CdpParams | null = null
   /** 防止 attach → 重发 autoAttach → send → attach 的递归 */
   private arming = false
+  /**
+   * 已销毁标记。
+   *
+   * 为什么必须显式记：`disposeBridge` 只 `detach()`，它解开 debugger 但
+   * `listeners` 与 `message`/`detach` 监听都还在（`listening` 被置 false）。
+   * 若同一 webContents 之后又 `bridgeFor()` 拿到一份新 bridge，新 bridge
+   * 的 `listen()` 会**再注册一份** `message`/`detach` 监听 ⇒ 同一个 CDP 事件
+   * 被处理两次（注入台账重复、mask 状态重复上报）。销毁的 bridge 必须不能被复活。
+   */
+  private disposed = false
 
   constructor(wc: WebContents) {
     this.wc = wc
+  }
+
+  /** 销毁：不可复活。detach 后 listeners 与监听器都清掉，避免复活后双份处理。 */
+  dispose(): void {
+    this.disposed = true
+    this.detach()
+    this.listeners.clear()
   }
 
   get attached(): boolean {
@@ -81,6 +98,7 @@ export class CdpBridge {
   }
 
   async attach(): Promise<void> {
+    if (this.disposed) throw new Error('[cdp] bridge 已销毁，不能复活')
     this.assertAlive('attach')
     if (this.attached) {
       // 别人（比如 DevTools）先 attach 了，复用而不是报错
@@ -262,6 +280,7 @@ export class CdpBridge {
 
   private listen(): void {
     if (this.listening) return
+    if (this.disposed) return
     this.listening = true
 
     this.wc.debugger.on('message', (_event, method, params, rawSessionId) => {
@@ -339,7 +358,7 @@ export function bridgeFor(wc: WebContents): CdpBridge {
 export function disposeBridge(wcId: number): void {
   const bridge = cache.get(wcId)
   if (!bridge) return
-  bridge.detach()
+  bridge.dispose()
   cache.delete(wcId)
 }
 

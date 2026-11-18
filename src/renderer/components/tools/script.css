@@ -7,7 +7,7 @@
  */
 
 .tool-panel {
-  padding: 22px 26px 32px;
+  padding: 22px 0 32px;
   display: flex;
   flex-direction: column;
   gap: 18px;
@@ -16,8 +16,9 @@
 
 .tool-head h2 {
   margin: 0 0 4px;
-  font-size: 17px;
-  font-weight: 600;
+  font-size: var(--fs-21);
+  font-weight: 650;
+  letter-spacing: -0.02em;
   color: var(--ink);
 }
 
@@ -120,7 +121,9 @@
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
-  transition: border-color 0.14s, box-shadow 0.14s, background 0.14s;
+  transition: border-color var(--dur-3) var(--ease-easy),
+    box-shadow var(--dur-3) var(--ease-easy),
+    background var(--dur-3) var(--ease-easy);
 }
 
 .scr-item:hover {
@@ -216,7 +219,8 @@
   font-weight: 650;
   letter-spacing: -0.01em;
   color: var(--ink);
-  transition: background 0.14s, border-color 0.14s;
+  transition: background var(--dur-3) var(--ease-easy),
+    border-color var(--dur-3) var(--ease-easy);
 }
 
 .scr-title:hover {
@@ -239,7 +243,8 @@
   margin-left: -6px;
   font-size: 11.5px;
   color: var(--ink-2);
-  transition: background 0.14s, border-color 0.14s;
+  transition: background var(--dur-3) var(--ease-easy),
+    border-color var(--dur-3) var(--ease-easy);
 }
 
 .scr-desc:hover {
@@ -312,7 +317,9 @@
   background: var(--surface-2);
   color: var(--ink);
   font-size: 11.5px;
-  transition: border-color 0.14s, background 0.14s, box-shadow 0.14s;
+  transition: border-color var(--dur-3) var(--ease-easy),
+    background var(--dur-3) var(--ease-easy),
+    box-shadow var(--dur-3) var(--ease-easy);
 }
 
 .scr-input:hover {
@@ -369,7 +376,8 @@ select.scr-input {
   background: var(--surface);
   border: 1px solid var(--line-2);
   border-radius: var(--r-sm);
-  transition: border-color 0.14s, background 0.14s;
+  transition: border-color var(--dur-3) var(--ease-easy),
+    background var(--dur-3) var(--ease-easy);
 }
 
 .scr-step:hover {
@@ -434,7 +442,8 @@ select.scr-input {
   color: var(--ink-4);
   font-size: 11px;
   line-height: 1;
-  transition: background 0.14s, color 0.14s;
+  transition: background var(--dur-3) var(--ease-easy),
+    color var(--dur-3) var(--ease-easy);
 }
 
 .scr-icon:hover:not(:disabled) {
@@ -497,7 +506,9 @@ select.scr-input {
   border-radius: var(--r-sm);
   color: var(--ink-2);
   font-size: 11.5px;
-  transition: border-color 0.14s, color 0.14s, background 0.14s;
+  transition: border-color var(--dur-3) var(--ease-easy),
+    color var(--dur-3) var(--ease-easy),
+    background var(--dur-3) var(--ease-easy);
 }
 
 .scr-add:hover {
@@ -546,6 +557,55 @@ select.scr-input {
   background: var(--red-2);
   border-color: var(--red-line);
   color: var(--red);
+}
+
+/* ────────────────────────────── 读失败态 ────────────────────────────── */
+
+/* 读不到 ≠ 没有。DESIGN.md #1 要求「遮住文字也能区分」：
+   空态是灰底 + 细虚线框、居中、没有可点按钮；
+   这里改成琥珀躯干 + 琥珀实线左边框 + 左对齐 + 带「重试」按钮，
+   一眼就能和「还没有脚本」的灰色虚线卡片分开。
+   用琥珀而不是红色：读不到是「不知道」的状态，不是「坏了」的结论。 */
+.scr-err {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 12px 13px;
+  border: 1px solid var(--amber-line);
+  border-left: 3px solid var(--amber);
+  border-radius: var(--r-sm);
+  background: var(--amber-2);
+  font-size: 11.5px;
+  line-height: 1.65;
+  text-align: left;
+}
+
+.scr-err b {
+  color: var(--amber);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+/* 错误原因原文单独一行、等宽字体：这是用户拿去排查的第一手信息，
+   不能和下面那句解释混成同一种颜色。 */
+.scr-err-reason {
+  margin: 0;
+  color: var(--amber-ink);
+  font-family: var(--mono);
+  font-size: 11px;
+  word-break: break-all;
+}
+
+/* 「这不等于没有」是这条状态下最重要的一句，用中性墨色突出，
+   让用户在技术问题之外读到「先别动」的提醒。 */
+.scr-err-hint {
+  margin: 0;
+  color: var(--ink-2);
+}
+
+.scr-err button {
+  margin-top: 4px;
 }
 
 /* ────────────────────────────── 空状态 ────────────────────────────── */

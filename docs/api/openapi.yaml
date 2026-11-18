@@ -33,6 +33,10 @@ tags:
     description: 模型与路由
   - name: audit
     description: 审计日志
+  - name: templates
+    description: 指纹模板库
+  - name: scripts
+    description: 自动化脚本库
 
 paths:
   /v1/profiles:
@@ -683,6 +687,10 @@ paths:
     get:
       tags: [proxies]
       summary: 代理列表
+      description: |
+        列出代理池中的全部条目。响应经字段白名单构造：`username` / `password`
+        **有意省略**，不随列表下发，因为这两个字段构成代理凭据，而本地 API 是
+        「拿到令牌即可驱动浏览器」的控制面，没有理由把代理账号往外发。
       operationId: listProxies
       responses:
         '200':
@@ -695,6 +703,13 @@ paths:
                   data:
                     type: array
                     items: { $ref: '#/components/schemas/Proxy' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503':
+          description: |
+            `E_STORE_UNAVAILABLE` — 代理池文件读不到或已损坏，无法列出。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
     post:
       tags: [proxies]
       summary: 添加代理
@@ -752,6 +767,71 @@ paths:
                       timezone: { type: string }
                       dns_leak: { type: boolean }
                       checked_at: { type: integer, format: int64 }
+
+  /v1/templates:
+    get:
+      tags: [templates]
+      summary: 指纹模板列表
+      description: |
+        列出本地模板库中的指纹模板，含内置模板与用户自建模板。
+
+        模板里的 `fingerprint` 是一套**已解析好的具体值**，不是随机范围；同一模板
+        在任何机器上导入都得到同样的指纹。`builtin: true` 的是随应用分发的模板。
+      operationId: listTemplates
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/FingerprintTemplate' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503':
+          description: |
+            `E_STORE_UNAVAILABLE` — 模板库文件读不到或已损坏，无法列出。
+            调用方补什么请求字段都没用，这是存储层问题。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /v1/scripts:
+    get:
+      tags: [scripts]
+      summary: 自动化脚本列表
+      description: |
+        列出本地脚本库中的自动化脚本。脚本可由录制或手工编排生成，`steps` 中
+        的 `action` 与 `ActionType` 同源；回放时 `selector` 会重新解析成当次快照
+        的元素编号，所以录制时记下的编号在别的页面状态下不保证可用。
+      operationId: listScripts
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AutomationScript' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503':
+          description: |
+            `E_STORE_UNAVAILABLE` — 脚本库文件读不到或已损坏，无法列出。
+            调用方补什么请求字段都没用，这是存储层问题。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
   /v1/models:
     get:
@@ -829,6 +909,41 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/AuditLog' }
                   meta: { $ref: '#/components/schemas/PageMeta' }
+
+  /v1/audit/verify:
+    get:
+      tags: [audit]
+      summary: 审计链校验
+      description: |
+        校验审计哈希链是否完整，返回一份结论 verdict。
+
+        调用方必须读 `consistent` 字段，**不要期待 `ok`** —— 这个结果对象刻意不叫
+        `ok`，因为它会被传输层再包一层 `{ok:true, data:...}`，`ok` 那一层只表示
+        「请求成功送达」，和「链是否自洽」是两件事；断链时两者刚好相反。
+
+        `kind` 区分「链断了」和「无法判断」：`unreadable` / `unanchored` 属于
+        **不知道**，不能渲染成「链已断」，更不能渲染成「校验通过」。
+      operationId: verifyAudit
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/AuditVerifyResult' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503':
+          description: |
+            校验内核不可用。若审计文件读不到 / 已损坏，则以 200 返回
+            `kind: unreadable` 的 verdict（这是「不知道」，不是断言链断了）。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
 
 components:
   securitySchemes:
@@ -974,6 +1089,68 @@ components:
         canvas_noise: { type: boolean }
         seed: { type: string, description: 噪声种子，同环境保持一致 }
 
+    FingerprintConfig:
+      type: object
+      description: |
+        指纹的具体配置值，唯一事实来源是 `src/shared/types.ts` 的 `FingerprintConfig`。
+        这里存「已解析出的具体值」而非随机范围：同一环境 seed 恒定，迁移、备份恢复后
+        指纹保持一致。标 `nullable: true` 的字段（`geolocation`）在真正渲染到页面前
+        会被 `applySurfaceDefaults` 补齐可选面。
+      properties:
+        os: { type: string, enum: [windows, macos, linux] }
+        osLabel: { type: string, description: 例：Windows 11 · 23H2 }
+        userAgent: { type: string }
+        uaVersion: { type: string, description: 浏览器大版本，例：141.0.7390.107 }
+        timezone: { type: string }
+        locale: { type: string }
+        languages:
+          type: array
+          items: { type: string }
+        geolocation:
+          nullable: true
+          type: object
+          properties:
+            latitude: { type: number }
+            longitude: { type: number }
+        screen:
+          type: object
+          properties:
+            width: { type: integer }
+            height: { type: integer }
+            dpr: { type: number }
+            colorDepth: { type: integer }
+        hardware:
+          type: object
+          properties:
+            cpuCores: { type: integer }
+            memoryGB: { type: number }
+        webgl:
+          type: object
+          properties:
+            vendor: { type: string }
+            renderer: { type: string }
+        canvas: { type: string, enum: [noise, off, block] }
+        audio: { type: string, enum: [noise, off, block] }
+        webrtc: { type: string, enum: [proxy, disabled, real] }
+        fonts:
+          type: array
+          description: 注入的字体白名单；空数组表示不干预
+          items: { type: string }
+        clientRectsNoise: { type: boolean }
+        webgpu: { type: boolean }
+
+    FingerprintTemplate:
+      type: object
+      description: 指纹模板，形状来自 `src/shared/types.ts` 的 `FingerprintTemplate`。
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        os: { type: string, enum: [windows, macos, linux] }
+        fingerprint: { $ref: '#/components/schemas/FingerprintConfig' }
+        builtin: { type: boolean, description: true 表示随应用分发的内置模板 }
+        createdAt: { type: integer, format: int64 }
+
     ProfileCreate:
       type: object
       required: [name]
@@ -1024,17 +1201,30 @@ components:
 
     ConsistencyReport:
       type: object
+      description: 指纹自检报告，形状来自 `src/main/modules/audit.ts` 的 `runSelfCheck`。
       properties:
-        score: { type: integer }
-        issues:
+        profileId: { type: string }
+        profileName: { type: string }
+        score:
+          type: integer
+          description: 仅把 pass 计入分子算出的百分制得分。
+        checkedAt: { type: integer, format: int64 }
+        items:
           type: array
           items:
             type: object
             properties:
-              code: { type: string }
-              severity: { type: string, enum: [info, warning, error] }
-              message: { type: string }
-              suggestion: { type: string }
+              key: { type: string }
+              label: { type: string }
+              expected: { type: string }
+              actual: { type: string }
+              severity:
+                type: string
+                enum: [pass, warn, fail]
+                description: |
+                  pass = 读数一致；warn = 门禁放行但有缺口（无法确证）；fail = 门禁会拒绝。
+                  只有 pass 计入分数，warn 不算通过。
+              hint: { type: string }
 
     Space:
       type: object
@@ -1200,24 +1390,64 @@ components:
         bytes: { type: integer }
         created_at: { type: integer, format: int64 }
 
-    Proxy:
+    ScriptStep:
       type: object
+      description: 自动化脚本的一步，形状来自 `src/shared/types.ts` 的 `ScriptStep`。
+      properties:
+        action: { $ref: '#/components/schemas/ActionType' }
+        url: { type: string }
+        selector:
+          type: string
+          description: 录制时的稳定选择器；回放前会重新解析成当次快照的编号
+        text: { type: string }
+        key: { type: string }
+        delayMs: { type: integer }
+        note: { type: string }
+
+    AutomationScript:
+      type: object
+      description: 自动化脚本，形状来自 `src/shared/types.ts` 的 `AutomationScript`。
       properties:
         id: { type: string }
-        protocol: { type: string, enum: [http, https, socks5] }
+        name: { type: string }
+        description: { type: string }
+        profileId: { type: string, description: 录制来源环境，仅作参考 }
+        steps:
+          type: array
+          items: { $ref: '#/components/schemas/ScriptStep' }
+        createdAt: { type: integer, format: int64 }
+        updatedAt: { type: integer, format: int64 }
+
+    Proxy:
+      type: object
+      description: |
+        代理池条目的**对外形状**。列表响应经字段白名单构造（`toProxyBrief`）：
+        `username` / `password` 被**有意省略**，不随列表下发。这两个字段一起构成
+        代理凭据，而本地 API 是「拿到令牌即可驱动浏览器」的控制面，没有理由把
+        代理账号往外发。白名单而非「删字段」的写法保证将来 `ProxyRecord` 加字段时
+        默认不会携带出去。
+      properties:
+        id: { type: string }
+        name: { type: string }
+        protocol:
+          type: string
+          enum: [http, https, socks5, socks5h]
+          description: |
+            `socks5` = 本地解析域名；`socks5h` = 远程 DNS 的 SOCKS5（把域名交给代理
+            解析）。两者出口行为不同，必须作为独立取值区分。
         host: { type: string }
         port: { type: integer }
-        username: { type: [string, 'null'] }
-        country: { type: string }
-        latency_ms: { type: [integer, 'null'] }
-        status: { type: string, enum: [ok, degraded, unreachable] }
-        last_checked_at: { type: [integer, 'null'], format: int64 }
+        region: { type: string }
+        lastCheck: { type: [object, 'null'] }
 
     ProxyCreate:
       type: object
       required: [protocol, host, port]
       properties:
-        protocol: { type: string, enum: [http, https, socks5] }
+        protocol:
+          type: string
+          enum: [http, https, socks5, socks5h]
+          description: socks5h 为远程 DNS 的 SOCKS5，详见 Proxy。
         host: { type: string }
         port: { type: integer }
         username: { type: string }
@@ -1268,3 +1498,39 @@ components:
         model_call_id: { type: string }
         screenshot_hash: { type: string }
         operator: { type: string, enum: [agent, human] }
+
+    AuditVerifyResult:
+      type: object
+      description: |
+        审计哈希链校验结论，形状来自 `src/shared/types.ts` 的 `AuditVerifyResult`
+        与 `src/main/modules/audit.ts` 的 `verifyAudit` 返回。
+      properties:
+        consistent:
+          type: boolean
+          description: |
+            链路是否自洽。**刻意不叫 `ok`**：这个对象会被传输层包进
+            `{ok:true, data:...}`，那里的一层只表示「传输成功」，断链时两层恰好相反；
+            叫 `consistent` 之后 `{ok:true, data:{consistent:false}}` 才是自解释的。
+        total:
+          type: integer
+          description: 本次校验读到的审计条目数。
+        brokenAt:
+          type: integer
+          description: 第一条断链的位置，从 1 开始；kind 为 unreadable 时不带此字段。
+        kind:
+          type: string
+          enum:
+            - head-truncated
+            - seq-gap
+            - prev-mismatch
+            - content-mismatch
+            - unreadable
+            - tail-truncated
+            - unanchored
+          description: |
+            断链 / 无法判断的原因。前四种与 `tail-truncated` 是「链有问题」的结论；
+            `unreadable`（文件读不到 / 已损坏）与 `unanchored`（锚点尚未建立）是
+            **不知道**，不能渲染成「链已断」，也不能渲染成「校验通过」。
+        message:
+          type: string
+          description: 给人看的一句话结论。

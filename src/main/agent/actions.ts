@@ -32,6 +32,9 @@ import { decideMaskGate } from '@main/core/mask-gate'
  * 探针跑不起来，于是「闸门有效」这件事又只能靠读代码证明。
  *
  * 与 `consent.ts` 的 `setConsentAuditSink` 是同一个模式，理由也一样。
+ *
+ * 参数是**标签页**的 `webContents.id`（`Approval.maskWebContentsId`），不是发起方
+ * 渲染进程的 id：伪装状态由 `WindowManager` 按标签页 wc 建索引，两套编号空间不通用。
  */
 export type MaskStateLookup = (webContentsId?: number) => MaskStateRecord | null
 
@@ -102,6 +105,26 @@ export type Approval = {
    * localApi 路径没有 sender，此时不参与比对。
    */
   senderId?: number
+  /**
+   * 伪装闸门要查**哪个窗口**的状态 —— 必须是标签页自己的 `webContents.id`。
+   *
+   * 为什么要和 `senderId` 分开：`senderId` 是发起这次调用的渲染进程，
+   * 而伪装状态按**标签页的 webContents** 存（`WindowManager.maskStates` 的键）。
+   * 两者是两套编号空间 —— 控制台窗口的 renderer 与它下面某个标签页毫无关系。
+   * 早先这里只有 `senderId`，于是门禁拿控制台窗口的编号去查标签页的状态，
+   * 永远是 `null`；`judgeMask(null)` 恒为 `{allow:false, kind:'missing'}`，
+   * 所有 L2 动作被永久拦下，连「环境级豁免」都救不了（豁免要求 record 非空）。
+   * 而界面读的是 `handle.wc.id`，于是「界面绿、门禁红」。
+   *
+   * 缺省回退到 `senderId`：agent / 脚本回放 / 本地 API 三条路径都会显式传标签页的
+   * wc.id，回退只为兼容没带这个字段的旧调用点（含 `tools/probe-gate.mjs` 之类
+   * 只关心「查得到/查不到」的探针）。
+   *
+   * 注意这**不是**「调用方声明结论」：它只回答「去查哪个窗口的状态」，
+   * 判据仍然全部由 `judgeMask` 算。所以它可以进 `Approval`，而 `level` /
+   * `approvedBy` 不行。
+   */
+  maskWebContentsId?: number
   /**
    * 闸门事件的落点。
    *
@@ -260,8 +283,9 @@ export async function executeAction(
   // 只拦 L2：伪装失败影响的是「不可逆动作的授权前提」。L1 可回退，拦它等于
   // 回滚之后浏览器完全不能用 —— 用户会去找办法把整个机制关掉，那比不实现更坏。
   //
-  // 查不到就拒绝（`judgeMask(null)`）：窗口已销毁 / 这条路径没有发起窗口 /
-  // 组合根忘了注入 —— 三种情况都不是「伪装成功」，按拒绝处理。
+  // 查不到就拒绝（`judgeMask(null)`）：窗口已销毁 / 编号传错（最典型的是拿控制台
+  // 窗口的 renderer id 去查标签页）/ 组合根忘了注入 —— 都不是「伪装成功」，按拒绝处理。
+  // 查哪个窗口由 `Approval.maskWebContentsId` 决定（必须是标签页的 wc.id）。
   //
   // ── 环境级豁免（allowUnmaskedL2）插在哪一层 ──
   // 插在 `judgeMask` **之后**，不改它：状态判定必须永远只看状态。
@@ -272,7 +296,12 @@ export async function executeAction(
   // 它只去掉「伪装是否完整」这一个前提。审计里两者是两列，见 `auditGate`。
   let gateExemption: { profileId: string; reason: string } | null = null
   if (verdict.level === 'L2') {
-    const record = maskLookup === null ? null : maskLookup(approval.senderId)
+    // 先查标签页的 webContents（`maskWebContentsId`），没有再退回 senderId。
+    // 顺序不能反：`senderId` 在 agent 路径上是控制台窗口的 renderer，与标签页
+    // 的状态不在同一个编号空间里，查出来必然是 null。
+    // 三条路径都会显式传标签页的 wc.id；回退只为兼容没有该字段的旧调用点。
+    const record =
+      maskLookup === null ? null : maskLookup(approval.maskWebContentsId ?? approval.senderId)
     const exempt =
       record !== null && exemptionLookup !== null ? exemptionLookup(record.profileId) === true : false
     const mask = decideMaskGate(record, exempt)

@@ -128,6 +128,8 @@ type LogState =
 | `AuditPanel.tsx:393-415` | 读失败被吞成 toast，`entries=[]` 渲染成「还没有审计记录」 | 已修：三态联合类型 + 失败态带原因与重试 |
 | `AuditPanel.tsx:409-414` | 空态原写「还没有审计记录 / 操作都会追加到这里」（全称承诺，而同意决定与增删改都不入账） | 已修：改为陈述范围 + 常驻免责 |
 | `AuditPanel.tsx:275-281` | 自检失败只弹 toast，消失后面板说「还没有自检结果」 | 已修：失败留在原地 |
+| `ProxyPanel / TemplatePanel / ScriptPanel / DataPanel` | 列表读取失败被吞成 toast，`[]` 渲染成空状态 | 已修：四个面板的列表读取改为判别联合三态（loading / error / ready），失败态带原因原文 + 重试，用 warn 琥珀色且容器与空态不同形 |
+| `App.tsx` + `ProfileGrid / TaskList` | 首屏 `Promise.all` 任一失败就 toast + `loading=false`，两面板把「读失败」画成「空」 | 已修：`ConsoleLoadState` 三态贯穿，失败态内联带重试；整个控制台快照作为一个读取单元，不做会串味的局部重试 |
 | `json-file.ts:106-124` | `statOrNull` 曾把所有 `catch` 塌成 `null`，`EACCES` 被当成「文件不存在」，走首次运行分支把 `[]` 写回磁盘 | 已修（历史案例）：`ENOENT` → null，其余 → throw |
 | `AuditPanel.tsx:177 verifyBadge` | 旧回退写 `断在第 ${brokenAt ?? '?'} 条`，`unreadable`（`ok:false` 且无断点）会渲染成红色「断在第 ? 条」——把「不知道」写成「断在这里」 | 已修：有 `kind` 用 `kind`，无 `kind` 有断点才说断点，两者皆无 → 琥珀「无法判断」 |
 | `audit.ts:143-145`（已由 `#20` 修） | 空链返回 `ok:true`，于是删掉整个 `audit.json` 后「验证完整性」返回通过 | 已修：现在空链不再点亮任何「一致」类徽章 |

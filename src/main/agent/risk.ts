@@ -389,14 +389,16 @@ function canDowngrade(category: RiskRule['category']): boolean {
   return !NEVER_DOWNGRADE.has(category)
 }
 
-function levelOf(action: Action): RiskLevel {
-  switch (action.type) {
-    case 'extract':
-    case 'done':
-      return 'L0'
-    default:
-      return 'L1'
-  }
+/**
+ * 非短路动作的兜底等级。
+ *
+ * 为什么没有 L0 分支：`extract` / `done` 在 `assessRisk` 入口就短路返回 L0，
+ * 永远走不到这里。原 `levelOf` 写 `case 'extract'/'done': return 'L0'` 是
+ * **不可达代码** —— 它让读者以为有一条「只读」路径会走到末尾，而实际上末尾
+ * 只可能是 L1。不可达代码比没有更糟：它会误导下一次改动的人。
+ */
+function levelOf(_action: Action): RiskLevel {
+  return 'L1'
 }
 
 /**
@@ -522,17 +524,17 @@ export function assessRisk(action: Action, intent: string, extra = ''): RiskVerd
   // 抑制规则一旦写宽，所有真动作都会静默变成 L1，而记录里一片正常。
   const level = levelOf(action)
   const suppressedEvidence = suppressed.length > 0 ? { suppressed: [...suppressed] } : {}
-  if (level === 'L1') {
-    return {
-      level,
-      reason: clipOut(
-        suppressed.length > 0
-          ? `会改变页面状态，但可通过返回或刷新回退（命中「${suppressed.join('」「')}」后判定为名词，未升级为不可逆）`
-          : '会改变页面状态，但可通过返回或刷新回退',
-        REASON_CAP
-      ),
-      ...suppressedEvidence
-    }
+  // level 只可能是 L1（L0 已短路、L2 由规则判定后提前返回），所以这里直接返回 L1。
+  // 原末尾的 `return { level, reason:'只读动作' }` 不可达，已删除 —— 它会让读者
+  // 以为存在一条「只读」路径走到这里，而实际上走不到。
+  return {
+    level,
+    reason: clipOut(
+      suppressed.length > 0
+        ? `会改变页面状态，但可通过返回或刷新回退（命中「${suppressed.join('」「')}」后判定为名词，未升级为不可逆）`
+        : '会改变页面状态，但可通过返回或刷新回退',
+      REASON_CAP
+    ),
+    ...suppressedEvidence
   }
-  return { level, reason: '只读动作', ...suppressedEvidence }
 }

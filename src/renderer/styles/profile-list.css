@@ -1,0 +1,189 @@
+/**
+ * 环境列表「列表视图」的紧凑表格样式。
+ *
+ * 所有颜色 / 间距 / 圆角都走 tokens.css 的令牌，不写死色值 ——
+ * 亮暗两套主题靠令牌切换，组件里出现一个具体色值就会在另一套主题下失读。
+ * 类名统一 pl- 前缀，避免和卡片网格的 .env / .grid 串味。
+ *
+ * 注意：加载态 / 空态仍是 .grid > .empty，这里用 grid-column 拉满整行，
+ * 不去改那两个分支 —— 它们本来就是对的，列表视图不该绕过它们。
+ *
+ * 例外：网格视图的加载态已换成骨架卡片（.env-skel），样式在下面。
+ */
+
+/* ── 骨架卡片：与真实 .env 卡片同形（同 padding / gap / radius），
+      只把内容换成 shimmer 条。让「正在加载」看起来像「卡片正在长出来」。 */
+.env-skel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  padding: var(--sp-12) var(--sp-14, 14px);
+  min-height: 120px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+}
+
+.env-skel-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  flex: 1;
+}
+
+.pl-wrap {
+  display: block;
+}
+
+.pl-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  box-shadow: var(--sh-1);
+  overflow: hidden;
+  font-size: var(--fs-12);
+}
+
+.pl-table th,
+.pl-table td {
+  text-align: left;
+  padding: var(--sp-8) var(--sp-12);
+  border-bottom: 1px solid var(--line-2);
+  vertical-align: middle;
+}
+
+.pl-table thead th {
+  color: var(--ink-3);
+  font-weight: 600;
+  /* 表头吸顶：长列表滚动时列名始终可见。
+     .views 是滚动容器，thead 内的 sticky 相对它生效。 */
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  background: var(--surface);
+  background: var(--surface-2);
+  white-space: nowrap;
+}
+
+.pl-table tbody tr {
+  cursor: pointer;
+  transition: background var(--dur-2) var(--ease-easy);
+}
+
+.pl-table tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+.pl-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.pl-table tbody tr.pl-sel {
+  background: var(--accent-wash);
+}
+
+.pl-name {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+.pl-no {
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+}
+
+.pl-title {
+  color: var(--ink);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 22ch;
+}
+
+.pl-status {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  white-space: nowrap;
+  color: var(--ink-2);
+}
+
+.pl-proxy {
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.pl-actions {
+  display: flex;
+  gap: var(--sp-4);
+  white-space: nowrap;
+}
+
+/* ── 读失败态（环境 / 任务共用） ──
+ * 「读不到」和「读到但是空」必须一眼可分：空态是虚线 + 品牌柔光 + 绿色新建，
+ * 这里改成实线琥珀边框 + 琥珀标题 + 内联原文 + 中性的「重试」按钮。
+ * 颜色走 amber 令牌而非红：读不到是「还不知道」（琥珀是一种状态），不是
+ * 已经断定数据坏了（红是一个结论，见 DESIGN.md「不知道不能用坏的颜色」）。
+ * 全站加载，不局限 pl-wrap：TaskList 没有自己的 CSS 文件，但同样用这个类。 */
+.load-error {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 380px;
+  padding: 54px 24px 48px;
+  text-align: center;
+  background: var(--amber-2);
+  border: 1px solid var(--amber-line);
+  border-left: 3px solid var(--amber);
+  border-radius: var(--r-lg);
+}
+
+.load-error .le-mark {
+  width: 56px;
+  height: 56px;
+  border-radius: 17px;
+  display: grid;
+  place-items: center;
+  background: var(--amber-2);
+  border: 1px solid var(--amber-line);
+  color: var(--amber);
+}
+
+.load-error .le-mark svg {
+  width: 26px;
+  height: 26px;
+}
+
+.load-error h3 {
+  font-size: var(--fs-21);
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: var(--lh-tight);
+  color: var(--amber-ink);
+}
+
+/* 错误原文单独一行、可断行：这是用户判断「是什么挡住了」的唯一依据，
+   不能和「不等于空」的解释混成同一种弱色。 */
+.load-error .le-reason {
+  font-size: var(--fs-12);
+  line-height: var(--lh-relaxed);
+  color: var(--ink-2);
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  max-width: 520px;
+}
+
+.load-error .le-hint {
+  font-size: var(--fs-12);
+  line-height: var(--lh-relaxed);
+  color: var(--ink-3);
+  max-width: 460px;
+  text-wrap: pretty;
+}

@@ -12,7 +12,7 @@
 
 import { CH } from '@shared/ipc'
 import type { MigrationAdoptReport, MigrationImportResult } from '@shared/ipc'
-import { OS_TEMPLATES, resolveFingerprint } from '@shared/presets'
+import { OS_TEMPLATES, applySurfaceDefaults, resolveFingerprint } from '@shared/presets'
 import type {
   BundleSealHeader,
   FingerprintConfig,
@@ -34,8 +34,8 @@ import { appendAudit } from './audit'
 import type { ModuleContext } from './context'
 
 const OS_KINDS: readonly OSKind[] = ['windows', 'macos', 'linux']
-const PROXY_PROTOCOLS: readonly ProxyProtocol[] = ['http', 'https', 'socks5']
-const CANVAS_MODES = ['noise', 'off'] as const
+const PROXY_PROTOCOLS: readonly ProxyProtocol[] = ['http', 'https', 'socks5', 'socks5h']
+const CANVAS_MODES = ['noise', 'off', 'block'] as const
 const WEBRTC_MODES = ['proxy', 'disabled', 'real'] as const
 
 /* ────────────────────────────── 内置模板 ────────────────────────────── */
@@ -320,7 +320,10 @@ function parseFingerprint(raw: unknown, where: string): FingerprintConfig {
   const hardware = asRecord(record.hardware, `${path}.hardware`)
   const webgl = asRecord(record.webgl, `${path}.webgl`)
 
-  return {
+  // 迁移包可能来自老版本，只有基础面。导入时在这里一次性补齐新增指纹面 ——
+  // 否则「读到的旧配置」会被当成完整配置落盘，之后注入脚本按 undefined 处理，
+  // 用户看到的是一个「导入成功但指纹面比原环境少」的假象。
+  return applySurfaceDefaults({
     os: reqEnum(record, 'os', path, OS_KINDS),
     osLabel: reqString(record, 'osLabel', path),
     userAgent: reqString(record, 'userAgent', path),
@@ -349,7 +352,7 @@ function parseFingerprint(raw: unknown, where: string): FingerprintConfig {
     fonts: reqStringArray(record, 'fonts', path),
     clientRectsNoise: reqBool(record, 'clientRectsNoise', path),
     webgpu: reqBool(record, 'webgpu', path)
-  }
+  })
 }
 
 function parseMigrationProfile(raw: unknown, index: number): MigrationProfile {
@@ -726,19 +729,17 @@ function importV2(
 
 /**
  * 密文里的 fingerprint 只保证「没被改过」，不保证「形状完整」——
- * 导出方可能是个更旧或更怪的版本。这里只查两个字段，因为少了这两个，
- * `adopt` 会写出一条 `platform` 投影落空的环境，症状要等到启动时才出现。
+ * 导出方可能是个更旧或更怪的版本。
+ *
+ * 这里**必须复用 v1 的 `parseFingerprint`**，而不是只查 `os` / `userAgent`：
+ * 后者会对缺 `screen` / `hardware` / `languages` / `webgl` / `fonts` 的旧包
+ * 返回 `ok:true`，可启动时 `injectionConfig` 一读 `screen` 就抛 TypeError 被吞，
+ * 环境实际跑的是宿主真实指纹 —— 导入报成功、指纹却是假的，最难归因。
+ * 与 v1 共用同一份逐字段校验 + `applySurfaceDefaults` 补齐逻辑后，
+ * 「能导进来的包」在 v1 与 v2 是同一个集合。
  */
 function asBundleFingerprint(raw: unknown, where: string): FingerprintConfig {
-  const rec = asRecord(raw, where + ' 的 fingerprint')
-  const os = rec.os
-  if (typeof os !== 'string' || !(OS_KINDS as readonly string[]).includes(os)) {
-    throw new Error(`${where} 的 fingerprint.os 不合法：${String(os)}`)
-  }
-  if (typeof rec.userAgent !== 'string' || rec.userAgent === '') {
-    throw new Error(`${where} 的 fingerprint.userAgent 缺失`)
-  }
-  return rec as unknown as FingerprintConfig
+  return parseFingerprint(raw, where)
 }
 
 /** 建代理并返回「包内 key → 本机记录」的映射。v1 / v2 共用 */

@@ -1,0 +1,679 @@
+/**
+ * tools 域文案：代理池 / 模板与迁移 / 自动化脚本。
+ * 缺 key 时英文回落中文（见 ../index.ts）。
+ */
+import type { Dict } from '../index'
+
+export const zh: Dict = {
+  /* ────────────────────────────── 代理池 ────────────────────────────── */
+  'proxy.title': '代理池',
+  'proxy.subtitle': '集中管理出口代理，真实探测出口 IP 与时区，再把代理挂到环境上。',
+
+  'proxy.protocol.http': 'HTTP',
+  'proxy.protocol.https': 'HTTPS',
+  'proxy.protocol.socks5': 'SOCKS5',
+  'proxy.protocol.socks5h': 'SOCKS5 (远程 DNS)',
+
+  'proxy.import.paste': '粘贴导入',
+  'proxy.checkAll': '全部检测',
+  'proxy.checking': '检测中…',
+  'proxy.checkAll.title': '逐条串行检测全部代理',
+  'proxy.checkAll.titleEmpty': '先添加代理再检测',
+  'proxy.create': '新建代理',
+
+  'proxy.count.prefix': '共 ',
+  'proxy.count.suffix': ' 条',
+  'proxy.stat.ok': '可用 {n}',
+  'proxy.stat.bad': '异常 {n}',
+  'proxy.stat.unchecked': '未检测 {n}',
+  'proxy.hint': '检测走 CONNECT 隧道，只认真实出口，不伪造结果',
+
+  'proxy.loading': '正在读取代理…',
+  'proxy.error.title': '读不到代理列表，这不等于「没有代理」',
+  'proxy.error.reason': '上一次读取失败：{message}',
+  'proxy.error.hint':
+    '文件可能被杀毒软件或索引服务占用，也可能没有读权限。现在先别新建代理，那会覆盖掉读不到的旧数据；确认后再重试。',
+  'proxy.empty.title': '还没有代理',
+  'proxy.empty.body':
+    '一条代理对应一个出口身份。可以先建一条，也可以把商家给的地址整段粘进来：',
+
+  'proxy.table.protocol': '协议',
+  'proxy.table.address': '地址',
+  'proxy.table.exitIp': '出口 IP',
+  'proxy.table.timezone': '时区',
+  'proxy.table.latency': '延迟',
+  'proxy.table.lastCheck': '最近检测',
+  'proxy.tag.auth': '认证',
+  'proxy.unchecked': '未检测',
+  'proxy.checkFailed': '检测失败',
+
+  'proxy.action.check': '检测这条代理',
+  'proxy.action.mount': '挂载到环境',
+  'proxy.action.direct': '把这个环境改回直连',
+  'proxy.direct': '直连',
+
+  'proxy.form.editTitle': '编辑代理',
+  'proxy.form.namePlaceholder': '例如 美国住宅 01（留空则用地址）',
+  'proxy.form.protocol': '协议',
+  'proxy.form.host': '主机',
+  'proxy.form.hostPlaceholder': '1.2.3.4 或 proxy.example.com',
+  'proxy.form.port': '端口',
+  'proxy.form.username': '用户名',
+  'proxy.form.password': '密码',
+  'proxy.form.optional': '可留空',
+  'proxy.form.region': '地区备注',
+  'proxy.form.regionPlaceholder': '仅用于列表识别，例如 洛杉矶',
+  'proxy.form.saving': '保存中…',
+  'proxy.form.noteEdit': '改了地址或凭证后，旧的检测结果会被清空',
+  'proxy.form.noteCreate': '保存后建议立即检测一次，确认出口可用',
+
+  'proxy.import.importing': '导入中…',
+  'proxy.import.start': '开始导入',
+  'proxy.import.note': '相同 host:port 视为重复，重复行会跳过而不是报错',
+  'proxy.import.label': '每行一条，支持三种写法',
+  'proxy.import.errorsTitle': '以下行没有导入',
+
+  'proxy.mount.title': '挂载代理',
+  'proxy.mount.note': '挂载只影响之后启动的窗口，正在运行的环境需要重启才换出口',
+  'proxy.mount.promptBefore': '把 ',
+  'proxy.mount.promptAfter': '（{host}:{port}）挂到哪个环境？出口时区：{tz}',
+  'proxy.mount.noProfiles': '还没有环境，先去环境页建一个再回来挂载。',
+
+  'proxy.delete.title': '删除代理',
+  'proxy.delete.deleting': '删除中…',
+  'proxy.delete.note': '删除后无法恢复，重新导入需要原始地址与密码',
+  'proxy.delete.confirm': '确定删除「{name}」？挂载了这条代理的环境会一并改为直连。',
+
+  'proxy.unknownExit': '出口未知',
+  'proxy.unknownReason': '未知原因',
+  'proxy.err.hostRequired': '请填写代理主机',
+  'proxy.err.portInvalid': '端口必须是 1-65535 之间的整数',
+  'proxy.err.pasteFirst': '先粘贴几行代理地址',
+  'proxy.toast.saved': '已保存「{name}」',
+  'proxy.toast.created': '已新增「{name}」',
+  'proxy.toast.importDone': '导入完成：新增 {added} 条，跳过 {skipped} 条',
+  'proxy.toast.importErrorLines': '，{n} 行有问题',
+  'proxy.toast.checkOk': '「{name}」可用 · {ip} · {ms}ms',
+  'proxy.toast.checkFail': '「{name}」检测失败：{reason}',
+  'proxy.toast.checkAllDone': '检测完成：{ok}/{total} 条可用',
+  'proxy.toast.direct': '「{name}」已改为直连',
+  'proxy.toast.mountedUnchecked': '已挂载到「{name}」，但该代理尚未检测，无法校验出口时区',
+  'proxy.toast.mountedTzMismatch':
+    '已挂载到「{name}」，但时区不一致：代理 {proxyTz} ≠ 环境 {envTz}',
+  'proxy.toast.mounted': '已把「{proxy}」挂到「{profile}」',
+  'proxy.toast.deleted': '已删除「{name}」，原挂载该代理的环境已改为直连',
+
+  /* ────────────────────────────── 模板与迁移 ────────────────────────────── */
+  'template.title': '指纹模板与迁移',
+  'template.subtitle':
+    '把一套指纹参数存成模板反复使用，或打包成迁移包搬到另一台机器。应用模板等于克隆同一身份，需要新身份请回环境页重掷指纹。',
+  'template.counts': '内置 {builtin} · 自定义 {custom}',
+
+  'template.library': '模板库',
+  'template.library.hint': '内置模板只读，自定义模板可随时删除',
+  'template.loading': '正在读取模板…',
+  'template.error.title': '读不到模板列表，这不等于「没有任何模板」',
+  'template.error.reason': '上一次读取失败：{message}',
+  'template.error.hint':
+    '文件可能被杀毒软件或索引服务占用，也可能没有读权限。现在先别新建模板，那会覆盖掉读不到的旧数据；确认后再重试。',
+  'template.error.noBridge': '主进程尚未就绪，无法读取模板',
+  'template.empty':
+    '还没有任何模板。先在下方向「从环境保存为模板」里挑一个环境，它的 UA、时区、分辨率、字体清单会被整份存下来。',
+  'template.builtin': '内置',
+  'template.selectProfile': '选择环境…',
+  'template.apply.aria': '把 {name} 应用到环境',
+  'template.applying': '应用中',
+  'template.apply': '应用',
+  'template.delete.title': '删除模板',
+  'template.delete.builtinDisabled': '内置模板不可删除',
+  'template.delete.aria': '删除模板 {name}',
+  'template.delete.confirm':
+    '确定删除模板「{name}」？已经应用到环境的指纹不会回滚，只是这份快照以后不能再用了。',
+
+  'template.save.title': '从环境保存为模板',
+  'template.save.hint': '存的是当前指纹快照，之后改环境不会影响模板',
+  'template.save.source': '来源环境',
+  'template.save.name': '模板名称',
+  'template.save.namePlaceholder': '例：美国站 · 常用配置',
+  'template.save.desc': '描述（可选）',
+  'template.save.descPlaceholder': '备注这套参数适合什么场景',
+  'template.save.saving': '保存中',
+  'template.save.submit': '保存为模板',
+  'template.save.defaultName': '{name} 模板',
+
+  'template.mig.title': '迁移包',
+  'template.mig.hint': '只带走名称、平台、备注与指纹；代理密码留空，导入后需自行补齐',
+
+  'template.export.title': '导出',
+  'template.export.selectAll': '全选',
+  'template.export.clear': '清空',
+  'template.export.selected': '已选 {n}',
+  'template.export.empty':
+    '还没有环境可导出。先到环境页新建一个，或在右侧直接导入别人的迁移包。',
+  'template.export.passLabel': '加密口令（至少 {n} 位）',
+  'template.export.passPlaceholder': '导出后需要用它才能导回来',
+  'template.export.passRepeat': '再输一次',
+  'template.export.passRepeatPlaceholder': '两次必须一致',
+  'template.export.exporting': '导出中',
+  'template.export.button': '导出 {n} 个环境',
+  'template.export.fileName': '文件名 {file}',
+
+  'template.import.title': '导入',
+  'template.import.colHint': 'v2 口令加密 · v1 需确认身份损失',
+  'template.import.passLabel': '包口令',
+  'template.import.passPlaceholder': '导出这个包时设的口令',
+  'template.import.jsonPlaceholder': '把迁移包 JSON 粘贴到这里，或选择文件…',
+  'template.import.importing': '导入中',
+  'template.import.submit': '导入',
+  'template.import.chooseFile': '选择 JSON 文件',
+  'template.adopt.ok': '身份一致（核对 {n} 个字段）',
+  'template.adopt.bad': '不一致：{fields}',
+  'template.adopt.unknownField': '未知字段',
+  'template.adopt.separator': '、',
+
+  'template.legacy.title': '这个包不含身份参数',
+  'template.legacy.importAnyway': '仍然导入',
+  'template.legacy.body':
+    '这是一个 version 1 的迁移包，里面没有指纹参数。导入会成功，但导入后的环境与包里那台机器**不是同一个身份** —— 站点会把它当成一台全新的设备。',
+  'template.legacy.fields': '以下参数会重新随机生成：',
+  'template.legacy.note':
+    '如果原意只是「把环境搬到另一台机器」，应该用本版本重新导出一次（导出时已包含身份）。当前这一步不会写入任何东西，取消是安全的。',
+
+  'template.summary.timezone': '时区',
+  'template.summary.screen': '分辨率',
+  'template.summary.cpu': 'CPU',
+  'template.summary.cpuValue': '{cores} 核 / {mem}G',
+
+  'template.err.needProfile': '请先选择要应用到的环境',
+  'template.err.needSource': '请先选择来源环境',
+  'template.err.needName': '请填写模板名称',
+  'template.err.needSelection': '请先勾选要导出的环境',
+  'template.err.passShort': '口令至少 {n} 个字符',
+  'template.err.passMismatch': '两次输入的口令不一致',
+  'template.err.needPayload': '请粘贴迁移包 JSON 或选择文件',
+  'template.toast.applied': '已把「{template}」的指纹应用到「{profile}」',
+  'template.toast.deleted': '已删除模板「{name}」',
+  'template.toast.saved': '已保存模板「{name}」',
+  'template.toast.exported': '已导出 {n} 个环境（口令加密，代理密码留空）',
+  'template.toast.importOk': '导入完成：环境 {profiles} 个，代理 {proxies} 个，身份核对全部通过',
+  'template.toast.importMismatch':
+    '导入完成：环境 {profiles} 个，但 {bad} 个身份核对不一致，详见下方',
+
+  /* ────────────────────────────── 自动化脚本 ────────────────────────────── */
+  'script.title': '自动化脚本',
+  'script.subtitle':
+    '把一次跑通的执行记录沉淀成脚本，之后在任意环境里按原样重放。回放不走模型，每一步都按选择器重新定位元素，找不到就停下。',
+
+  'script.importFromTask': '从任务导入',
+  'script.create': '新建脚本',
+  'script.library': '脚本库',
+  'script.loading': '正在读取脚本…',
+  'script.error.title': '读不到脚本库',
+  'script.error.hint':
+    '这不等于「没有脚本」。存储文件可能被杀毒软件或索引服务占用，也可能没有读权限。',
+  'script.emptyLibrary': '还没有脚本。可以从历史任务导入，或新建一个空脚本手工编排。',
+  'script.stepsCount': '{n} 步',
+  'script.untitled': '未命名脚本',
+
+  'script.empty.title': '选一个脚本开始编辑',
+  'script.empty.body':
+    '左侧是脚本库。第一次使用建议先点「从任务导入」：挑一个已经跑通的任务，它成功的步骤会直接变成可回放的脚本。',
+  'script.nameAria': '脚本名称',
+  'script.namePlaceholder': '脚本名称',
+  'script.descAria': '脚本说明',
+  'script.descPlaceholder': '一句话说明这个脚本做什么（可选）',
+  'script.stepsTotal': '共 {n} 步',
+  'script.unsaved': '未保存',
+  'script.profile': '环境',
+  'script.replayProfileAria': '回放环境',
+  'script.noProfiles': '暂无环境',
+  'script.runningSuffix': '（运行中）',
+  'script.run': '回放',
+  'script.running': '回放中…',
+  'script.run.title.noId': '先保存脚本再回放',
+  'script.run.title.dirty': '有未保存的修改，保存后再回放，避免重放旧版本',
+  'script.run.title.ok': '在当前环境回放',
+  'script.saving': '保存中…',
+
+  'script.result.ok': '回放完成，执行了 {executed} / {total} 步',
+  'script.result.fail': '回放到第 {at} 步中断，已执行 {executed} / {total} 步',
+  'script.steps.empty':
+    '还没有步骤。点下面的「添加步骤」手工编排，或用「从任务导入」把一次成功的执行搬过来。',
+  'script.addStep': '添加步骤',
+  'script.step.actionAria': '第 {n} 步动作',
+  'script.step.selectorAria': '第 {n} 步选择器',
+  'script.step.selectorFallback': 'role=button name=登录',
+  'script.step.hint.navigate': '整页跳转，不需要定位元素',
+  'script.step.hint.scroll': '整页滚动，不需要定位元素',
+  'script.step.hint.extract': '按描述从当前页取数',
+  'script.step.hint.done': '脚本到这里结束',
+  'script.step.moveUp': '上移',
+  'script.step.moveDown': '下移',
+  'script.step.remove': '删除这一步',
+  'script.step.text': '输入文本',
+  'script.step.key': '按键',
+  'script.step.direction': '方向',
+  'script.step.down': '向下',
+  'script.step.up': '向上',
+  'script.step.top': '到顶部',
+  'script.step.bottom': '到底部',
+  'script.step.pixels': '像素',
+  'script.step.pixelsPlaceholder': '留空 = 一屏',
+  'script.step.address': '地址',
+  'script.step.extractPrompt': '取数指令',
+  'script.step.extractPlaceholder': '如：当前商品的价格',
+  'script.step.note': '收尾说明',
+  'script.step.notePlaceholder': '如：已提交订单',
+  'script.step.delay': '延时',
+  'script.hint.selector.click': '如 role=button name=登录',
+  'script.hint.selector.type': '如 role=textbox name=邮箱',
+  'script.hint.selector.press': '如 role=textbox name=搜索',
+
+  'script.import.title': '从历史任务导入',
+  'script.import.note':
+    '只导入执行成功的步骤。导入后请核对选择器，尤其是同名按钮较多的页面。',
+  'script.import.loading': '正在读取任务…',
+  'script.import.errorTitle': '读不到任务列表',
+  'script.import.errorHint':
+    '这不等于「没有任务」。现在无法从历史任务导入，可以重试，也可以关掉稍后再来。',
+  'script.import.empty':
+    '还没有带成功步骤的任务。先在影子面板里跑通一个任务，再回来导入。',
+  'script.import.action': '导入',
+
+  'script.unsaved.title': '有未保存的修改',
+  'script.unsaved.body': '当前脚本的改动还没有保存，切换后这些改动会丢失。',
+  'script.continueEdit': '继续编辑',
+  'script.discard': '放弃修改',
+
+  'script.confirm.title': '这一步需要你当面确认',
+  'script.confirm.retry': '重试这一步',
+  'script.confirm.continued':
+    '前 {executed} 步已经执行，可以从第 {at} 步继续，不会重放前面的步骤。',
+  'script.confirm.startAt': '可以从第 {at} 步开始执行。',
+  'script.confirm.native':
+    '点「重试这一步」后会弹出系统确认窗口，你需要在那里点「允许执行」；这个页面没有代替它批准的能力。',
+  'script.confirm.cancelNote': '取消则页面停在当前状态，脚本不会自动回滚。',
+
+  'script.delete.title': '删除脚本',
+  'script.delete.confirm': '确定删除「{name}」吗？删除后无法恢复，历史任务的记录不受影响。',
+
+  'script.err.needName': '先给脚本起个名字',
+  'script.err.saveFirst': '先保存脚本，再选择环境回放',
+  'script.err.unsavedRun': '有未保存的修改，先保存再回放',
+  'script.err.needProfile': '先选择一个环境',
+  'script.err.noSteps': '这个任务没有可复用的成功步骤',
+  'script.toast.saved': '脚本已保存',
+  'script.toast.deleted': '脚本已删除',
+  'script.toast.runOk': '回放完成：{executed}/{total} 步',
+  'script.toast.runFail': '第 {n} 步失败',
+  'script.toast.imported': '已导入 {n} 步，保存后即可回放',
+
+  /* ────────────────────────────── 定时任务 ────────────────────────────── */
+  'sched.title': '定时任务',
+  'sched.desc':
+    '按间隔或每日固定时间，自动启动环境 / 运行自动化脚本。调度只在应用运行时生效；应用关闭后系统不会代为触发。',
+  'sched.add': '添加',
+  'sched.kind.launch': '启动环境',
+  'sched.kind.script': '运行脚本',
+  'sched.runProfile': '运行环境',
+  'sched.target': '目标',
+  'sched.everyMinutes': '每 {n} 分钟',
+  'sched.dailyAt': '每日 {time}',
+  'sched.mode.interval': '按间隔',
+  'sched.mode.daily': '每日定时',
+  'sched.enabled': '启用',
+  'sched.lastRun': '上次运行',
+  'sched.never': '从未',
+  'sched.runNow': '立即执行',
+  'sched.remove': '删除',
+  'sched.removeConfirm': '确定删除「{name}」的定时任务吗？删除后不再自动触发。',
+  'sched.empty': '还没有定时任务。选择动作、目标和周期后点「添加」。',
+  'sched.readFailed': '读不到定时任务，这不等于「没有任务」',
+  'sched.saved': '定时任务已保存',
+  'sched.removed': '定时任务已删除',
+  'sched.ran': '已触发一次',
+  'sched.runFailed': '立即执行失败：{message}'
+}
+
+export const en: Dict = {
+  /* ────────────────────────────── Proxy pool ────────────────────────────── */
+  'proxy.title': 'Proxy pool',
+  'proxy.subtitle':
+    'Manage outbound proxies in one place, verify their real exit IPs and timezones, then attach them to profiles.',
+
+  'proxy.protocol.http': 'HTTP',
+  'proxy.protocol.https': 'HTTPS',
+  'proxy.protocol.socks5': 'SOCKS5',
+  'proxy.protocol.socks5h': 'SOCKS5 (remote DNS)',
+
+  'proxy.import.paste': 'Paste import',
+  'proxy.checkAll': 'Check all',
+  'proxy.checking': 'Checking…',
+  'proxy.checkAll.title': 'Check every proxy one by one',
+  'proxy.checkAll.titleEmpty': 'Add a proxy before checking',
+  'proxy.create': 'New proxy',
+
+  'proxy.count.prefix': 'Total: ',
+  'proxy.count.suffix': '',
+  'proxy.stat.ok': '{n} up',
+  'proxy.stat.bad': '{n} failing',
+  'proxy.stat.unchecked': '{n} unchecked',
+  'proxy.hint': 'Checks run over a CONNECT tunnel and trust only the real exit — results are never fabricated',
+
+  'proxy.loading': 'Loading proxies…',
+  'proxy.error.title': 'Could not read the proxy list — this does not mean there are no proxies',
+  'proxy.error.reason': 'Last read failed: {message}',
+  'proxy.error.hint':
+    'The file may be locked by antivirus or an indexing service, or you may lack read permission. Do not create a proxy yet — that would overwrite the old data you cannot read. Retry after verifying.',
+  'proxy.empty.title': 'No proxies yet',
+  'proxy.empty.body':
+    'Each proxy maps to one outbound identity. Create one now, or paste the whole block of addresses from your provider:',
+
+  'proxy.table.protocol': 'Protocol',
+  'proxy.table.address': 'Address',
+  'proxy.table.exitIp': 'Exit IP',
+  'proxy.table.timezone': 'Timezone',
+  'proxy.table.latency': 'Latency',
+  'proxy.table.lastCheck': 'Last check',
+  'proxy.tag.auth': 'Auth',
+  'proxy.unchecked': 'Not checked',
+  'proxy.checkFailed': 'Check failed',
+
+  'proxy.action.check': 'Check this proxy',
+  'proxy.action.mount': 'Mount on profile',
+  'proxy.action.direct': 'Switch this profile back to a direct connection',
+  'proxy.direct': 'Direct',
+
+  'proxy.form.editTitle': 'Edit proxy',
+  'proxy.form.namePlaceholder': 'e.g. US residential 01 (leave blank to use the address)',
+  'proxy.form.protocol': 'Protocol',
+  'proxy.form.host': 'Host',
+  'proxy.form.hostPlaceholder': '1.2.3.4 or proxy.example.com',
+  'proxy.form.port': 'Port',
+  'proxy.form.username': 'Username',
+  'proxy.form.password': 'Password',
+  'proxy.form.optional': 'Optional',
+  'proxy.form.region': 'Region note',
+  'proxy.form.regionPlaceholder': 'For list identification only, e.g. Los Angeles',
+  'proxy.form.saving': 'Saving…',
+  'proxy.form.noteEdit': 'Changing the address or credentials clears the previous check result',
+  'proxy.form.noteCreate': 'After saving, run a check to confirm the exit works',
+
+  'proxy.import.importing': 'Importing…',
+  'proxy.import.start': 'Start import',
+  'proxy.import.note':
+    'Identical host:port entries count as duplicates; duplicate lines are skipped instead of failing',
+  'proxy.import.label': 'One per line, three formats supported',
+  'proxy.import.errorsTitle': 'These lines were not imported',
+
+  'proxy.mount.title': 'Mount proxy',
+  'proxy.mount.note':
+    'Mounting only affects windows started afterwards; running profiles must be restarted to change their exit',
+  'proxy.mount.promptBefore': 'Mount ',
+  'proxy.mount.promptAfter': ' ({host}:{port}) on which profile? Exit timezone: {tz}',
+  'proxy.mount.noProfiles': 'No profiles yet. Create one on the Profiles page, then come back to mount.',
+
+  'proxy.delete.title': 'Delete proxy',
+  'proxy.delete.deleting': 'Deleting…',
+  'proxy.delete.note': 'Deletion cannot be undone; re-importing requires the original address and password',
+  'proxy.delete.confirm':
+    'Delete "{name}"? Profiles using this proxy will switch to a direct connection.',
+
+  'proxy.unknownExit': 'unknown exit',
+  'proxy.unknownReason': 'unknown reason',
+  'proxy.err.hostRequired': 'Enter a proxy host',
+  'proxy.err.portInvalid': 'Port must be an integer between 1 and 65535',
+  'proxy.err.pasteFirst': 'Paste a few proxy addresses first',
+  'proxy.toast.saved': 'Saved "{name}"',
+  'proxy.toast.created': 'Added "{name}"',
+  'proxy.toast.importDone': 'Import complete: {added} added, {skipped} skipped',
+  'proxy.toast.importErrorLines': ', {n} line(s) had problems',
+  'proxy.toast.checkOk': '"{name}" is up · {ip} · {ms}ms',
+  'proxy.toast.checkFail': 'Check failed for "{name}": {reason}',
+  'proxy.toast.checkAllDone': 'Check complete: {ok}/{total} available',
+  'proxy.toast.direct': '"{name}" now uses a direct connection',
+  'proxy.toast.mountedUnchecked':
+    'Mounted on "{name}", but this proxy has not been checked, so the exit timezone cannot be verified',
+  'proxy.toast.mountedTzMismatch':
+    'Mounted on "{name}", but the timezone does not match: proxy {proxyTz} ≠ profile {envTz}',
+  'proxy.toast.mounted': 'Mounted "{proxy}" on "{profile}"',
+  'proxy.toast.deleted': 'Deleted "{name}"; profiles that used this proxy now connect directly',
+
+  /* ────────────────────────────── Templates & migration ────────────────────────────── */
+  'template.title': 'Fingerprint templates & migration',
+  'template.subtitle':
+    'Save a set of fingerprint settings as a reusable template, or pack it into a migration package for another machine. Applying a template clones the same identity; to get a new identity, reroll the fingerprint on the Profiles page.',
+  'template.counts': 'Built-in {builtin} · Custom {custom}',
+
+  'template.library': 'Template library',
+  'template.library.hint': 'Built-in templates are read-only; custom templates can be deleted anytime',
+  'template.loading': 'Loading templates…',
+  'template.error.title': 'Could not read the template list — this does not mean there are no templates',
+  'template.error.reason': 'Last read failed: {message}',
+  'template.error.hint':
+    'The file may be locked by antivirus or an indexing service, or you may lack read permission. Do not create a template yet — that would overwrite the old data you cannot read. Retry after verifying.',
+  'template.error.noBridge': 'The main process is not ready; cannot read templates',
+  'template.empty':
+    'No templates yet. Pick a profile under "Save from profile" below — its UA, timezone, resolution and font list will be saved in full.',
+  'template.builtin': 'Built-in',
+  'template.selectProfile': 'Select a profile…',
+  'template.apply.aria': 'Apply {name} to a profile',
+  'template.applying': 'Applying',
+  'template.apply': 'Apply',
+  'template.delete.title': 'Delete template',
+  'template.delete.builtinDisabled': 'Built-in templates cannot be deleted',
+  'template.delete.aria': 'Delete template {name}',
+  'template.delete.confirm':
+    'Delete template "{name}"? Fingerprints already applied to profiles will not roll back; this snapshot simply cannot be reused.',
+
+  'template.save.title': 'Save from profile',
+  'template.save.hint':
+    'Stores a snapshot of the current fingerprint; later changes to the profile will not affect the template',
+  'template.save.source': 'Source profile',
+  'template.save.name': 'Template name',
+  'template.save.namePlaceholder': 'e.g. US store · common setup',
+  'template.save.desc': 'Description (optional)',
+  'template.save.descPlaceholder': 'Note what this setup is good for',
+  'template.save.saving': 'Saving',
+  'template.save.submit': 'Save as template',
+  'template.save.defaultName': '{name} template',
+
+  'template.mig.title': 'Migration package',
+  'template.mig.hint':
+    'Includes only name, platform, notes and fingerprint; proxy passwords are left blank and must be filled in after import',
+
+  'template.export.title': 'Export',
+  'template.export.selectAll': 'Select all',
+  'template.export.clear': 'Clear',
+  'template.export.selected': '{n} selected',
+  'template.export.empty':
+    'No profiles to export. Create one on the Profiles page, or import someone else\'s migration package on the right.',
+  'template.export.passLabel': 'Encryption password (at least {n} characters)',
+  'template.export.passPlaceholder': 'You will need this password to import the package back',
+  'template.export.passRepeat': 'Enter it again',
+  'template.export.passRepeatPlaceholder': 'Must match the first entry',
+  'template.export.exporting': 'Exporting',
+  'template.export.button': 'Export {n} profile(s)',
+  'template.export.fileName': 'File name: {file}',
+
+  'template.import.title': 'Import',
+  'template.import.colHint': 'v2 password-encrypted · v1 requires confirming identity loss',
+  'template.import.passLabel': 'Package password',
+  'template.import.passPlaceholder': 'The password set when this package was exported',
+  'template.import.jsonPlaceholder': 'Paste the migration package JSON here, or choose a file…',
+  'template.import.importing': 'Importing',
+  'template.import.submit': 'Import',
+  'template.import.chooseFile': 'Choose JSON file',
+  'template.adopt.ok': 'Identity matches ({n} field(s) checked)',
+  'template.adopt.bad': 'Mismatch: {fields}',
+  'template.adopt.unknownField': 'unknown fields',
+  'template.adopt.separator': ', ',
+
+  'template.legacy.title': 'This package contains no identity parameters',
+  'template.legacy.importAnyway': 'Import anyway',
+  'template.legacy.body':
+    'This is a version 1 migration package with no fingerprint parameters. The import will succeed, but the imported profile is **not the same identity** as the machine in the package — sites will treat it as a brand-new device.',
+  'template.legacy.fields': 'The following parameters will be randomized again:',
+  'template.legacy.note':
+    'If you only meant to move the profile to another machine, export it again with this version (exports already include identity). This step writes nothing; cancelling is safe.',
+
+  'template.summary.timezone': 'Timezone',
+  'template.summary.screen': 'Resolution',
+  'template.summary.cpu': 'CPU',
+  'template.summary.cpuValue': '{cores} cores / {mem}G',
+
+  'template.err.needProfile': 'Select a profile to apply to first',
+  'template.err.needSource': 'Select a source profile first',
+  'template.err.needName': 'Enter a template name',
+  'template.err.needSelection': 'Select the profiles to export first',
+  'template.err.passShort': 'Password must be at least {n} characters',
+  'template.err.passMismatch': 'The passwords do not match',
+  'template.err.needPayload': 'Paste the migration package JSON or choose a file',
+  'template.toast.applied': 'Applied the fingerprint from "{template}" to "{profile}"',
+  'template.toast.deleted': 'Deleted template "{name}"',
+  'template.toast.saved': 'Saved template "{name}"',
+  'template.toast.exported': 'Exported {n} profile(s) (password-encrypted, proxy passwords left blank)',
+  'template.toast.importOk':
+    'Import complete: profiles {profiles}, proxies {proxies}; all identities verified',
+  'template.toast.importMismatch':
+    'Import complete: profiles {profiles}, but {bad} identity check(s) did not match — see below',
+
+  /* ────────────────────────────── Automation scripts ────────────────────────────── */
+  'script.title': 'Automation scripts',
+  'script.subtitle':
+    'Turn a successful run into a script that can be replayed as-is in any profile. Replay does not call the model: each step re-locates its element by selector and stops if it cannot.',
+
+  'script.importFromTask': 'Import from task',
+  'script.create': 'New script',
+  'script.library': 'Script library',
+  'script.loading': 'Loading scripts…',
+  'script.error.title': 'Could not read the script library',
+  'script.error.hint':
+    'This does not mean there are no scripts. The store file may be locked by antivirus or an indexing service, or may not be readable.',
+  'script.emptyLibrary':
+    'No scripts yet. Import one from task history, or create an empty script and build it by hand.',
+  'script.stepsCount': '{n} step(s)',
+  'script.untitled': 'Untitled script',
+
+  'script.empty.title': 'Select a script to start editing',
+  'script.empty.body':
+    'The script library is on the left. For your first script, click "Import from task": pick a task that already succeeded, and its successful steps become a replayable script.',
+  'script.nameAria': 'Script name',
+  'script.namePlaceholder': 'Script name',
+  'script.descAria': 'Script description',
+  'script.descPlaceholder': 'One-line description of what this script does (optional)',
+  'script.stepsTotal': '{n} step(s) total',
+  'script.unsaved': 'Unsaved',
+  'script.profile': 'Profile',
+  'script.replayProfileAria': 'Replay profile',
+  'script.noProfiles': 'No profiles',
+  'script.runningSuffix': ' (running)',
+  'script.run': 'Run',
+  'script.running': 'Running…',
+  'script.run.title.noId': 'Save the script before running it',
+  'script.run.title.dirty': 'You have unsaved changes; save before running to avoid replaying an old version',
+  'script.run.title.ok': 'Run in the current profile',
+  'script.saving': 'Saving…',
+
+  'script.result.ok': 'Run complete: {executed} / {total} step(s) executed',
+  'script.result.fail': 'Run stopped at step {at}; {executed} / {total} step(s) executed',
+  'script.steps.empty':
+    'No steps yet. Click "Add step" below to build the script by hand, or use "Import from task" to bring over a successful run.',
+  'script.addStep': 'Add step',
+  'script.step.actionAria': 'Step {n} action',
+  'script.step.selectorAria': 'Step {n} selector',
+  'script.step.selectorFallback': 'role=button name=Sign in',
+  'script.step.hint.navigate': 'Navigates the whole page; no element to locate',
+  'script.step.hint.scroll': 'Scrolls the whole page; no element to locate',
+  'script.step.hint.extract': 'Extracts data from the current page based on the description',
+  'script.step.hint.done': 'The script ends here',
+  'script.step.moveUp': 'Move up',
+  'script.step.moveDown': 'Move down',
+  'script.step.remove': 'Delete this step',
+  'script.step.text': 'Text to type',
+  'script.step.key': 'Key',
+  'script.step.direction': 'Direction',
+  'script.step.down': 'Down',
+  'script.step.up': 'Up',
+  'script.step.top': 'Top',
+  'script.step.bottom': 'Bottom',
+  'script.step.pixels': 'Pixels',
+  'script.step.pixelsPlaceholder': 'Leave blank for one screen',
+  'script.step.address': 'Address',
+  'script.step.extractPrompt': 'Extraction prompt',
+  'script.step.extractPlaceholder': 'e.g. the current product price',
+  'script.step.note': 'Closing note',
+  'script.step.notePlaceholder': 'e.g. order submitted',
+  'script.step.delay': 'Delay',
+  'script.hint.selector.click': 'e.g. role=button name=Sign in',
+  'script.hint.selector.type': 'e.g. role=textbox name=Email',
+  'script.hint.selector.press': 'e.g. role=textbox name=Search',
+
+  'script.import.title': 'Import from task history',
+  'script.import.note':
+    'Only successful steps are imported. Check the selectors after importing, especially on pages with many similarly named buttons.',
+  'script.import.loading': 'Loading tasks…',
+  'script.import.errorTitle': 'Could not read the task list',
+  'script.import.errorHint':
+    'This does not mean there are no tasks. Importing from task history is unavailable right now; retry, or close this and come back later.',
+  'script.import.empty':
+    'No tasks with successful steps yet. Run a task successfully in the Shadow panel, then come back to import.',
+  'script.import.action': 'Import',
+
+  'script.unsaved.title': 'Unsaved changes',
+  'script.unsaved.body':
+    'The current script has unsaved changes; switching will discard them.',
+  'script.continueEdit': 'Keep editing',
+  'script.discard': 'Discard changes',
+
+  'script.confirm.title': 'This step needs your confirmation',
+  'script.confirm.retry': 'Retry this step',
+  'script.confirm.continued':
+    'The first {executed} steps have run; continue from step {at} without replaying them.',
+  'script.confirm.startAt': 'You can start from step {at}.',
+  'script.confirm.native':
+    'Clicking "Retry this step" opens a native system confirmation; you must click "Allow" there. This page cannot approve it for you.',
+  'script.confirm.cancelNote':
+    'If you cancel, the page stays as it is; the script does not roll back automatically.',
+
+  'script.delete.title': 'Delete script',
+  'script.delete.confirm':
+    'Delete "{name}"? This cannot be undone; task history records are unaffected.',
+
+  'script.err.needName': 'Give the script a name first',
+  'script.err.saveFirst': 'Save the script before choosing a profile to replay on',
+  'script.err.unsavedRun': 'You have unsaved changes; save before running',
+  'script.err.needProfile': 'Select a profile first',
+  'script.err.noSteps': 'This task has no successful steps to reuse',
+  'script.toast.saved': 'Script saved',
+  'script.toast.deleted': 'Script deleted',
+  'script.toast.runOk': 'Run complete: {executed}/{total} steps',
+  'script.toast.runFail': 'Failed at step {n}',
+  'script.toast.imported': 'Imported {n} step(s); save to run',
+
+  /* ────────────────────────────── Schedules ────────────────────────────── */
+  'sched.title': 'Schedules',
+  'sched.desc':
+    'Launch a profile or run an automation script on an interval or at a fixed daily time. Scheduling works only while the app is running; the OS does not trigger it after the app closes.',
+  'sched.add': 'Add',
+  'sched.kind.launch': 'Launch profile',
+  'sched.kind.script': 'Run script',
+  'sched.runProfile': 'Run in profile',
+  'sched.target': 'Target',
+  'sched.everyMinutes': 'Every {n} min',
+  'sched.dailyAt': 'Daily at {time}',
+  'sched.mode.interval': 'Interval',
+  'sched.mode.daily': 'Daily time',
+  'sched.enabled': 'Enabled',
+  'sched.lastRun': 'Last run',
+  'sched.never': 'Never',
+  'sched.runNow': 'Run now',
+  'sched.remove': 'Remove',
+  'sched.removeConfirm': 'Remove the schedule for "{name}"? It will stop triggering.',
+  'sched.empty': 'No schedules yet. Pick an action, a target and a cadence, then click "Add".',
+  'sched.readFailed': 'Could not read schedules — this does not mean there are none',
+  'sched.saved': 'Schedule saved',
+  'sched.removed': 'Schedule removed',
+  'sched.ran': 'Triggered once',
+  'sched.runFailed': 'Run now failed: {message}'
+}

@@ -6,7 +6,13 @@
  * 之后再改本文件不会影响已有环境（避免指纹漂移）。
  */
 
-import type { FingerprintConfig, Settings, OSKind } from './types'
+import type {
+  FingerprintConfig,
+  FingerprintPermissionState,
+  ResolvedFingerprintConfig,
+  Settings,
+  OSKind
+} from './types'
 
 /* ────────────────────────────── 模型服务商 ────────────────────────────── */
 
@@ -18,6 +24,10 @@ export interface ProviderPreset {
   /** 是否需要 API Key。本地推理服务填 false */
   needKey: boolean
   hint: string
+  /** 英文界面用的显示名。缺省用 label（多数是品牌名，中英同形） */
+  labelEn?: string
+  /** 英文界面用的提示。缺省用 hint */
+  hintEn?: string
 }
 
 export const PROVIDERS: ProviderPreset[] = [
@@ -27,7 +37,8 @@ export const PROVIDERS: ProviderPreset[] = [
     baseUrl: 'https://api.deepseek.com/v1',
     model: 'deepseek-chat',
     needKey: true,
-    hint: '性价比高，中文指令跟随好'
+    hint: '性价比高，中文指令跟随好',
+    hintEn: 'Cost-effective, follows Chinese instructions well'
   },
   {
     id: 'openai',
@@ -35,15 +46,18 @@ export const PROVIDERS: ProviderPreset[] = [
     baseUrl: 'https://api.openai.com/v1',
     model: 'gpt-4.1-mini',
     needKey: true,
-    hint: '官方接口，需可访问的网络'
+    hint: '官方接口，需可访问的网络',
+    hintEn: 'Official API; requires network access'
   },
   {
     id: 'qwen',
     label: '通义千问',
+    labelEn: 'Qwen',
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     model: 'qwen-plus',
     needKey: true,
-    hint: '阿里云 DashScope 兼容模式'
+    hint: '阿里云 DashScope 兼容模式',
+    hintEn: 'Alibaba Cloud DashScope compatible mode'
   },
   {
     id: 'kimi',
@@ -51,23 +65,28 @@ export const PROVIDERS: ProviderPreset[] = [
     baseUrl: 'https://api.moonshot.cn/v1',
     model: 'moonshot-v1-32k',
     needKey: true,
-    hint: '长上下文，适合整页理解'
+    hint: '长上下文，适合整页理解',
+    hintEn: 'Long context; good for full-page understanding'
   },
   {
     id: 'zhipu',
     label: '智谱 GLM',
+    labelEn: 'Zhipu GLM',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     model: 'glm-4-plus',
     needKey: true,
-    hint: '注意路径含 /v4'
+    hint: '注意路径含 /v4',
+    hintEn: 'Note the /v4 path segment'
   },
   {
     id: 'siliconflow',
     label: '硅基流动',
+    labelEn: 'SiliconFlow',
     baseUrl: 'https://api.siliconflow.cn/v1',
     model: 'Qwen/Qwen2.5-72B-Instruct',
     needKey: true,
-    hint: '多模型聚合，可自填模型名'
+    hint: '多模型聚合，可自填模型名',
+    hintEn: 'Multi-model aggregator; custom model names allowed'
   },
   {
     id: 'ollama',
@@ -75,7 +94,8 @@ export const PROVIDERS: ProviderPreset[] = [
     baseUrl: 'http://localhost:11434/v1',
     model: 'qwen2.5:14b',
     needKey: false,
-    hint: '本地推理，免 Key'
+    hint: '本地推理，免 Key',
+    hintEn: 'Local inference; no API key needed'
   },
   {
     id: 'lmstudio',
@@ -83,15 +103,18 @@ export const PROVIDERS: ProviderPreset[] = [
     baseUrl: 'http://localhost:1234/v1',
     model: 'local-model',
     needKey: false,
-    hint: '本地推理，需在 LM Studio 里开服务'
+    hint: '本地推理，需在 LM Studio 里开服务',
+    hintEn: 'Local inference; start the server in LM Studio'
   },
   {
     id: 'custom',
     label: '自定义',
+    labelEn: 'Custom',
     baseUrl: '',
     model: '',
     needKey: true,
-    hint: '任何兼容 /chat/completions 的服务'
+    hint: '任何兼容 /chat/completions 的服务',
+    hintEn: 'Any service compatible with /chat/completions'
   }
 ]
 
@@ -225,6 +248,260 @@ export const TIMEZONE_GEO: Record<string, { latitude: number; longitude: number 
   'Asia/Singapore': { latitude: 1.3521, longitude: 103.8198 }
 }
 
+/* ─────────────────────── 新增指纹面的纯数据 ─────────────────────── */
+
+/**
+ * 权限表是**实测值**，不是「一律 prompt」。
+ *
+ * 写成全 prompt 看起来最安全，但 clipboard-write / payment-handler 这类
+ * 在真 Chrome 里默认就是 granted —— 一个站点读自己的权限状态时看到的
+ * 是「这个浏览器在撒谎」，比暴露真实状态更硬。
+ * periodic-background-sync 反过来默认是 denied（Chrome 默认关掉后台同步）。
+ */
+export const DEFAULT_PERMISSION_STATES: Readonly<Record<string, FingerprintPermissionState>> = {
+  'clipboard-read': 'prompt',
+  'clipboard-write': 'granted',
+  'geolocation': 'prompt',
+  'camera': 'prompt',
+  'microphone': 'prompt',
+  'notifications': 'prompt',
+  'background-sync': 'granted',
+  'periodic-background-sync': 'denied',
+  'payment-handler': 'granted',
+  'storage-access': 'granted',
+  'midi': 'prompt',
+  'midi-sysex': 'prompt',
+  'persistent-storage': 'prompt',
+  'speaker-selection': 'prompt',
+  'idle-detection': 'prompt',
+  'local-fonts': 'prompt'
+}
+
+/**
+ * 桌面 Chrome 的插件表就是五个内置 PDF viewer。
+ * 多一个（Flash / 假扩展）都是编的；名字顺序也是实测顺序。
+ */
+export const PDF_PLUGIN_NAMES = [
+  'PDF Viewer',
+  'Chrome PDF Viewer',
+  'Chromium PDF Viewer',
+  'Microsoft Edge PDF Viewer',
+  'WebKit built-in PDF'
+] as const
+
+export interface PdfMimeType {
+  type: string
+  suffixes: string
+  description: string
+}
+
+export const PDF_MIME_TYPES: readonly PdfMimeType[] = [
+  { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+  { type: 'text/pdf', suffixes: 'pdf', description: 'Portable Document Format' }
+]
+
+export interface PluginDescriptor {
+  name: string
+  description: string
+  filename: string
+  mimeTypes: string[]
+}
+
+/**
+ * 插件描述符只生成一次，注入脚本照抄。
+ *
+ * 脚本侧不自己拼这张表：两处写同一份事实必然漂移，而漂移的读数
+ * 是 `plugins[1].name` 说 Chrome、`mimeTypes` 却少一项 —— 一眼可见的不一致。
+ */
+export function resolvePluginDescriptors(plugins: FingerprintConfig['plugins']): PluginDescriptor[] {
+  if (plugins === 'none') return []
+  return PDF_PLUGIN_NAMES.map((name) => ({
+    name,
+    description: 'Portable Document Format',
+    filename: 'internal-pdf-viewer',
+    mimeTypes: PDF_MIME_TYPES.map((m) => m.type)
+  }))
+}
+
+export interface UaBrand {
+  brand: string
+  version: string
+}
+
+/**
+ * `navigator.userAgentData.brands` / `fullVersionList` 的唯一来源。
+ *
+ * 主进程的 CDP `Network.setUserAgentOverride` 与页面里的 JS 必须读同一份值，
+ * 否则「Client Hints 头说 Chrome 156、JS 说 Chromium 141」不需要任何参照就能判定。
+ */
+export function resolveUaBrands(fp: FingerprintConfig): {
+  brands: UaBrand[]
+  fullVersionList: UaBrand[]
+} {
+  const major = fp.uaVersion.split('.')[0] || CHROME_MAJOR
+  const brands = [
+    { brand: 'Google Chrome', version: major },
+    { brand: 'Chromium', version: major },
+    { brand: 'Not_A Brand', version: '24' }
+  ]
+  const fullVersionList = [
+    { brand: 'Google Chrome', version: fp.uaVersion },
+    { brand: 'Chromium', version: fp.uaVersion },
+    { brand: 'Not_A Brand', version: '24.0.0.0' }
+  ]
+  return { brands, fullVersionList }
+}
+
+/**
+ * `getHighEntropyValues()` 的返回值。
+ *
+ * 不读宿主：architecture 在 x64 上**就是 "x86"**（x86-64 的 ISA 族名），
+ * 写 "x86_64" 是把自己机器字的宽度当成 API 值。model 桌面恒空串，
+ * wow64 桌面恒 false；platformVersion 跟系统走，Linux 报内核版本而不是 macOS 的 15。
+ */
+export function resolveUaHighEntropy(fp: FingerprintConfig): Record<string, unknown> {
+  const { brands, fullVersionList } = resolveUaBrands(fp)
+  return {
+    architecture: 'x86',
+    bitness: '64',
+    model: '',
+    platform: fp.os === 'windows' ? 'Windows' : fp.os === 'macos' ? 'macOS' : 'Linux',
+    platformVersion: fp.os === 'linux' ? '6.8.0' : '15.0.0',
+    uaFullVersion: fp.uaVersion,
+    fullVersionList,
+    brands,
+    mobile: false,
+    wow64: false,
+    formFactors: ['Desktop']
+  }
+}
+
+export interface WebgpuAdapterInfo {
+  vendor: string
+  architecture: string
+  device: string
+  description: string
+}
+
+/**
+ * `GPUAdapter.info` 只能给到 vendor 一个可信维度。
+ *
+ * architecture / device 要从 `webgl.renderer` 的 ANGLE 串里拆，但 WebGPU 的
+ * `adapter.info.vendor` 枚举与 WebGL vendor 不是一一对应（ANGLE 的 NVIDIA
+ * 在 Dawn 里报 "nvidia"，Apple 报 "apple"，Intel 报 "intel"）。能稳定映射的
+ * 只有这三个前缀；拆不出来的部分**留空**，不编一个看似合理的型号 ——
+ * 编的 device 会和 `adapter.limits` / 实际驱动行为对不上。
+ */
+export function resolveWebgpuAdapterInfo(fp: FingerprintConfig): WebgpuAdapterInfo {
+  const v = fp.webgl.vendor.toLowerCase()
+  let vendor = ''
+  if (v.includes('nvidia')) vendor = 'nvidia'
+  else if (v.includes('apple')) vendor = 'apple'
+  else if (v.includes('intel')) vendor = 'intel'
+  else if (v.includes('amd') || v.includes('radeon')) vendor = 'amd'
+  return { vendor, architecture: '', device: '', description: '' }
+}
+
+/**
+ * 真桌面 Chrome 是否在 `Navigator.prototype` 上暴露 Web Share（share / canShare）。
+ *
+ * 这是「造不造属性」这条决策的**唯一真值**，注入脚本经 `C.webShare` 取用。
+ * 判据全部来自实测，不靠印象：
+ *   - windows：true —— Windows Chrome 156 实测 `'share' in navigator === true`。
+ *   - linux：  false —— Linux Chrome 157（headless + headful、secure context）实测
+ *                       `'share' / 'canShare' in navigator === false`。
+ *   - macos：  false —— **未测量**，保守取“不造”。属性存在性比值更硬，凭空造一个
+ *                       真 Chrome 没有的属性是比漏掉更糟的 tell；若 macOS Chrome
+ *                       实际有这两个 API，那是一个已知的未观测缺口，等实测再改，
+ *                       不在这里凭猜测补齐。
+ */
+export function webShareSupportedOn(os: OSKind): boolean {
+  return os === 'windows'
+}
+
+/** 缺省 connection：一次正常宽带，不是每次读都抖的随机值 */
+export const DEFAULT_CONNECTION = {
+  effectiveType: '4g' as const,
+  downlink: 10,
+  rtt: 50,
+  saveData: false
+}
+
+/** 桌面没有电池时 Chrome 的 getBattery() 读数 */
+export const DEFAULT_BATTERY = {
+  charging: true,
+  level: 1,
+  chargingTime: 0,
+  dischargingTime: Infinity
+}
+
+export const DEFAULT_MEDIA_DEVICES = {
+  videoInput: 0,
+  audioInput: 0,
+  audioOutput: 0
+}
+
+/**
+ * storage.estimate() 的 quota 是**钉死的常量**。
+ *
+ * 真实 quota 由宿主磁盘剩余空间算出来，把它透出去等于暴露「这台机器盘多大」。
+ * 10 GiB 是真实浏览器上常见的配额量级，.usage 很小也符合新 profile。
+ */
+export const DEFAULT_STORAGE_QUOTA = 10737418240
+
+/**
+ * 老盘 profile 缺新增面时补齐。
+ *
+ * 为什么放在这里而不是 store 层：store 的 `validateProfiles` 只检查形状不补值，
+ * 而在 fingerprint 生成与注入脚本之间还有 buildFingerprint / uaMetadata 等多个
+ * 读取点。补在唯一的「解析指纹」入口（resolveFingerprint）和注入脚本的入口，
+ * 任何一个 profile 都不会带着 undefined 走到页面里。
+ */
+export function applySurfaceDefaults(fp: FingerprintConfig): ResolvedFingerprintConfig {
+  const out: ResolvedFingerprintConfig = {
+    ...fp,
+    // 老盘上这两项是必填 boolean，但早于它们写入的 profile 里根本不存在。
+    // `...fp` 不会补，于是它们是 undefined —— 消费点 `if (C.rectNoise)`
+    // 把 undefined 当关闭、`if (!C.webgpu)` 把 undefined 当「删掉 navigator.gpu」，
+    // 结果老环境静默失去伪装，而且没有任何报错。
+    //   clientRectsNoise：真实 Chrome 有 ClientRects 噪声，缺省必须开。
+    //   webgpu：Linux 上没有 WebGPU（删 navigator.gpu 才像 Linux），按 OS 决定。
+    clientRectsNoise: typeof fp.clientRectsNoise === 'boolean' ? fp.clientRectsNoise : true,
+    webgpu: typeof fp.webgpu === 'boolean' ? fp.webgpu : fp.os !== 'linux',
+    maxTouchPoints: typeof fp.maxTouchPoints === 'number' ? fp.maxTouchPoints : 0,
+    connection: {
+      effectiveType: fp.connection?.effectiveType ?? DEFAULT_CONNECTION.effectiveType,
+      downlink: fp.connection?.downlink ?? DEFAULT_CONNECTION.downlink,
+      rtt: fp.connection?.rtt ?? DEFAULT_CONNECTION.rtt,
+      saveData: fp.connection?.saveData ?? DEFAULT_CONNECTION.saveData
+    },
+    battery: {
+      charging: fp.battery?.charging ?? DEFAULT_BATTERY.charging,
+      level: fp.battery?.level ?? DEFAULT_BATTERY.level,
+      chargingTime: fp.battery?.chargingTime ?? DEFAULT_BATTERY.chargingTime,
+      dischargingTime: fp.battery?.dischargingTime ?? DEFAULT_BATTERY.dischargingTime
+    },
+    mediaDevices: {
+      videoInput: fp.mediaDevices?.videoInput ?? DEFAULT_MEDIA_DEVICES.videoInput,
+      audioInput: fp.mediaDevices?.audioInput ?? DEFAULT_MEDIA_DEVICES.audioInput,
+      audioOutput: fp.mediaDevices?.audioOutput ?? DEFAULT_MEDIA_DEVICES.audioOutput
+    },
+    permissions:
+      fp.permissions && typeof fp.permissions === 'object'
+        ? { ...DEFAULT_PERMISSION_STATES, ...fp.permissions }
+        : { ...DEFAULT_PERMISSION_STATES },
+    mediaCapabilities: fp.mediaCapabilities === undefined ? true : fp.mediaCapabilities,
+    plugins: fp.plugins === 'chrome-pdf' || fp.plugins === 'none' ? fp.plugins : 'chrome-pdf',
+    storageEstimate: fp.storageEstimate === undefined ? true : fp.storageEstimate,
+    uaHighEntropy: fp.uaHighEntropy === undefined ? true : fp.uaHighEntropy,
+    // 老盘的 'noise' / 'off' 原样保留；只有非法值才退回安全缺省。
+    canvas:
+      fp.canvas === 'noise' || fp.canvas === 'off' || fp.canvas === 'block' ? fp.canvas : 'noise',
+    audio: fp.audio === 'noise' || fp.audio === 'off' || fp.audio === 'block' ? fp.audio : 'noise'
+  }
+  return out
+}
+
 /** 从模板生成一套完整指纹（seed 参与微扰，保证同 seed 同结果） */
 export function resolveFingerprint(
   os: OSKind,
@@ -249,7 +526,16 @@ export function resolveFingerprint(
     webrtc: 'proxy',
     fonts: [...t.fonts],
     clientRectsNoise: true,
-    webgpu: os !== 'linux'
+    webgpu: os !== 'linux',
+    maxTouchPoints: 0,
+    connection: { ...DEFAULT_CONNECTION },
+    battery: { ...DEFAULT_BATTERY },
+    mediaDevices: { ...DEFAULT_MEDIA_DEVICES },
+    permissions: { ...DEFAULT_PERMISSION_STATES },
+    mediaCapabilities: true,
+    plugins: 'chrome-pdf',
+    storageEstimate: true,
+    uaHighEntropy: true
   }
   // seed 参与确定性微扰：同 seed 恒定，不同 seed 有差异
   const h = hashSeed(seed)
@@ -265,7 +551,9 @@ export function resolveFingerprint(
     base.screen = { width: pick[0], height: pick[1], dpr: pick[2], colorDepth: 24 }
     base.hardware = { cpuCores: [4, 6, 8, 12, 16][h % 5], memoryGB: [8, 16, 32][h % 3] }
   }
-  return { ...base, ...overrides }
+  // 先合并 overrides 再补齐：老盘上只有部分新增字段的 profile 传进来时，
+  // 缺的那几项仍然是完整缺省，绝不能是 undefined。
+  return applySurfaceDefaults({ ...base, ...overrides })
 }
 
 function hashSeed(seed: string): number {

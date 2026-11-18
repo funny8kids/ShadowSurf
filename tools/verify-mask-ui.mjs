@@ -23,8 +23,7 @@
 
 import { resolve } from 'node:path'
 import { mkdirSync, writeFileSync } from 'node:fs'
-
-const ROOT = resolve(import.meta.dirname, '..')
+import { electronExecutable, ROOT } from './platform-paths.mjs'
 
 const out = { steps: [], failures: [] }
 const step = (id, label, data) => out.steps.push({ id, label, ...data })
@@ -142,8 +141,17 @@ try {
   const env = { ...process.env, NODE_ENV: 'production' }
   delete env.ELECTRON_RUN_AS_NODE
 
+  const exe = electronExecutable(ROOT)
+  // Electron 是必需依赖，不是可选对照：找不到就是真错误（脚本/环境问题），
+  // 不能像 Chrome 那样「跳过比较」，更不能被 catch 吞成一条普通断言失败。
+  // 跨平台路径交给 platform-paths.mjs（Windows 优先 .exe，其他平台用无后缀名）。
+  if (!exe) {
+    console.error('找不到 Electron 可执行文件：' + resolve(ROOT, 'node_modules/electron/dist') + '（electron.exe / electron 都不存在）')
+    process.exit(2)
+  }
+
   app = await electron.launch({
-    executablePath: resolve(ROOT, 'node_modules/electron/dist/electron.exe'),
+    executablePath: exe,
     args: ['.', '--user-data-dir=' + resolve(ROOT, 'artifacts/mask-ui-ud')],
     cwd: ROOT,
     env,

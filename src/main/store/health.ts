@@ -38,6 +38,20 @@ export interface HealthStoreRef {
   file: string
   schemaVersion: number
   corruption: StoreCorruptionInfo | null
+  /**
+   * 可选的「现在读一次盘」钩子。
+   *
+   * 为什么需要它：`corruption` 不是对文件当前内容的判断，而是**上一次读盘
+   * 留下的副产品**。应用刚启动时每个 JsonStore 都还没读过自己的文件，于是
+   * `corruption` 恒为 null —— 哪怕 `profiles.json` 已经损坏、读出来只会是
+   * 空列表，健康面板也会报「一切正常」。那是最坏的一种假阴性：用户据此
+   * 认为数据完好，而界面上的空列表其实是降级后的结果。
+   *
+   * 所以健康检查必须**先让每个 store 读一次**（走各自的 list/get，损坏判定
+   * 与降级逻辑都留在 store 里），再取 `corruption`。钩子做成可选是为了让
+   * 零依赖的 `health.ts` 仍能被 `tests/` 直接构造引用（见 store-health.test.ts）。
+   */
+  touch?: () => void
 }
 
 /** 明文 seed 的判定：只有「seed 字段 = 32 位小写 hex」才算，别用裸 hex 去扫 */
@@ -124,6 +138,13 @@ function scanBackups(dir: string): StoreBackupHealth[] {
  */
 export function collectStoreHealth(dir: string, refs: HealthStoreRef[]): StoreHealth {
   const stores: StoreFileHealth[] = refs.map((ref) => {
+    // 必须先读一次盘，再读 corruption —— 顺序不能反。
+    //
+    // `corruption` 是「上一次 read() 的判定结果」，不是对文件当前内容的探测：
+    // 冷启动时 store 还没读过盘，这个字段恒为 null，于是「文件已损坏、读出来
+    // 是空列表」会被报成「一切正常」。touch() 触发的这次读会走 store 自己的
+    // 降级路径（返回空列表而不是抛错），损坏判定随之落进 `ref.corruption`。
+    ref.touch?.()
     const st = statQuietly(ref.file)
     return {
       name: ref.name,

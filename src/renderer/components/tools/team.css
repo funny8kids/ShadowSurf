@@ -1,0 +1,422 @@
+/**
+ * 本地团队面板样式。
+ *
+ * 类名统一 tp- 前缀：多个工具面板的 css 会进同一张样式表，
+ * 谁都不加前缀迟早互相覆盖（见 api.css / data.css 的同样约定）。
+ * 颜色、间距、圆角、阴影、动效时长一律走 tokens.css，不写死色值；
+ * 暗色主题由 [data-theme='dark'] 自动跟随，减少动态效果由 base.css 的 kill switch 统一约束。
+ */
+
+.tp-panel {
+  padding: 22px 0 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 100%;
+}
+
+/* ────────────────────────────── 页头 ────────────────────────────── */
+
+.tp-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.tp-head h2 {
+  margin: 0 0 4px;
+  font-size: var(--fs-21);
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+
+.tp-head p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-3);
+}
+
+/* 能力边界：和 api-scope 一样用 amber，且必须被读到（align-items: flex-start） */
+.tp-scope {
+  margin: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 9px 11px;
+  border: 1px solid var(--amber-line);
+  border-radius: var(--r-sm);
+  background: var(--amber-2);
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--ink-2);
+}
+
+.tp-scope svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--amber);
+}
+
+.tp-scope strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* ────────────────────────────── 卡片 ────────────────────────────── */
+
+.tp-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 13px 15px 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+
+.tp-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.tp-card-head h3 {
+  margin: 0 0 2px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.tp-card-head > div > span {
+  font-size: 11px;
+  color: var(--ink-4);
+}
+
+/* ────────────────────────────── 表格 ────────────────────────────── */
+
+.tp-table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+
+.tp-tr {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) 90px 100px minmax(0, 1.3fr);
+  align-items: center;
+  gap: 10px;
+  padding: 7px 11px;
+  border-bottom: 1px solid var(--line-2);
+  font-size: 12px;
+  color: var(--ink-2);
+  transition: background var(--dur-2) var(--ease-easy);
+}
+
+.tp-tr:last-child {
+  border-bottom: none;
+}
+
+.tp-tr:not(.tp-th):hover {
+  background: var(--surface-hover);
+}
+
+.tp-tr.off {
+  opacity: 0.62;
+}
+
+.tp-th {
+  background: var(--surface-4);
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* 授权表列结构不同：环境 / 成员 / 权限 / 操作，四等分即可。
+   用显式修饰类而不是 :nth-of-type —— 三态 / 空态的卡片数量会变，nth 定位不可靠 */
+.tp-table-shares .tp-tr {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 72px 64px;
+}
+
+.tp-who {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.tp-who b {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.tp-who i {
+  flex-basis: 100%;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-style: normal;
+  color: var(--ink-4);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tp-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tp-role {
+  min-width: 0;
+}
+
+.tp-who-time {
+  font-size: 11px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.tp-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* 角色下拉放在操作列里，压缩一点避免挤走禁用 / 移除按钮 */
+.tp-inline-select {
+  height: 26px;
+  max-width: 78px;
+  padding: 0 4px;
+  font-family: var(--font);
+  font-size: 11px;
+  color: var(--ink-2);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  cursor: pointer;
+}
+
+.tp-inline-select:disabled {
+  color: var(--ink-5);
+  background: var(--surface-3);
+  cursor: not-allowed;
+}
+
+/* ────────────────────────────── 表单 ────────────────────────────── */
+
+.tp-form {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.tp-form .field {
+  flex: 1 1 150px;
+  min-width: 120px;
+  margin: 0;
+}
+
+/* Select / Button 自带样式，这里只保证它们在 flex 行里不被压扁 */
+.tp-form > .ui-select,
+.tp-form > .btn {
+  flex: none;
+}
+
+.tp-input {
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  transition: border-color var(--dur-2) var(--ease-easy);
+}
+
+.tp-input::placeholder {
+  color: var(--ink-4);
+}
+
+.tp-input:hover:not(:disabled) {
+  border-color: var(--line-strong);
+}
+
+.tp-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.tp-input:disabled {
+  background: var(--surface-3);
+  color: var(--ink-3);
+  cursor: not-allowed;
+}
+
+/* ────────────────────────────── 活动 ────────────────────────────── */
+
+.tp-activity {
+  display: flex;
+  flex-direction: column;
+}
+
+.tp-act {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 8px 2px;
+  border-bottom: 1px solid var(--line-2);
+}
+
+.tp-act:last-child {
+  border-bottom: none;
+}
+
+.tp-act-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.tp-act-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.tp-act-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.tp-act-line b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.tp-act-action {
+  color: var(--accent);
+}
+
+.tp-act-target {
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.tp-act-time {
+  flex: none;
+  font-size: 11px;
+  color: var(--ink-4);
+  white-space: nowrap;
+}
+
+/* ────────────────────────────── 空 / 加载 / 错误态 ────────────────────────────── */
+
+.tp-empty,
+.tp-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 26px 16px;
+  text-align: center;
+  color: var(--ink-3);
+}
+
+.tp-empty b,
+.tp-state b {
+  font-size: 13px;
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.tp-empty p,
+.tp-state p {
+  margin: 0;
+  max-width: 460px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--ink-4);
+}
+
+.tp-state.bad {
+  border: 1px solid var(--red-line);
+  border-radius: var(--r-sm);
+  background: var(--red-soft);
+}
+
+.tp-state.bad > svg {
+  color: var(--red);
+}
+
+.tp-state.bad b {
+  color: var(--red-ink);
+}
+
+.tp-state-hint {
+  margin-bottom: 4px;
+}
+
+.tp-inline-error {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  border: 1px solid var(--amber-line);
+  border-radius: var(--r-sm);
+  background: var(--amber-2);
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+.tp-inline-error svg {
+  flex: none;
+  color: var(--amber);
+}
+
+.tp-inline-error button {
+  margin-left: auto;
+}
+
+@media (max-width: 900px) {
+  .tp-tr,
+  .tp-table-shares .tp-tr {
+    grid-template-columns: minmax(0, 1fr) 80px;
+  }
+
+  .tp-form > .btn {
+    width: 100%;
+  }
+}

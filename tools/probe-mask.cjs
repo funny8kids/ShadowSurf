@@ -339,6 +339,11 @@ const PROBES = [
   }
 ]
 
+// 软件 WebGL 开关必须在 disableHardwareAcceleration / whenReady 之前设置 ——
+// 否则 WebGL 探针只会读到 no-webgl，把「没测到」误记成「值不对」。
+const { enableSoftwareWebGL } = require('./gpu-fallback.cjs')
+enableSoftwareWebGL(app)
+
 app.disableHardwareAcceleration()
 
 app.whenReady().then(async () => {

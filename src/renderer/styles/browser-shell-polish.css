@@ -1,0 +1,75 @@
+/**
+ * 浏览器外壳保真度补丁：地址栏 origin 强调、可拖拽分屏 handle、favicon。
+ *
+ * 只作用于 .browser 下的外壳元素，不改全局令牌；所有颜色/间距走 tokens.css。
+ * 单独一个文件，避免碰 app.css（别的 agent 在改）。
+ */
+
+/* ── 地址栏 origin 强调 ── */
+.addr {
+  cursor: text;
+}
+.addr[data-focused='true'] .addr-display {
+  display: none;
+}
+.addr .addr-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: inherit;
+  outline: none;
+}
+.addr[data-focused='false'] .addr-input {
+  /* 未聚焦时 input 透明，露出下面强调后的回显；点击即聚焦 */
+  color: transparent;
+}
+.addr-display {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  font-size: inherit;
+  pointer-events: none;
+}
+.addr-origin {
+  color: var(--ink);
+  font-weight: 650;
+}
+.addr-path {
+  color: var(--ink-3);
+}
+
+/* ── 可拖拽分屏 handle ── */
+.split-handle {
+  flex: none;
+  width: 6px;
+  align-self: stretch;
+  display: grid;
+  place-items: center;
+  cursor: col-resize;
+  background: var(--line-2);
+  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  transition: background var(--dur-2) var(--ease-easy);
+}
+.split-handle:hover,
+.split-handle:active {
+  background: var(--accent-line);
+}
+.split-handle-grip {
+  width: 2px;
+  height: 28px;
+  border-radius: var(--r-2xs, 4px);
+  background: var(--ink-4);
+}
+
+/* ── favicon ── */
+.btab .fav img {
+  display: block;
+  border-radius: 2px;
+}

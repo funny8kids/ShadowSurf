@@ -26,6 +26,7 @@ import type { Settings, TestResult } from '@shared/types'
 import { PROVIDERS } from '@shared/presets'
 import { Button, Icon, Modal, cx, useToast } from './ui'
 import { bridge, errorMessage, onAgentEvent } from '@renderer/lib/api'
+import { useI18n } from '@renderer/lib/i18n'
 import { maskKey, providerNeedKey, resolveEndpoint, stepResultText } from '@renderer/lib/format'
 
 type AgentStatus = 'idle' | 'running' | 'waiting' | 'done' | 'error'
@@ -45,14 +46,14 @@ interface ConfirmState {
   stepIndex: number
 }
 
-const SUGGESTIONS = ['提取这一页的关键信息', '把这一页里价格最低的套餐列出来', '在页面里找到搜索框并搜索「shadow」']
+const SUGGESTION_KEYS = ['agent.suggest.extract', 'agent.suggest.cheapest', 'agent.suggest.search']
 
-const STATUS_LABEL: Record<AgentStatus, string> = {
-  idle: '影子待命',
-  running: '正在执行',
-  waiting: '等待确认',
-  done: '已完成',
-  error: '执行出错'
+const STATUS_LABEL_KEY: Record<AgentStatus, string> = {
+  idle: 'agent.status.idle',
+  running: 'agent.status.running',
+  waiting: 'agent.status.waiting',
+  done: 'agent.status.done',
+  error: 'agent.status.error'
 }
 
 function upsertStep(list: AgentStep[], next: AgentStep): AgentStep[] {
@@ -81,6 +82,7 @@ export function AgentPanel({
   onClose
 }: AgentPanelProps) {
   const toast = useToast()
+  const { t, lang } = useI18n()
 
   const [intent, setIntent] = useState('')
   const [plan, setPlan] = useState<string[]>([])
@@ -170,11 +172,11 @@ export function AgentPanel({
       const trimmed = value.trim()
       if (!trimmed) return
       if (!profileId) {
-        toast.push('当前没有可用的环境，请先打开一个环境', 'err')
+        toast.push(t('agent.toast.noProfile'), 'err')
         return
       }
       if (needKey && !settings.apiKey.trim()) {
-        toast.push('还没有配置模型 API Key', 'err')
+        toast.push(t('agent.toast.noApiKey'), 'err')
         setSettingsOpen(true)
         return
       }
@@ -194,7 +196,7 @@ export function AgentPanel({
         }
       })()
     },
-    [needKey, profileId, settings.apiKey, tabId, toast]
+    [needKey, profileId, settings.apiKey, tabId, toast, t]
   )
 
   async function stop(): Promise<void> {
@@ -230,7 +232,7 @@ export function AgentPanel({
     try {
       const snap = await bridge().agent.snapshot(profileId, tabId ?? undefined)
       setTitle(snap.title || pageTitle)
-      toast.push(`已重新读取：${snap.elements.length} 个可交互元素`, 'ok')
+      toast.push(t('agent.toast.resnapshot', { n: snap.elements.length }), 'ok')
     } catch (err) {
       toast.push(errorMessage(err), 'err')
     }
@@ -242,7 +244,7 @@ export function AgentPanel({
       const next = await bridge().settings.set(draft)
       onSettingsSaved(next)
       setSettingsOpen(false)
-      toast.push('模型配置已保存', 'ok')
+      toast.push(t('agent.toast.settingsSaved'), 'ok')
     } catch (err) {
       toast.push(errorMessage(err), 'err')
     } finally {
@@ -271,7 +273,7 @@ export function AgentPanel({
         : ''
 
   return (
-    <aside className="agent-panel" aria-label="影子面板">
+    <aside className="agent-panel" aria-label={t('agent.panel.aria')}>
       <div className="ap-head">
         <div className="ap-mark">
           <Icon name="wave" size={12} strokeWidth={2.2} />
@@ -279,8 +281,10 @@ export function AgentPanel({
         <div className="ap-id">
           <b>ShadowSurf</b>
           <span className={subtitleClass}>
-            {STATUS_LABEL[status]}
-            {status === 'running' && steps.length > 0 ? ` · 第 ${steps.length} 步` : ''}
+            {t(STATUS_LABEL_KEY[status])}
+            {status === 'running' && steps.length > 0
+              ? t('agent.status.step', { n: steps.length })
+              : ''}
           </span>
         </div>
         <div className="spacer" />
@@ -288,12 +292,12 @@ export function AgentPanel({
           type="button"
           className={cx('ap-gear', settingsOpen && 'on')}
           onClick={() => setSettingsOpen((v) => !v)}
-          aria-label="模型设置"
+          aria-label={t('agent.settings.aria')}
           aria-pressed={settingsOpen}
         >
           <Icon name="settings" size={14} />
         </button>
-        <button type="button" className="ap-gear" onClick={onClose} aria-label="收起侧栏">
+        <button type="button" className="ap-gear" onClick={onClose} aria-label={t('agent.panel.collapse')}>
           <Icon name="close" size={14} strokeWidth={2} />
         </button>
       </div>
@@ -301,14 +305,14 @@ export function AgentPanel({
       <div className="ap-context">
         <Icon name="lock" size={11} strokeWidth={2} />
         <span className="t" title={title}>
-          {title || '未打开页面'}
+          {title || t('agent.context.noPage')}
         </span>
         <button
           type="button"
           className="refresh"
           onClick={() => void refreshPage()}
-          aria-label="重新读取当前页面"
-          title="重新读取当前页面"
+          aria-label={t('agent.context.refresh')}
+          title={t('agent.context.refresh')}
         >
           <Icon name="reload" size={11} strokeWidth={2} />
         </button>
@@ -316,14 +320,14 @@ export function AgentPanel({
 
       {settingsOpen ? (
         <div className="ap-settings scroll-thin">
-          <label className="set-lbl">服务商</label>
+          <label className="set-lbl">{t('agent.settings.provider')}</label>
           <div className="prov-grid">
             {PROVIDERS.map((p) => (
               <button
                 key={p.id}
                 type="button"
                 className={cx('prov', draft.provider === p.id && 'on')}
-                title={p.hint}
+                title={lang === 'en' ? (p.hintEn ?? p.hint) : p.hint}
                 onClick={() =>
                   setDraft((d) => ({
                     ...d,
@@ -333,12 +337,12 @@ export function AgentPanel({
                   }))
                 }
               >
-                {p.label}
+                {lang === 'en' ? (p.labelEn ?? p.label) : p.label}
               </button>
             ))}
           </div>
 
-          <label className="set-lbl">BASE URL</label>
+          <label className="set-lbl">{t('agent.settings.baseUrl')}</label>
           <input
             className="set-input mono"
             value={draft.baseUrl}
@@ -347,16 +351,16 @@ export function AgentPanel({
             spellCheck={false}
           />
           <div className="set-hint">
-            实际请求：<b>{endpoint || '—'}</b>
+            {t('agent.settings.effectiveRequest')} <b>{endpoint || '—'}</b>
           </div>
 
-          <label className="set-lbl">API KEY</label>
+          <label className="set-lbl">{t('agent.settings.apiKey')}</label>
           <div className="key-wrap">
             <input
               className="set-input mono"
               type={showKey ? 'text' : 'password'}
               value={draft.apiKey}
-              placeholder={needKey ? 'sk-…' : '本地模型可留空'}
+              placeholder={needKey ? 'sk-…' : t('agent.settings.keyPlaceholder')}
               onChange={(e) => setDraft((d) => ({ ...d, apiKey: e.target.value }))}
               spellCheck={false}
               autoComplete="off"
@@ -365,14 +369,16 @@ export function AgentPanel({
               type="button"
               className="key-eye"
               onClick={() => setShowKey((v) => !v)}
-              aria-label={showKey ? '隐藏 Key' : '显示 Key'}
+              aria-label={showKey ? t('agent.settings.hideKey') : t('agent.settings.showKey')}
             >
               <Icon name={showKey ? 'eyeOff' : 'eye'} size={13} />
             </button>
           </div>
-          <div className="set-hint">已保存的 Key：{maskKey(settings.apiKey)}</div>
+          <div className="set-hint">
+            {t('agent.settings.savedKey', { key: maskKey(settings.apiKey) })}
+          </div>
 
-          <label className="set-lbl">模型</label>
+          <label className="set-lbl">{t('agent.settings.model')}</label>
           <input
             className="set-input"
             value={draft.model}
@@ -383,7 +389,7 @@ export function AgentPanel({
 
           <div className="set-row">
             <div>
-              <label className="set-lbl">温度</label>
+              <label className="set-lbl">{t('agent.settings.temperature')}</label>
               <input
                 className="set-input"
                 type="number"
@@ -397,7 +403,7 @@ export function AgentPanel({
               />
             </div>
             <div>
-              <label className="set-lbl">最大步数</label>
+              <label className="set-lbl">{t('agent.settings.maxSteps')}</label>
               <input
                 className="set-input"
                 type="number"
@@ -414,23 +420,27 @@ export function AgentPanel({
               <Icon name={testResult.ok ? 'check' : 'alert'} size={12} strokeWidth={2.2} />
               <span>
                 {testResult.ok
-                  ? `连接正常${testResult.latency ? ` · ${testResult.latency}ms` : ''}${testResult.reply ? ` · ${testResult.reply}` : ''}`
-                  : `连接失败：${testResult.error ?? '未知错误'}`}
+                  ? t('agent.settings.testOk') +
+                    (testResult.latency ? ` · ${testResult.latency}ms` : '') +
+                    (testResult.reply ? ` · ${testResult.reply}` : '')
+                  : t('agent.settings.testFailed', {
+                      error: testResult.error ?? t('agent.settings.unknownError')
+                    })}
               </span>
             </div>
           ) : null}
 
           <div className="set-actions">
             <Button variant="ghost" disabled={busy} onClick={() => void testConnection()}>
-              测试连接
+              {t('agent.settings.test')}
             </Button>
             <Button variant="primary" disabled={busy} onClick={() => void saveSettings()}>
-              保存
+              {t('common.save')}
             </Button>
           </div>
 
           <div className="set-hint" style={{ marginTop: 10 }}>
-            Key 只保存在本机，请求直连你填写的服务商，不经任何中转服务器。共用电脑请用完清空。
+            {t('agent.settings.keyNote')}
           </div>
         </div>
       ) : (
@@ -441,17 +451,17 @@ export function AgentPanel({
                 <div className="mark">
                   <Icon name="wave" size={20} strokeWidth={2.2} />
                 </div>
-                <h3>影子待命</h3>
+                <h3>{t('agent.welcome.title')}</h3>
                 <p>
-                  我能读懂这一页，也能替你点按钮。
+                  {t('agent.welcome.body1')}
                   <br />
-                  先告诉我你想做什么。
+                  {t('agent.welcome.body2')}
                 </p>
                 <div className="ap-suggest">
-                  <div className="lbl">试试这些</div>
-                  {SUGGESTIONS.map((s) => (
-                    <button key={s} type="button" className="sg" onClick={() => start(s)}>
-                      <span>{s}</span>
+                  <div className="lbl">{t('agent.welcome.tryThese')}</div>
+                  {SUGGESTION_KEYS.map((key) => (
+                    <button key={key} type="button" className="sg" onClick={() => start(t(key))}>
+                      <span>{t(key)}</span>
                       <Icon name="chevronRight" size={11} strokeWidth={2} />
                     </button>
                   ))}
@@ -464,8 +474,8 @@ export function AgentPanel({
             {plan.length > 0 ? (
               <div className="plan">
                 <div className="hd">
-                  <b>计划</b>
-                  <span>{plan.length} 步</span>
+                  <b>{t('agent.plan.title')}</b>
+                  <span>{t('agent.plan.steps', { n: plan.length })}</span>
                 </div>
                 <ol>
                   {plan.map((line, i) => (
@@ -519,11 +529,11 @@ export function AgentPanel({
               <div className="result-card">
                 <div className="hd">
                   <Icon name="check" size={11} strokeWidth={2.6} />
-                  已完成
+                  {t('agent.result.title')}
                 </div>
                 <p>{result.summary}</p>
                 <div className="meta">
-                  {steps.length} 步 · {result.tokens} tokens
+                  {t('agent.result.meta', { steps: steps.length, tokens: result.tokens })}
                 </div>
               </div>
             ) : null}
@@ -532,7 +542,7 @@ export function AgentPanel({
               <div className="error-card">
                 <div className="hd">
                   <Icon name="alert" size={11} strokeWidth={2.2} />
-                  执行失败
+                  {t('agent.error.title')}
                 </div>
                 <p>{error}</p>
                 <div className="act">
@@ -542,10 +552,10 @@ export function AgentPanel({
                     icon="reload"
                     onClick={() => start(intent)}
                   >
-                    重试
+                    {t('common.retry')}
                   </Button>
                   <Button size="sm" variant="quiet" onClick={() => setSettingsOpen(true)}>
-                    检查模型配置
+                    {t('agent.error.checkSettings')}
                   </Button>
                 </div>
               </div>
@@ -557,8 +567,12 @@ export function AgentPanel({
               <textarea
                 ref={taRef}
                 value={text}
-                placeholder={running ? '执行中可以继续输入下一个任务' : '让影子做点什么…'}
-                aria-label="任务输入"
+                placeholder={
+                  running
+                    ? t('agent.input.placeholderRunning')
+                    : t('agent.input.placeholder')
+                }
+                aria-label={t('agent.input.aria')}
                 onChange={(e) => setText(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key !== 'Enter') return
@@ -574,8 +588,8 @@ export function AgentPanel({
                   type="button"
                   className="send-btn stop"
                   onClick={() => void stop()}
-                  aria-label="停止执行"
-                  title="停止执行"
+                  aria-label={t('agent.input.stop')}
+                  title={t('agent.input.stop')}
                 >
                   <Icon name="stop" size={13} strokeWidth={2} />
                 </button>
@@ -585,8 +599,8 @@ export function AgentPanel({
                   className="send-btn"
                   onClick={() => start(text)}
                   disabled={!text.trim()}
-                  aria-label="发送"
-                  title="发送（Enter）"
+                  aria-label={t('agent.input.send')}
+                  title={t('agent.input.sendTitle')}
                 >
                   <Icon name="arrowRight" size={13} strokeWidth={2} />
                 </button>
@@ -598,12 +612,16 @@ export function AgentPanel({
                 type="button"
                 className="act"
                 onClick={() => setSettingsOpen(true)}
-                title="打开模型设置"
+                title={t('agent.footer.openSettings')}
               >
-                {draft.model || '未配置模型'}
+                {draft.model || t('agent.footer.noModel')}
               </button>
               <div className="spacer" />
-              <span>{running ? '执行中 · 可继续输入' : `上限 ${draft.maxSteps} 步`}</span>
+              <span>
+                {running
+                  ? t('agent.footer.running')
+                  : t('agent.footer.maxSteps', { n: draft.maxSteps })}
+              </span>
             </div>
           </div>
         </>
@@ -611,25 +629,20 @@ export function AgentPanel({
 
       <Modal
         open={confirm !== null}
-        title="等待你在系统窗口中确认"
+        title={t('agent.confirm.title')}
         icon="alert"
         onClose={() => void cancelFromConfirm()}
         footer={
           <>
             <Button variant="ghost" onClick={() => void cancelFromConfirm()}>
-              取消本次任务
+              {t('agent.confirm.cancel')}
             </Button>
           </>
         }
-        note="确认窗口由操作系统绘制 · 这个页面无权替你点「允许」"
+        note={t('agent.confirm.note')}
       >
-        <span>
-          {confirm?.reason ?? '这一步可能产生不可逆的结果。'}
-        </span>
-        <span className="muted">
-          请到应用弹出的系统确认窗口上点「允许执行」。这里的按钮只能取消 ——
-          批准必须来自那个窗口，否则被篡改的界面就能自己批准自己。
-        </span>
+        <span>{confirm?.reason ?? t('agent.confirm.defaultReason')}</span>
+        <span className="muted">{t('agent.confirm.body')}</span>
         {confirm ? <span className="code">{describeAction(confirm.action)}</span> : null}
       </Modal>
     </aside>

@@ -14,8 +14,18 @@ import { hkdfSync, randomBytes } from 'node:crypto'
 import * as fs from 'node:fs'
 import { safeStorage } from 'electron'
 import { filePath } from '@main/store/db'
-import { TIMEZONE_GEO, resolveFingerprint } from '@shared/presets'
-import type { FingerprintConfig, OSKind, Profile, StoredProfile } from '@shared/types'
+import {
+  TIMEZONE_GEO,
+  applySurfaceDefaults,
+  resolveFingerprint,
+  resolvePluginDescriptors,
+  resolveUaBrands,
+  resolveUaHighEntropy,
+  resolveWebgpuAdapterInfo,
+  webShareSupportedOn,
+  DEFAULT_STORAGE_QUOTA
+} from '@shared/presets'
+import type { FingerprintConfig, FingerprintPermissionState, OSKind, Profile, StoredProfile } from '@shared/types'
 
 /* ────────────────────────────── 主密钥 ────────────────────────────── */
 
@@ -275,13 +285,29 @@ interface InjectionConfig {
   geo: { lat: number; lon: number; acc: number } | null
   glVendor: string
   glRenderer: string
-  canvasNoise: boolean
-  audioNoise: boolean
   webrtc: string
   rectNoise: boolean
   fonts: string[]
   webgpu: boolean
   os: string
+  uaVersion: string
+  maxTouchPoints: number
+  connection: FingerprintConfig['connection']
+  battery: FingerprintConfig['battery']
+  mediaDevices: FingerprintConfig['mediaDevices']
+  permissions: Record<string, FingerprintPermissionState>
+  mediaCapabilities: boolean
+  plugins: FingerprintConfig['plugins']
+  pluginDescriptors: Array<{ name: string; description: string; filename: string; mimeTypes: string[] }>
+  storageEstimate: boolean
+  storageQuota: number
+  uaHighEntropy: boolean
+  uaHi: Record<string, unknown>
+  adapterInfo: { vendor: string; architecture: string; device: string; description: string }
+  canvasMode: FingerprintConfig['canvas']
+  audioMode: FingerprintConfig['audio']
+  /** 真桌面 Chrome 是否暴露 Web Share；决定注不注入 share / canShare（见 webShareSupportedOn） */
+  webShare: boolean
 }
 
 export function platformOf(os: OSKind): string {
@@ -298,33 +324,12 @@ export function platformOf(os: OSKind): string {
  * 这套值通过 CDP 的 Network.setUserAgentOverride 一起下发。
  */
 export function uaMetadata(fp: FingerprintConfig): Record<string, unknown> {
-  const major = fp.uaVersion.split('.')[0] || '156'
-  // 真实 Chrome 的 brands 里一定有 "Google Chrome" 这一项。
-  // 只发 Chromium 的话，任何读 navigator.userAgentData.brands 的站点
-  // 都会立刻发现「这台的 UA 说自己 是 Chrome，但 Client Hints 里没有 Chrome」。
-  const brands = [
-    { brand: 'Google Chrome', version: major },
-    { brand: 'Chromium', version: major },
-    { brand: 'Not_A Brand', version: '24' }
-  ]
-  const fullVersionList = [
-    { brand: 'Google Chrome', version: fp.uaVersion },
-    { brand: 'Chromium', version: fp.uaVersion },
-    { brand: 'Not_A Brand', version: '24.0.0.0' }
-  ]
+  const { brands, fullVersionList } = resolveUaBrands(fp)
   return {
     brands,
     fullVersionList,
     fullVersion: fp.uaVersion,
-    // Client Hints 里的平台名只有这三个合法值
-    platform: fp.os === 'windows' ? 'Windows' : fp.os === 'macos' ? 'macOS' : 'Linux',
-    // Windows 11 报 15.0.0（Win10 是 10.0.0），macOS 15 报 15.0.0
-    platformVersion: fp.os === 'windows' ? '15.0.0' : fp.os === 'macos' ? '15.0.0' : '6.8.0',
-    architecture: 'x86',
-    model: '',
-    mobile: false,
-    bitness: '64',
-    wow64: false
+    ...resolveUaHighEntropy(fp)
   }
 }
 
@@ -336,7 +341,10 @@ function deviceMemoryOf(gb: number): number {
   return 1
 }
 
-function injectionConfig(fp: FingerprintConfig, seed: string): InjectionConfig {
+function injectionConfig(input: FingerprintConfig, seed: string): InjectionConfig {
+  // 老盘 profile 可能缺新增面。在这里补齐而不是在每个读取点写 `??`：
+  // 少写一个 `??` 的后果是 `undefined` 进了注入脚本，页面看到的是 "undefined" 字符串。
+  const fp = applySurfaceDefaults(input)
   const h = hash32(seed)
   const chromeHeight = fp.os === 'windows' ? 40 : fp.os === 'macos' ? 25 : 27
   const geo =
@@ -371,13 +379,30 @@ function injectionConfig(fp: FingerprintConfig, seed: string): InjectionConfig {
     geo,
     glVendor: fp.webgl.vendor,
     glRenderer: fp.webgl.renderer,
-    canvasNoise: fp.canvas === 'noise',
-    audioNoise: fp.audio === 'noise',
     webrtc: fp.webrtc,
     rectNoise: fp.clientRectsNoise,
     fonts: fp.fonts.slice(),
     webgpu: fp.webgpu,
-    os: fp.os
+    os: fp.os,
+    uaVersion: fp.uaVersion,
+    maxTouchPoints: fp.maxTouchPoints,
+    connection: { ...fp.connection },
+    battery: { ...fp.battery },
+    mediaDevices: { ...fp.mediaDevices },
+    permissions: { ...fp.permissions },
+    mediaCapabilities: fp.mediaCapabilities,
+    plugins: fp.plugins,
+    pluginDescriptors: resolvePluginDescriptors(fp.plugins),
+    storageEstimate: fp.storageEstimate,
+    storageQuota: DEFAULT_STORAGE_QUOTA,
+    uaHighEntropy: fp.uaHighEntropy,
+    // 高熵值与 CDP 下发的 UA-CH 头同源。两处各写一份必然漂移，
+    // 漂移的表现是「头说 Windows、JS 说 Linux」。
+    uaHi: resolveUaHighEntropy(fp),
+    adapterInfo: resolveWebgpuAdapterInfo(fp),
+    canvasMode: fp.canvas,
+    audioMode: fp.audio,
+    webShare: webShareSupportedOn(fp.os)
   }
 }
 
@@ -783,16 +808,215 @@ function buildWorkerScript(fp: FingerprintConfig, seed: string): string {
   // 会触发 getter，`this` 是 prototype 而不是 context → `_gpo.call(this, p)`
   // 抛 Illegal invocation，整段进 _failed。这条是实测里 `applied=0` 的唯一原因。
   L.push('    try {')
-  L.push('      var _GLC = (typeof WebGLRenderingContext !== "undefined") ? WebGLRenderingContext : null;')
-  L.push('      if (_GLC && _GLC.prototype && typeof _GLC.prototype.getParameter === "function") {')
-  L.push('        var _gpo = _GLC.prototype.getParameter;')
-  L.push('        defMethod(_GLC.prototype, "getParameter", function (p) {')
+  L.push('      var _patchGL = function (G) {')
+  L.push('        if (!G || !G.prototype || typeof G.prototype.getParameter !== "function") { return; }')
+  L.push('        var _gpo = G.prototype.getParameter;')
+  L.push('        defMethod(G.prototype, "getParameter", function (p) {')
   L.push('          if (p === 37445) { return C.glVendor; }')
   L.push('          if (p === 37446) { return C.glRenderer; }')
   L.push('          return _gpo.call(this, p);')
   L.push('        });')
-  L.push('      }')
+  L.push('      };')
+  L.push('      _patchGL((typeof WebGLRenderingContext !== "undefined") ? WebGLRenderingContext : null);')
+  // WebGL2 在 worker 里也有，且是**另一个原型**。只包 WebGL1 的话，
+  // `getContext("webgl2")` 一次就读回宿主 GPU —— 同一个 worker 两个 GL 版本
+  // 报不同厂商，不需要任何参照就能判定插桩。
+  L.push('      _patchGL((typeof WebGL2RenderingContext !== "undefined") ? WebGL2RenderingContext : null);')
   L.push('    } catch (e) { _failed.push({ p: "WebGL.getParameter", why: String((e && e.message) || e) }); }')
+  L.push('')
+
+  // ── OffscreenCanvas 2D：worker 里唯一的 canvas 像素通道 ──
+  // worker 没有 HTMLCanvasElement，但 OffscreenCanvasRenderingContext2D 是
+  // 完整的 2D 上下文。不包它，页面里包好的噪声在这里全白做 ——
+  // `new OffscreenCanvas(w,h).getContext("2d").getImageData(...)` 直接读宿主像素。
+  // 噪声函数与 page 侧同源同算法（h32 见下方 / seed 派生），
+  // 两条通道同一坐标必须给同一扰动，否则「同图不同通道不同像素」自证。
+  // 注意：只在原型上打补丁，绝不新建 OffscreenCanvas 实例（暂停态崩溃，见上）。
+  L.push('    try {')
+  L.push('      var _O2D = (typeof OffscreenCanvasRenderingContext2D !== "undefined") ? OffscreenCanvasRenderingContext2D.prototype : null;')
+  L.push('      if (_O2D && typeof _O2D.getImageData === "function" && C.canvasMode !== "off") {')
+  L.push('        var _ogid = _O2D.getImageData;')
+  L.push('        defMethod(_O2D, "getImageData", function (sx, sy, sw, sh) {')
+  L.push('          var img = _ogid.call(this, sx, sy, sw, sh);')
+  L.push('          try {')
+  L.push('            var d = img.data;')
+  L.push('            if (C.canvasMode === "block") {')
+  L.push('              for (var z = 0; z < d.length; z++) { d[z] = 0; }')
+  L.push('              return img;')
+  L.push('            }')
+  L.push('            if (!sw || !sh) { return img; }')
+  L.push('            for (var i = 0; i < d.length; i += 4) {')
+  L.push('              var idx = i >>> 2, px = idx % sw, py = (idx / sw) | 0;')
+  L.push('              var k = h32(px, py, sx, sy);')
+  L.push('              d[i] = (d[i] & 254) | (k & 1);')
+  L.push('              d[i + 1] = (d[i + 1] & 254) | ((k >>> 1) & 1);')
+  L.push('              d[i + 2] = (d[i + 2] & 254) | ((k >>> 2) & 1);')
+  L.push('            }')
+  L.push('          } catch (e) {}')
+  L.push('          return img;')
+  L.push('        });')
+  L.push('      }')
+  L.push('    } catch (e) { _failed.push({ p: "Worker.Canvas.getImageData", why: String((e && e.message) || e) }); }')
+  L.push('')
+
+  // ── worker 字体：`self.fonts` 与 measureText 两条通道 ──
+  // `FontFaceSet` 在 DedicatedWorker 里存在（self.fonts.check），
+  // 不包它，页面里 document.fonts.check 说没有的字体在 worker 里说有 ——
+  // 同一个字体表两个上下文不一致，比不包更假。
+  // 不新建任何 canvas context：用原型上的 measureText 拦截即可。
+  L.push('    try {')
+  L.push('      if (C.fonts && C.fonts.length) {')
+  L.push('        var WL = {};')
+  L.push('        for (var fi = 0; fi < C.fonts.length; fi++) { WL[C.fonts[fi].toLowerCase()] = 1; }')
+  L.push("        var GEN = { 'serif': 1, 'sans-serif': 1, 'monospace': 1, 'cursive': 1, 'fantasy': 1, 'system-ui': 1 };")
+  L.push('        var _fams = function (s) {')
+  L.push('          var out = [], m;')
+  L.push('          var QUOTE = /\\x22([^\\x22]+)\\x22|\'([^\']+)\'/g;')
+  L.push('          QUOTE.lastIndex = 0;')
+  L.push('          while ((m = QUOTE.exec(s))) { out.push(String(m[1] || m[2]).toLowerCase()); }')
+  L.push('          if (!out.length) {')
+  L.push('            var parts = String(s).split(/\\s+/), cut = -1;')
+  L.push('            for (var i = 0; i < parts.length; i++) {')
+  L.push('              if (/^[\\d.]+(px|pt|em|rem|%)$/.test(parts[i])) { cut = i; break; }')
+  L.push('            }')
+  L.push('            if (cut >= 0) {')
+  L.push('              var rest = parts.slice(cut + 1).join(" ").split(",");')
+  L.push('              for (var j = 0; j < rest.length; j++) {')
+  L.push('                var name = rest[j].trim().toLowerCase();')
+  L.push('                if (name) { out.push(name); }')
+  L.push('              }')
+  L.push('            }')
+  L.push('          }')
+  L.push('          return out;')
+  L.push('        };')
+  L.push('        var _fs = self.fonts;')
+  L.push('        if (_fs && typeof _fs.check === "function") {')
+  L.push('          var _check = _fs.check;')
+  L.push('          _fs.check = _maskOne(_noProto(function (font) {')
+  L.push('            try {')
+  L.push('              var list = _fams(String(font));')
+  L.push('              for (var i = 0; i < list.length; i++) {')
+  L.push('                if (WL[list[i]] || GEN[list[i]]) { return true; }')
+  L.push('              }')
+  L.push('              if (list.length) { return false; }')
+  L.push('            } catch (e) {}')
+  L.push('            return _check.call(_fs, font);')
+  L.push('          }), "check", 1);')
+  L.push('        }')
+  // measureText：worker 里没有 CanvasRenderingContext2D，但
+  // OffscreenCanvasRenderingContext2D.prototype.measureText 存在且就是同一条测量通道。
+  L.push('        if (_O2D && typeof _O2D.measureText === "function") {')
+  L.push('          var _mt = _O2D.measureText;')
+  L.push('          defMethod(_O2D, "measureText", function (text) {')
+  L.push('            try {')
+  L.push('              var f = this.font || "";')
+  L.push('              var m = /([0-9.]+)px\\s+(.+)$/.exec(f);')
+  L.push('              if (m) {')
+  L.push('                var fams = m[2].split(",");')
+  L.push('                var first = String(fams[0]).replace(/["\']/g, "").trim().toLowerCase();')
+  L.push('                if (first && !GEN[first] && !WL[first]) {')
+  L.push('                  // 字体不在白名单 —— 用 sans-serif 的测量结果顶替，')
+  L.push('                  // 与 page 侧 measureText 的「按 fallback 量」同一策略。')
+  L.push('                  var save = this.font;')
+  L.push('                  this.font = m[1] + "px sans-serif";')
+  L.push('                  var out = _mt.call(this, text);')
+  L.push('                  this.font = save;')
+  L.push('                  return out;')
+  L.push('                }')
+  L.push('              }')
+  L.push('            } catch (e) {}')
+  L.push('            return _mt.call(this, text);')
+  L.push('          });')
+  L.push('        }')
+  L.push('      }')
+  L.push('    } catch (e) { _failed.push({ p: "Worker.Fonts", why: String((e && e.message) || e) }); }')
+  L.push('')
+
+  // ── worker 音频：OfflineAudioContext / AnalyserNode ──
+  // 两者在 worker 里都存在。与 page 同策略：noise 给确定性微扰，block 给全零。
+  L.push('    try {')
+  L.push('      var AN = (typeof AnalyserNode !== "undefined") ? AnalyserNode.prototype : null;')
+  L.push('      var AB = (typeof AudioBuffer !== "undefined") ? AudioBuffer.prototype : null;')
+  L.push('      if (AN && C.audioMode === "noise") {')
+  L.push('        var _gff = AN.getFloatFrequencyData;')
+  L.push('        defMethod(AN, "getFloatFrequencyData", function (arr) {')
+  L.push('          _gff.call(this, arr);')
+  L.push('          try { for (var i = 0; i < arr.length; i++) { arr[i] += ((h32(i, 31, 7, 13) % 2000) - 1000) * 1e-10; } } catch (e) {}')
+  L.push('        });')
+  L.push('      } else if (AN && C.audioMode === "block") {')
+  L.push('        defMethod(AN, "getFloatFrequencyData", function (arr) {')
+  L.push('          try { for (var i = 0; i < arr.length; i++) { arr[i] = -Infinity; } } catch (e) {}')
+  L.push('        });')
+  L.push('      }')
+  L.push('      if (AB && C.audioMode === "noise") {')
+  L.push('        var _gcd = AB.getChannelData;')
+  L.push('        var _seen = (typeof WeakSet === "function") ? new WeakSet() : null;')
+  L.push('        defMethod(AB, "getChannelData", function (ch) {')
+  L.push('          var data = _gcd.call(this, ch);')
+  L.push('          if (_seen) { if (_seen.has(data)) { return data; } _seen.add(data); }')
+  L.push('          for (var i = 0; i < data.length; i += 997) { data[i] += ((h32(i, ch, 13, 5) % 2000) - 1000) / 1e9; }')
+  L.push('          return data;')
+  L.push('        });')
+  L.push('      } else if (AB && C.audioMode === "block") {')
+  L.push('        var _bgcd = AB.getChannelData;')
+  L.push('        var _zseen = (typeof WeakSet === "function") ? new WeakSet() : null;')
+  L.push('        defMethod(AB, "getChannelData", function (ch) {')
+  L.push('          var data = _bgcd.call(this, ch);')
+  L.push('          if (_zseen) { if (_zseen.has(data)) { return data; } _zseen.add(data); }')
+  L.push('          try { for (var i = 0; i < data.length; i++) { data[i] = 0; } } catch (e) {}')
+  L.push('          return data;')
+  L.push('        });')
+  L.push('      }')
+  L.push('    } catch (e) { _failed.push({ p: "Worker.Audio", why: String((e && e.message) || e) }); }')
+  L.push('')
+
+  // ── worker locale 出口 ──
+  // 这几个方法无参时读宿主默认 locale，与 navigator.language 对不上。
+  // page 侧已经包了，worker 侧漏掉就是「同一语言两个上下文两种排序」。
+  L.push('    try {')
+  L.push('      var _withLoc = function (fn, idx) {')
+  L.push('        return function () {')
+  L.push('          var a = [];')
+  L.push('          for (var i = 0; i < arguments.length; i++) { a.push(arguments[i]); }')
+  L.push('          if (a[idx] === undefined || a[idx] === null) { a[idx] = _LOC; }')
+  L.push('          return fn.apply(this, a);')
+  L.push('        };')
+  L.push('      };')
+  L.push('      defMethod(Number.prototype, "toLocaleString", _withLoc(Number.prototype.toLocaleString, 0));')
+  L.push('      if (typeof BigInt !== "undefined" && BigInt.prototype && BigInt.prototype.toLocaleString) {')
+  L.push('        defMethod(BigInt.prototype, "toLocaleString", _withLoc(BigInt.prototype.toLocaleString, 0));')
+  L.push('      }')
+  L.push('      defMethod(String.prototype, "localeCompare", _withLoc(String.prototype.localeCompare, 1));')
+  L.push('      defMethod(String.prototype, "toLocaleUpperCase", _withLoc(String.prototype.toLocaleUpperCase, 0));')
+  L.push('      defMethod(String.prototype, "toLocaleLowerCase", _withLoc(String.prototype.toLocaleLowerCase, 0));')
+  L.push('    } catch (e) { _failed.push({ p: "Worker.Locale", why: String((e && e.message) || e) }); }')
+  L.push('')
+
+  // ── navigator.gpu 的存在性 ──
+  // page 侧 webgpu 关闭时删掉了 Navigator.prototype.gpu；worker 侧不删，
+  // 页面里 `typeof navigator.gpu === "undefined"`、worker 里是 "object" —— 
+  // 真 Chromium 里 WebGPU 是整特性开关，同真同假，这个组合不可能出现。
+  // 注意不**创建** gpu 对象：原生没有的属性凭空造一个更假。
+  L.push('    try {')
+  L.push('      if (!C.webgpu) {')
+  L.push('        var _removed = false;')
+  L.push('        try { _removed = delete NP.gpu; } catch (e) {}')
+  L.push('        if (!_removed) {')
+  L.push('          try { Object.defineProperty(NP, "gpu", { value: undefined, configurable: true, writable: true, enumerable: true }); } catch (e) {}')
+  L.push('        }')
+  L.push('      }')
+  L.push('    } catch (e) { _failed.push({ p: "Worker.gpu", why: String((e && e.message) || e) }); }')
+  L.push('')
+
+  // h32：worker 版噪声函数，必须与 page 版同一算法、同一 seed。
+  // 放在这里（而不是顶部）是因为只有 canvas / 音频两处用，
+  // 而且必须在使用它的 defMethod 闭包创建之前声明。
+  L.push('    var h32 = function (a, b, c, d) {')
+  L.push('      var h = (S ^ (a | 0) ^ (b | 0) ^ (c | 0) ^ (d | 0)) | 0;')
+  L.push('      h = Math.imul(h ^ (h >>> 16), 2246822507);')
+  L.push('      h = Math.imul(h ^ (h >>> 13), 3266489909);')
+  L.push('      return (h ^ (h >>> 16)) >>> 0;')
+  L.push('    };')
   L.push('')
   // ── 收口：Function.prototype.toString 必须认识所有被换过的函数 ──────────
   L.push('    var _fts = Function.prototype.toString;')
@@ -987,7 +1211,17 @@ function buildPageScript(fp: FingerprintConfig, seed: string): string {
   L.push('      [Navigator.prototype, ["userAgent", "appVersion", "platform", "vendor",')
   L.push('        "hardwareConcurrency", "deviceMemory", "language", "languages", "webdriver",')
   L.push('        "pdfViewerEnabled", "plugins", "mimeTypes", "maxTouchPoints", "gpu",')
-  L.push('        "requestMediaKeySystemAccess", "share", "canShare"]],')
+  L.push('        "connection", "getBattery", "requestMediaKeySystemAccess", "share", "canShare"]],')
+  L.push('      [window.Permissions && Permissions.prototype, ["query"]],')
+  L.push('      [window.MediaCapabilities && MediaCapabilities.prototype, ["decodingInfo", "encodingInfo"]],')
+  L.push('      [window.MediaDevices && MediaDevices.prototype, ["enumerateDevices"]],')
+  L.push('      [window.StorageManager && StorageManager.prototype, ["estimate"]],')
+  L.push('      [window.NavigatorUAData && NavigatorUAData.prototype, ["getHighEntropyValues"]],')
+  // OffscreenCanvas 是第二条像素读取通道：只包 CanvasRenderingContext2D 的话，
+  // page 用 OffscreenCanvas 读一次就绕开全部噪声。两个原型一起进表。
+  L.push('      [window.OffscreenCanvasRenderingContext2D && OffscreenCanvasRenderingContext2D.prototype, ["getImageData", "measureText"]],')
+  L.push('      [window.OffscreenCanvas && OffscreenCanvas.prototype, ["convertToBlob"]],')
+  // WebGPU 的 adapter.info 是 accessor，不是方法；这里进表只是为了 arity 快照不误判。
   L.push('      [Screen.prototype, ["width", "height", "availWidth", "availHeight", "colorDepth", "pixelDepth"]],')
   L.push('      [window, ["devicePixelRatio"]],')
   L.push('      [Date.prototype, ["getTimezoneOffset", "toTimeString", "toDateString", "toString",')
@@ -1034,23 +1268,311 @@ function buildPageScript(fp: FingerprintConfig, seed: string): string {
   L.push("      defGet(NP, 'languages', function () { return C.languages.slice(); });")
   L.push("      defVal(NP, 'webdriver', false);")
   L.push("      defVal(NP, 'pdfViewerEnabled', true);")
+  L.push("      defVal(NP, 'maxTouchPoints', C.maxTouchPoints);")
   L.push('    } catch (e) {}')
 
-  /* ── Web Share：全脚本唯一一处「凭空创建属性」 ──
+  /* ── 插件 / MIME：一张表喂两个接口 ──
    *
-   * 真 Chrome 156 桌面版有 `navigator.share` / `navigator.canShare`；Electron 45
-   * 没实现，于是 `'share' in navigator` 在真 Chrome 是 true、在我们这里是 false。
+   * 真桌面 Chrome 的 PluginArray 是五个内置 PDF viewer，不是空表。
+   * 只改 `navigator.plugins.length` 而不给 `item()` / `namedItem()` /
+   * 迭代的话，三行就能对出「同一个数组自己说自己Len 5 但 item(0) 是 null」。
+   *
+   * 还有一个更容易被忽略的硬指纹：`Object.prototype.toString.call(navigator.plugins)`
+   * 在真 Chrome 里是 `[object PluginArray]` —— 它读的是 Symbol.toStringTag，
+   * 与 length / item 无关。用裸数组的话这里永远是 `[object Array]`，
+   * 一个 String() 就判死。MimeTypeArray / Plugin / MimeType 同理。
+   * 所有描述来自 presets 的那一份数据，这里只负责构造 WebIDL 形状。 */
+  L.push('')
+  L.push('    try {')
+  L.push('      var _pluginDefs = C.pluginDescriptors || [];')
+  L.push('      var _mimeDefs = [')
+  L.push("        { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },")
+  L.push("        { type: 'text/pdf', suffixes: 'pdf', description: 'Portable Document Format' }")
+  L.push('      ];')
+  L.push('      if (!C.pluginDescriptors || !C.pluginDescriptors.length) { _mimeDefs = []; }')
+  L.push('      var _MimeType = function (d) {')
+  L.push('        this.type = d.type; this.suffixes = d.suffixes; this.description = d.description;')
+  L.push('      };')
+  L.push('      Object.defineProperty(_MimeType.prototype, Symbol.toStringTag, {')
+  L.push("        value: 'MimeType', enumerable: false, configurable: true")
+  L.push('      });')
+  L.push('      var _Plugin = function (d) {')
+  L.push('        this.name = d.name; this.filename = d.filename; this.description = d.description;')
+  L.push('        var ls = [];')
+  L.push('        for (var j = 0; j < d.mimeTypes.length; j++) {')
+  L.push('          var mt = null;')
+  L.push('          for (var k = 0; k < _mimeDefs.length; k++) { if (_mimeDefs[k].type === d.mimeTypes[j]) { mt = new _MimeType(_mimeDefs[k]); break; } }')
+  L.push('          if (mt) { ls.push(mt); }')
+  L.push('        }')
+  L.push('        Object.defineProperty(this, "length", { value: ls.length, enumerable: false, configurable: true });')
+  L.push('        for (var n = 0; n < ls.length; n++) { Object.defineProperty(this, String(n), { value: ls[n], enumerable: true, configurable: true }); }')
+  L.push('        this.item = _maskOne(_noProto(function (i) { return this[i] || null; }), "item", 1);')
+  L.push('        this.namedItem = _maskOne(_noProto(function (s) { return this[s] || null; }), "namedItem", 1);')
+  L.push('      };')
+  L.push('      Object.defineProperty(_Plugin.prototype, Symbol.toStringTag, {')
+  L.push("        value: 'Plugin', enumerable: false, configurable: true")
+  L.push('      });')
+  L.push('      var _plugins = [];')
+  L.push('      for (var pi = 0; pi < _pluginDefs.length; pi++) { _plugins.push(new _Plugin(_pluginDefs[pi])); }')
+  L.push('      Object.defineProperty(_plugins, "item", {')
+  L.push('        value: _maskOne(_noProto(function (i) { return this[i] || null; }), "item", 1), enumerable: false, configurable: true')
+  L.push('      });')
+  L.push('      Object.defineProperty(_plugins, "namedItem", {')
+  L.push('        value: _maskOne(_noProto(function (s) { for (var i = 0; i < this.length; i++) { if (this[i].name === s) { return this[i]; } } return null; }), "namedItem", 1), enumerable: false, configurable: true')
+  L.push('      });')
+  L.push('      var _mimes = [];')
+  L.push('      for (var mi2 = 0; mi2 < _mimeDefs.length; mi2++) { _mimes.push(new _MimeType(_mimeDefs[mi2])); }')
+  L.push('      Object.defineProperty(_mimes, "item", {')
+  L.push('        value: _maskOne(_noProto(function (i) { return this[i] || null; }), "item", 1), enumerable: false, configurable: true')
+  L.push('      });')
+  L.push('      Object.defineProperty(_mimes, "namedItem", {')
+  L.push('        value: _maskOne(_noProto(function (s) { for (var i = 0; i < this.length; i++) { if (this[i].type === s) { return this[i]; } } return null; }), "namedItem", 1), enumerable: false, configurable: true')
+  L.push('      });')
+  // Symbol.toStringTag 决定 Object.prototype.toString 的读数，是比 length 更硬的
+  // 接口形状指纹：真 Chrome 的 PluginArray / MimeTypeArray 各有自己的 tag。
+  // 裸数组的 tag 是 'Array'，一行 `String(navigator.plugins)` 就能判定插桩。
+  L.push('      Object.defineProperty(_plugins, Symbol.toStringTag, {')
+  L.push("        value: 'PluginArray', enumerable: false, configurable: true")
+  L.push('      });')
+  L.push('      Object.defineProperty(_mimes, Symbol.toStringTag, {')
+  L.push("        value: 'MimeTypeArray', enumerable: false, configurable: true")
+  L.push('      });')
+  // 真 PluginArray 有 refresh()，arity 0，toString 是 native code。
+  // 没有真实插件目录可以刷新，所以实现成 no-op —— 这是诚实的：
+  // 调用它不会假装发现了新插件，也不会抛错。
+  L.push('      Object.defineProperty(_plugins, "refresh", {')
+  L.push('        value: _maskOne(_noProto(function () {}), "refresh", 0),')
+  L.push('        enumerable: false, configurable: true, writable: true')
+  L.push('      });')
+  // 实例级方法进不了原型表，但它们同样是「被替换过的函数」，
+  // 必须进同一本 toString 台账。单独一张实例表，收口时和 _MASK_TABLE 一起扫；
+  // 先拍 arity 快照，避免收口时读到包装后的长度（item/namedItem 是 1 参）。
+  L.push('      _snapAll(_plugins, ["item", "namedItem", "refresh"]);')
+  L.push('      _snapAll(_mimes, ["item", "namedItem"]);')
+  L.push('      var _ARRAY_MASK_TABLE = [')
+  L.push('        [_plugins, ["item", "namedItem", "refresh"]],')
+  L.push('        [_mimes, ["item", "namedItem"]]')
+  L.push('      ];')
+  L.push("      defVal(NP, 'plugins', _plugins);")
+  L.push("      defVal(NP, 'mimeTypes', _mimes);")
+  L.push('    } catch (e) { _failed.push({ p: "Navigator.plugins", why: String((e && e.message) || e) }); }')
+
+  /* ── connection / NetworkInformation ──
+   *
+   * 不 copy 宿主 navigator.connection 的值：宿主是「这台机器真实的网速」，
+   * 与 profile 无关，透出去就是宿主特征。事件接口给空实现（没有真实网络事件），
+   * 但保留 onchange 可写 —— 真 Chrome 的实例上有这个属性。 */
+  L.push('')
+  L.push('    try {')
+  L.push('      var _NI = {')
+  L.push('        effectiveType: C.connection.effectiveType,')
+  L.push('        downlink: C.connection.downlink,')
+  L.push('        rtt: C.connection.rtt,')
+  L.push('        saveData: C.connection.saveData,')
+  L.push('        onchange: null,')
+  L.push('        addEventListener: _maskOne(_noProto(function () {}), "addEventListener", 0),')
+  L.push('        removeEventListener: _maskOne(_noProto(function () {}), "removeEventListener", 0),')
+  L.push('        dispatchEvent: _maskOne(_noProto(function () { return true; }), "dispatchEvent", 0)')
+  L.push('      };')
+  L.push("      defVal(NP, 'connection', _NI);")
+  L.push('    } catch (e) { _failed.push({ p: "Navigator.connection", why: String((e && e.message) || e) }); }')
+
+  /* ── permissions.query ──
+   *
+   * PermissionStatus 必须 instanceof 真构造器、支持 addEventListener —— 只返回
+   * `{state}` 普通对象的话，`res instanceof PermissionStatus` 是 false，一行判定插桩。 */
+  L.push('')
+  L.push('    try {')
+  L.push('      var PP = window.Permissions && Permissions.prototype;')
+  L.push('      if (PP && PP.query) {')
+  L.push('        var _PQS = window.PermissionStatus;')
+  L.push('        var _query = PP.query;')
+  L.push('        PP.query = _maskOne(_noProto(function (descriptor) {')
+  L.push('          var nm = descriptor && descriptor.name ? String(descriptor.name) : "";')
+  L.push('          var st = C.permissions[nm] || "prompt";')
+  L.push('          var self = this;')
+  L.push('          return _query.call(self, descriptor).then(')
+  L.push('            function (native) {')
+  L.push('              try { Object.defineProperty(native, "state", { value: st, configurable: true, enumerable: true }); } catch (e) {}')
+  L.push('              return native;')
+  L.push('            },')
+  L.push('            function () {')
+  L.push('              if (!_PQS) { return { state: st, onchange: null, addEventListener: function () {}, removeEventListener: function () {} }; }')
+  L.push('              var p = new _PQS();')
+  L.push('              try { Object.defineProperty(p, "state", { value: st, configurable: true, enumerable: true }); } catch (e) {}')
+  L.push('              return p;')
+  L.push('            }')
+  L.push('          );')
+  L.push('        }), "query", 1);')
+  L.push('      }')
+  L.push('    } catch (e) { _failed.push({ p: "Permissions.query", why: String((e && e.message) || e) }); }')
+
+  /* ── mediaCapabilities ──
+   *
+   * 完整模拟解码能力需要跑真实编解码器，成本不可接受，而且任何声称的
+   * "supported" 都可能与页面后续实际能否播放矛盾。这里选择**诚实的最小**：
+   * 返回 shape 正确但全 false 的结果。全 false 与「没有该编解码器」一致，
+   * 且不会凭空声称支持一个设备上跑不起来的格式。
+   * 关掉这个面（false）时完全不 patch，让宿主真值透出。 */
+  L.push('')
+  L.push('    try {')
+  L.push('      if (C.mediaCapabilities) {')
+  L.push('        var MCP = window.MediaCapabilities && MediaCapabilities.prototype;')
+  L.push('        if (MCP && MCP.decodingInfo && MCP.encodingInfo) {')
+  L.push('          var _mci = function () {')
+  L.push('            return Promise.resolve({')
+  L.push('              supported: false, smooth: false, powerEfficient: false')
+  L.push('            });')
+  L.push('          };')
+  L.push("          MCP.decodingInfo = _maskOne(_noProto(function () { return _mci(); }), 'decodingInfo', 1);")
+  L.push("          MCP.encodingInfo = _maskOne(_noProto(function () { return _mci(); }), 'encodingInfo', 1);")
+  L.push('        }')
+  L.push('      }')
+  L.push('    } catch (e) { _failed.push({ p: "MediaCapabilities", why: String((e && e.message) || e) }); }')
+
+  /* ── mediaDevices.enumerateDevices ──
+   *
+   * 全 0 时返回 [] —— 这正是 Chrome 在**没有授权**时的真实读数（看不到 label、也看不到设备）。
+   * 非 0 时给带 label 的条目，但 label 必须是 ''：真 Chrome 只有拿到
+   * camera/microphone 权限之后才填 label，而我们的权限表默认是 prompt，
+   * 两边必须一致 —— 写个假 label 反而和 permissions.query 矛盾。 */
+  L.push('')
+  L.push('    try {')
+  L.push('      var MDP = window.MediaDevices && MediaDevices.prototype;')
+  L.push('      if (MDP && MDP.enumerateDevices) {')
+  L.push('        var _eds = [];')
+  L.push('        var _mkDev = function (kind, n, prefix) {')
+  L.push('          for (var i = 0; i < n; i++) {')
+  L.push('            _eds.push({')
+  L.push('              deviceId: prefix + "-" + i + "-" + C.seed.toString(36),')
+  L.push('              groupId: "group-" + prefix + "-" + i,')
+  L.push('              kind: kind, label: "",')
+  L.push('              toJSON: _maskOne(_noProto(function () { return this; }), "toJSON", 0)')
+  L.push('            });')
+  L.push('          }')
+  L.push('        };')
+  L.push("        _mkDev('videoinput', C.mediaDevices.videoInput, 'video');")
+  L.push("        _mkDev('audioinput', C.mediaDevices.audioInput, 'audioin');")
+  L.push("        _mkDev('audiooutput', C.mediaDevices.audioOutput, 'audioout');")
+  L.push("        MDP.enumerateDevices = _maskOne(_noProto(function () { return Promise.resolve(_eds.slice()); }), 'enumerateDevices', 0);")
+  L.push('      }')
+  L.push('    } catch (e) { _failed.push({ p: "MediaDevices.enumerateDevices", why: String((e && e.message) || e) }); }')
+
+  /* ── getBattery ──
+   *
+   * 桌面无电池时真 Chrome 报 charging=true / level=1 / chargingTime=0 /
+   * dischargingTime=Infinity。返回形状照 BatteryManager，但事件是空实现 ——
+   * 没有真实电池可以产生事件，挂上去的监听永远不会触发是诚实的。 */
+  L.push('')
+  L.push('    try {')
+  L.push('      var _battery = {')
+  L.push('        charging: C.battery.charging,')
+  L.push('        level: C.battery.level,')
+  L.push('        chargingTime: C.battery.chargingTime,')
+  L.push('        dischargingTime: C.battery.dischargingTime,')
+  L.push('        onchargingchange: null,')
+  L.push('        onlevelchange: null,')
+  L.push('        onchargingtimechange: null,')
+  L.push('        ondischargingtimechange: null,')
+  L.push('        addEventListener: _maskOne(_noProto(function () {}), "addEventListener", 0),')
+  L.push('        removeEventListener: _maskOne(_noProto(function () {}), "removeEventListener", 0),')
+  L.push('        dispatchEvent: _maskOne(_noProto(function () { return true; }), "dispatchEvent", 0)')
+  L.push('      };')
+  L.push("      if (window.BatteryManager && BatteryManager.prototype) {")
+  L.push('        try { Object.setPrototypeOf(_battery, BatteryManager.prototype); } catch (e) {}')
+  L.push('      }')
+  L.push("      if (typeof NP.getBattery === 'function') { NP.getBattery = _maskOne(_noProto(function () { return Promise.resolve(_battery); }), 'getBattery', 0); }")
+  L.push('    } catch (e) { _failed.push({ p: "Navigator.getBattery", why: String((e && e.message) || e) }); }')
+
+  /* ── storage.estimate ──
+   *
+   * quota 是钉死的常量（见 presets 的注释），usage 是固定的小数。
+   * 关键是**不能每次调用重算** —— 抖动本身就是「这不是真的存储管理器」的证明。 */
+  L.push('')
+  L.push('    try {')
+  L.push('      if (C.storageEstimate) {')
+  L.push('        var SMP = window.StorageManager && StorageManager.prototype;')
+  L.push('        if (SMP && SMP.estimate) {')
+  L.push('          var _est = {')
+  L.push('            quota: C.storageQuota,')
+  L.push('            usage: 1048576,')
+  L.push('            usageDetails: {')
+  L.push('              caches: 524288, indexedDB: 524288, localStorage: 0, serviceWorkers: 0')
+  L.push('            }')
+  L.push('          };')
+  L.push("          SMP.estimate = _maskOne(_noProto(function () { return Promise.resolve(_est); }), 'estimate', 0);")
+  L.push('        }')
+  L.push('      }')
+  L.push('    } catch (e) { _failed.push({ p: "Storage.estimate", why: String((e && e.message) || e) }); }')
+
+  /* ── userAgentData.getHighEntropyValues ──
+   *
+   * brands / fullVersionList 由 CDP 的 UA-CH 头下发，但 getHighEntropyValues
+   * 是 JS 方法，CDP 只覆盖返回值的一部分。这里把整份高熵值从 presets 同源喂进来，
+   * 并且**只返回调用方请求的键** —— 真 API 按 hints 列表过滤，返回多余字段
+   * （比如只请求 platform 却给了 architecture）一眼就能看出是假实现。 */
+  L.push('')
+  L.push('    try {')
+  L.push('      if (C.uaHighEntropy) {')
+  L.push('        var UAD = window.NavigatorUAData && NavigatorUAData.prototype;')
+  L.push('        if (UAD && UAD.getHighEntropyValues) {')
+  L.push('          var _ghev = UAD.getHighEntropyValues;')
+  L.push("          UAD.getHighEntropyValues = _maskOne(_noProto(function (hints) { return _ghev.call(this, hints).then(function () {")
+  L.push('            var src = C.uaHi || {};')
+  L.push('            var want = (hints && hints.length) ? hints : Object.keys(src);')
+  L.push('            var out = {};')
+  L.push('            for (var i = 0; i < want.length; i++) {')
+  L.push('              if (Object.prototype.hasOwnProperty.call(src, want[i])) { out[want[i]] = src[want[i]]; }')
+  L.push('            }')
+  L.push('            return out;')
+  L.push("          }); }), 'getHighEntropyValues', 1);")
+  L.push('        }')
+  L.push('      }')
+  L.push('    } catch (e) { _failed.push({ p: "UAData.getHighEntropyValues", why: String((e && e.message) || e) }); }')
+
+  /* ── WebGPU adapter.info ──
+   *
+   * `GPUAdapter.info` 是 accessor，值来自驱动。能一致映射的只有 vendor 维度
+   * （从 webgl.vendor 派生，见 presets）。architecture / device 留空是诚实选择：
+   * 编一个 device 出来会与 adapter.limits 和真实驱动行为对不上。 */
+  L.push('')
+  L.push('    try {')
+  L.push('      if (C.webgpu && window.GPUAdapter && GPUAdapter.prototype) {')
+  L.push('        var _ai = C.adapterInfo || { vendor: "", architecture: "", device: "", description: "" };')
+  L.push('        var _infoDesc = Object.getOwnPropertyDescriptor(GPUAdapter.prototype, "info");')
+  L.push('        if (_infoDesc && _infoDesc.get) {')
+  L.push('          Object.defineProperty(GPUAdapter.prototype, "info", {')
+  L.push('            configurable: _infoDesc.configurable, enumerable: _infoDesc.enumerable,')
+  L.push('            get: _maskOne(_noProto(function () { return _ai; }), "get info", 0)')
+  L.push('          });')
+  L.push('        }')
+  L.push('      }')
+  L.push('    } catch (e) { _failed.push({ p: "GPUAdapter.info", why: String((e && e.message) || e) }); }')
+
+  /* ── Web Share：全脚本唯一一处「凭空创建属性」，且只在真 Chrome 确实有的平台上造 ──
+   *
    * 属性**存在性**比属性值更硬 —— 值可以解释成用户设置，不存在没法解释。
+   * 所以造不造的决定由 `C.webShare`（见 webShareSupportedOn）给出，判据全部来自实测：
    *
-   * 判据全部来自实测，不是印象（tools/probe-api-shape.mjs，基准是同版本真 Chrome
-   * 156.0.8078.x，与 Electron 内置的 156.0.8078.75 同主版本）：
-   *   Navigator.prototype 属性集合：补之前 真 Chrome 84 项 / 我们 82 项
-   *   差集恰好 { share, canShare }，我们**没有**多出任何一项
-   *   补之后 84 对 84，缺 0 多 0（这个比对每次都要重跑，不能只看「补上了」）
-   * 同一份探针还确认了三件事 —— 它们**不能补**，补了就是造新 tell：
-   *   navigator.contacts        Windows 桌面 Chrome 里本来就没有（Android 专属）
-   *   navigator.contentIndex    同上（Android / ChromeOS 专属）
-   *   connection.downlinkMax    早已从规范移除，Chrome 里不存在
+   * ── 平台证据（实测，不是印象） ──
+   *   - Windows Chrome 156（本项目编写时实测）：有 `navigator.share` / `canShare`。
+   *   - Linux Chrome 157.0.8103.78（headless + headful、Linux arm64、secure context，
+   *     远端节点实测）：`navigator.platform === 'Linux x86_64'`，
+   *     `'share' in navigator === false`、`'canShare' in navigator === false`。
+   *     所以在 Linux 上造这两个属性，等于凭空造一个真 Chrome 没有的属性——
+   *     这正是本项目最想避免的硬 tell。已据此改为**不在 Linux 创建**。
+   *   - macOS：仍未测量。保守取“不造”（理由同上：宁可漏，不可多造）。
+   *     这是已知且仍未消除的缺口，要消除只能在 macOS 真 Chrome 上跑一次
+   *     tools/verify-share.mjs；若测得有，再更新 webShareSupportedOn。
+   *
+   * 历史决策（已废弃）：早先本机只有 Windows，Linux/macOS 均“未测量”，于是选了
+   * “三个平台统一创建”，并明确标注风险“如果真 Linux/macOS Chrome 没有 Web Share，
+   * 那就是多造了属性”。现在 Linux 已被实测确认命中该风险，故改为按平台 gate。
+   *
+   * 其它探针结论（tools/probe-api-shape.mjs，同主版本真 Chrome 156 对照）：
+   *   Navigator.prototype 属性集合差集恰好 { share, canShare }，没有多出别的项；
+   *   navigator.contacts / contentIndex / connection.downlinkMax 真 Chrome 里都没有，
+   *   补了就是造新 tell，所以一律不补。
    *
    * 行为按 tools/verify-share.mjs 的 47 条读数逐条对齐。三条容易写错的：
    *   1. canShare 的 WebIDL 转换错误是**同步抛**，share 的是 **rejected promise**
@@ -1059,17 +1581,6 @@ function buildPageScript(fp: FingerprintConfig, seed: string): string {
    *      区别就在 arity，所以必须读 `arguments.length`，不能读 `data === undefined`
    *   3. 激活检查在 url 校验**之前** —— 实测 share({url:'javascript:'}) 给的是
    *      NotAllowedError 而不是 TypeError
-   *
-   * ── 平台：只测了 Windows，另两个平台是**未测量** ──
-   *
-   * 本机只有 Windows，所以 `navigator.share` 的存在性只在 Windows 上实测过。
-   * macOS / Linux 没有基准可比。这里选择**三个平台统一创建**，理由不是「应该都有」，
-   * 而是：Electron 缺这两个 API 是**构建级**的遗漏（Blink 的 NavigatorShare 在
-   * Electron 里没编进来），不是平台级的差异；用平台级的分支去补一个构建级的洞，
-   * 等于把一个没测过的平台信念写进代码，还写成了「事实」的样子。
-   * 代价说清楚：如果真 macOS / Linux Chrome 恰好没有 Web Share，那我们在这两个
-   * 平台上就是「多造了属性」—— 比漏掉更糟。这个风险**已知、未消除**，
-   * 消除它需要在 macOS / Linux 上各跑一次 tools/verify-share.mjs。
    */
   L.push('')
   L.push('    var _isFile = function (v) {')
@@ -1152,8 +1663,12 @@ function buildPageScript(fp: FingerprintConfig, seed: string): string {
   L.push("      return Promise.reject(new DOMException('Share canceled', 'AbortError'));")
   L.push('    };')
   L.push('    try {')
-  L.push("      defNewVal(Navigator.prototype, 'share', _share);")
-  L.push("      defNewVal(Navigator.prototype, 'canShare', _canShare);")
+  /* 只在真 Chrome 确实暴露 Web Share 的平台上造。Linux 实测没有、macOS 未测量
+     保守不造 —— 详见本节顶部注释与 webShareSupportedOn。 */
+  L.push('      if (C.webShare === true) {')
+  L.push("        defNewVal(Navigator.prototype, 'share', _share);")
+  L.push("        defNewVal(Navigator.prototype, 'canShare', _canShare);")
+  L.push('      }')
   L.push('    } catch (e) {}')
 
   /* screen */
@@ -1442,60 +1957,133 @@ function buildPageScript(fp: FingerprintConfig, seed: string): string {
   L.push('      }')
   L.push('    } catch (e) {}')
 
-  /* canvas */
+  /* canvas
+   *
+   * 三档策略：
+   *   noise —— 用 seed 派生的固定低位扰动（同一坐标恒定）；
+   *   off   —— 完全不碰，暴露真值；
+   *   block —— 所有读取都返回一张空白图。
+   *
+   * block 不是「更保守的 noise」：噪声值本身是可聚类的 —— 同一套噪声细节
+   * 出现在多个环境上，反而把它们串成同一族。GoLogin 的文档明确建议用
+   * Off/Block 而不是 noise。空白画布与「页面真的画了张透明图」不可区分，
+   * 所以这里选它作为强遮挡档。
+   *
+   * OffscreenCanvas 是第二条像素读取通道，之前没包：页面用
+   * `new OffscreenCanvas(...).getContext('2d').getImageData()` 一次就读到
+   * 未加噪的像素。现在两条通道**共用同一个噪声函数** `_noiseImage`——
+   * 复制算法会产生第三份实现，而两份实现迟早分叉，分叉的读数就是
+   * 「同一个 canvas 两条路读到不同的像素」。
+   */
   L.push('')
   L.push('    try {')
   L.push('      var CE = window.HTMLCanvasElement && HTMLCanvasElement.prototype;')
-  L.push('      if (CE && C.canvasNoise) {')
-  L.push('        var C2D = window.CanvasRenderingContext2D && CanvasRenderingContext2D.prototype;')
-  L.push('        var _scrub = function (cv) {')
-  L.push('          var w = cv.width, h = cv.height;')
-  L.push('          if (!w || !h || w * h > 4194304) { return; }')
-  L.push('          var ctx = null;')
-  L.push('          try { ctx = cv.getContext("2d"); } catch (e) { return; }')
-  L.push('          if (!ctx) { return; }')
-  L.push('          var img = ctx.getImageData(0, 0, w, h);')
-  L.push('          ctx.putImageData(img, 0, 0);')
-  L.push('        };')
+  L.push('      var C2D = window.CanvasRenderingContext2D && CanvasRenderingContext2D.prototype;')
+  L.push('      var O2D = window.OffscreenCanvasRenderingContext2D && OffscreenCanvasRenderingContext2D.prototype;')
+  L.push('      var OC = window.OffscreenCanvas && OffscreenCanvas.prototype;')
+  L.push('      // 固定 1x1 透明 PNG。block 档下 toDataURL / toBlob 都给这一张，')
+  L.push('      // 连续调用逐字节相同 —— 真空白画布也正是这样。')
+  L.push("      var _BLANK_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';")
+  L.push('      var _blankBlob = null;')
+  L.push('      var _noiseImage = function (img, sx, sy, sw, sh) {')
+  L.push('        if (!sw || !sh) { return img; }')
+  L.push('        try {')
+  L.push('          var d = img.data;')
+  L.push('          for (var i = 0; i < d.length; i += 4) {')
+  L.push('            var idx = i >>> 2;')
+  L.push('            var px = idx % sw, py = (idx / sw) | 0;')
+  L.push('            var k = h32(px, py, sx, sy);')
+  L.push('            d[i] = (d[i] & 254) | (k & 1);')
+  L.push('            d[i + 1] = (d[i + 1] & 254) | ((k >>> 1) & 1);')
+  L.push('            d[i + 2] = (d[i + 2] & 254) | ((k >>> 2) & 1);')
+  L.push('          }')
+  L.push('        } catch (e) {}')
+  L.push('        return img;')
+  L.push('      };')
+  L.push('      var _zeroImage = function (img) {')
+  L.push('        try { var d = img.data; for (var i = 0; i < d.length; i++) { d[i] = 0; } } catch (e) {}')
+  L.push('        return img;')
+  L.push('      };')
+  L.push('      var _blank = function () {')
+  L.push('        if (!_blankBlob) {')
+  L.push('          try {')
+  L.push("            var bin = atob(_BLANK_PNG.split(',')[1]);")
+  L.push('            var bytes = new Uint8Array(bin.length);')
+  L.push('            for (var i = 0; i < bin.length; i++) { bytes[i] = bin.charCodeAt(i); }')
+  L.push("            _blankBlob = new Blob([bytes], { type: 'image/png' });")
+  L.push('          } catch (e) { _blankBlob = _BLANK_PNG; }')
+  L.push('        }')
+  L.push('        return _blankBlob;')
+  L.push('      };')
+  L.push('      var _scrub = function (cv) {')
+  L.push('        var w = cv.width, h = cv.height;')
+  L.push('        if (!w || !h || w * h > 4194304) { return; }')
+  L.push('        var ctx = null;')
+  L.push('        try { ctx = cv.getContext("2d"); } catch (e) { return; }')
+  L.push('        if (!ctx) { return; }')
+  L.push('        try { ctx.putImageData(ctx.getImageData(0, 0, w, h), 0, 0); } catch (e) {}')
+  L.push('      };')
+  L.push('      if (C.canvasMode === "noise") {')
   L.push('        if (C2D) {')
   L.push('          var _gid = C2D.getImageData;')
   L.push('          C2D.getImageData = function (sx, sy, sw, sh) {')
-  L.push('            var img = _gid.call(this, sx, sy, sw, sh);')
-  L.push('            try {')
-  L.push('              if (!sw || !sh) { return img; }')
-  L.push('              var d = img.data;')
-  L.push('              for (var i = 0; i < d.length; i += 4) {')
-  L.push('                var idx = i >>> 2;')
-  L.push('                var px = idx % sw, py = (idx / sw) | 0;')
-  L.push('                var k = h32(px, py, sx, sy);')
-  L.push('                d[i] = (d[i] & 254) | (k & 1);')
-  L.push('                d[i + 1] = (d[i + 1] & 254) | ((k >>> 1) & 1);')
-  L.push('                d[i + 2] = (d[i + 2] & 254) | ((k >>> 2) & 1);')
-  L.push('              }')
-  L.push('            } catch (e) {}')
-  L.push('            return img;')
+  L.push('            return _noiseImage(_gid.call(this, sx, sy, sw, sh), sx, sy, sw, sh);')
   L.push('          };')
   L.push('        }')
-  L.push('        var _tdu = CE.toDataURL;')
-  L.push('        CE.toDataURL = function () {')
-  L.push('          try { _scrub(this); } catch (e) {}')
-  L.push('          return _tdu.apply(this, arguments);')
-  L.push('        };')
-  L.push('        var _tob = CE.toBlob;')
-  L.push('        if (_tob) {')
-  L.push('          CE.toBlob = function () {')
-  L.push('            try { _scrub(this); } catch (e) {}')
-  L.push('            return _tob.apply(this, arguments);')
+  L.push('        if (O2D) {')
+  L.push('          var _ogid = O2D.getImageData;')
+  L.push('          O2D.getImageData = function (sx, sy, sw, sh) {')
+  L.push('            return _noiseImage(_ogid.call(this, sx, sy, sw, sh), sx, sy, sw, sh);')
   L.push('          };')
+  L.push('        }')
+  L.push('        if (CE) {')
+  L.push('          var _tdu = CE.toDataURL;')
+  L.push('          CE.toDataURL = function () { try { _scrub(this); } catch (e) {} return _tdu.apply(this, arguments); };')
+  L.push('          var _tob = CE.toBlob;')
+  L.push('          if (_tob) {')
+  L.push('            CE.toBlob = function () { try { _scrub(this); } catch (e) {} return _tob.apply(this, arguments); };')
+  L.push('          }')
+  L.push('        }')
+  L.push('        if (OC && OC.convertToBlob) {')
+  L.push('          var _ctb = OC.convertToBlob;')
+  L.push('          OC.convertToBlob = function () {')
+  L.push('            try { var ctx = this.getContext("2d"); if (ctx) { ctx.putImageData(ctx.getImageData(0, 0, this.width, this.height), 0, 0); } } catch (e) {}')
+  L.push('            return _ctb.apply(this, arguments);')
+  L.push('          };')
+  L.push('        }')
+  L.push('      } else if (C.canvasMode === "block") {')
+  L.push('        if (C2D) {')
+  L.push('          var _bgid = C2D.getImageData;')
+  L.push('          C2D.getImageData = function (sx, sy, sw, sh) { return _zeroImage(_bgid.call(this, sx, sy, sw, sh)); };')
+  L.push('        }')
+  L.push('        if (O2D) {')
+  L.push('          var _bogid = O2D.getImageData;')
+  L.push('          O2D.getImageData = function (sx, sy, sw, sh) { return _zeroImage(_bogid.call(this, sx, sy, sw, sh)); };')
+  L.push('        }')
+  L.push('        if (CE) {')
+  L.push("          CE.toDataURL = function () { return _BLANK_PNG; };")
+  L.push('          if (CE.toBlob) {')
+  L.push('            CE.toBlob = function (cb, type) {')
+  L.push('              var b = _blank();')
+  L.push('              if (typeof cb === "function") { cb(b); }')
+  L.push('            };')
+  L.push('          }')
+  L.push('        }')
+  L.push('        if (OC && OC.convertToBlob) {')
+  L.push('          OC.convertToBlob = function () { return Promise.resolve(_blank()); };')
   L.push('        }')
   L.push('      }')
-  L.push('    } catch (e) {}')
+  L.push('    } catch (e) { _failed.push({ p: "Canvas", why: String((e && e.message) || e) }); }')
 
-  /* audio */
+  /* audio
+   *
+   * noise 用固定序列；block 直接给全零 —— 与「没有输入信号」不可区分，
+   * 比一个看似合理但跨环境可聚类的噪声谱更诚实。 */
   L.push('')
   L.push('    try {')
   L.push('      var AN = window.AnalyserNode && AnalyserNode.prototype;')
-  L.push('      if (AN && C.audioNoise) {')
+  L.push('      var AB = window.AudioBuffer && AudioBuffer.prototype;')
+  L.push('      if (AN && C.audioMode === "noise") {')
   L.push('        var _gff = AN.getFloatFrequencyData;')
   L.push('        AN.getFloatFrequencyData = function (arr) {')
   L.push('          _gff.call(this, arr);')
@@ -1506,8 +2094,36 @@ function buildPageScript(fp: FingerprintConfig, seed: string): string {
   L.push('            }')
   L.push('          } catch (e) {}')
   L.push('        };')
+  L.push('      } else if (AN && C.audioMode === "block") {')
+  L.push('        AN.getFloatFrequencyData = function (arr) {')
+  L.push('          try { for (var i = 0; i < arr.length; i++) { arr[i] = -Infinity; } } catch (e) {}')
+  L.push('        };')
   L.push('      }')
-  L.push('    } catch (e) {}')
+  L.push('      // OfflineAudioContext 走 AudioBuffer.getChannelData，不堵住这条')
+  L.push('      // 路，音频指纹就是全网唯一的真实值。')
+  L.push('      if (AB && C.audioMode === "noise") {')
+  L.push('        var _gcd = AB.getChannelData;')
+  L.push('        var _seen = typeof WeakSet === "function" ? new WeakSet() : null;')
+  L.push('        AB.getChannelData = function (ch) {')
+  L.push('          var data = _gcd.call(this, ch);')
+  L.push('          if (_seen) { if (_seen.has(data)) { return data; } _seen.add(data); }')
+  L.push('          for (var i = 0; i < data.length; i += 997) {')
+  L.push('            var kk = h32(i, ch, 13, 5) % 2000;')
+  L.push('            data[i] += (kk - 1000) / 1e9;')
+  L.push('          }')
+  L.push('          return data;')
+  L.push('        };')
+  L.push('      } else if (AB && C.audioMode === "block") {')
+  L.push('        var _bgcd = AB.getChannelData;')
+  L.push('        var _zeroSeen = typeof WeakSet === "function" ? new WeakSet() : null;')
+  L.push('        AB.getChannelData = function (ch) {')
+  L.push('          var data = _bgcd.call(this, ch);')
+  L.push('          if (_zeroSeen) { if (_zeroSeen.has(data)) { return data; } _zeroSeen.add(data); }')
+  L.push('          try { for (var i = 0; i < data.length; i++) { data[i] = 0; } } catch (e) {}')
+  L.push('          return data;')
+  L.push('        };')
+  L.push('      }')
+  L.push('    } catch (e) { _failed.push({ p: "Audio", why: String((e && e.message) || e) }); }')
 
   /* webgl */
   L.push('')
@@ -1615,26 +2231,6 @@ function buildPageScript(fp: FingerprintConfig, seed: string): string {
   L.push('            }')
   L.push('          }')
   L.push('        }')
-  L.push('      }')
-  L.push('    } catch (e) {}')
-
-  /* 音频：AnalyserNode 只覆盖了实时分析，离线渲染（OfflineAudioContext）走的是
-     AudioBuffer.getChannelData，那条路不堵住，音频指纹就是全网唯一的真实值 */
-  L.push('')
-  L.push('    try {')
-  L.push('      if (C.audioNoise && window.AudioBuffer) {')
-  L.push('        var _AB = AudioBuffer.prototype;')
-  L.push('        var _gcd = _AB.getChannelData;')
-  L.push('        var _seen = typeof WeakSet === "function" ? new WeakSet() : null;')
-  L.push('        _AB.getChannelData = function (ch) {')
-  L.push('          var data = _gcd.call(this, ch);')
-  L.push('          if (_seen) { if (_seen.has(data)) { return data; } _seen.add(data); }')
-  L.push('          for (var i = 0; i < data.length; i += 997) {')
-  L.push('            var kk = h32(i, ch, 13, 5) % 2000;')
-  L.push('            data[i] += (kk - 1000) / 1e9;')
-  L.push('          }')
-  L.push('          return data;')
-  L.push('        };')
   L.push('      }')
   L.push('    } catch (e) {}')
 
@@ -1954,6 +2550,13 @@ function buildPageScript(fp: FingerprintConfig, seed: string): string {
   // 两份列表必然漂移，而漂移的结果是「某一处静默没登记」，正是这一轮反复踩的坑
   L.push('      for (var _mi = 0; _mi < _MASK_TABLE.length; _mi++) {')
   L.push('        _maskAll(_MASK_TABLE[_mi][0], _MASK_TABLE[_mi][1]);')
+  L.push('      }')
+  // PluginArray / MimeTypeArray 的方法挂在实例上，走单独的实例表。
+  // 它们在创建时已过 _maskOne，这里统一扫一遍保证 toString 收口覆盖到。
+  L.push('      if (typeof _ARRAY_MASK_TABLE !== "undefined") {')
+  L.push('        for (var _ai = 0; _ai < _ARRAY_MASK_TABLE.length; _ai++) {')
+  L.push('          _maskAll(_ARRAY_MASK_TABLE[_ai][0], _ARRAY_MASK_TABLE[_ai][1]);')
+  L.push('        }')
   L.push('      }')
   L.push('      _maskAt(document.fonts, "check", "check");')
   L.push('      _maskAt(window.speechSynthesis, "getVoices", "getVoices");')

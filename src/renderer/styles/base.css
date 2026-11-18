@@ -64,9 +64,13 @@ h4 {
   letter-spacing: -0.01em;
 }
 
+/* 键盘焦点环走统一令牌。
+   注意这里用的是 --focus-ring-* 而不是 --ring-accent：
+   后者是「运行中」状态的一圈柔光（装饰），不是可访问性焦点环。
+   用令牌替换原来的字面值，亮/暗两套主题由 --focus-ring-color → --accent 自动跟随。 */
 :focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  outline: var(--focus-ring-width) solid var(--focus-ring-color);
+  outline-offset: var(--focus-ring-offset);
   border-radius: var(--r-xs);
 }
 
@@ -126,6 +130,374 @@ h4 {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+
+/* ────────────────────────────── 新增基础件样式 ──────────────────────────────
+   这些类名只服务于 ui.tsx / CommandPalette.tsx 里新增的受控原语。
+   颜色一律走令牌；间距、时长、层级、字号也都走 tokens.css 新增的刻度。
+   类名都是全新的，不与 app.css 里的旧类冲突，所以不会造成视觉回归。 */
+
+/* 骨架占位条：--skeleton 打底，45° 渐变大带横向扫过形成 shimmer。
+   半径默认 12px，可用 --sk-radius 覆盖（Skeleton 的 radius / circle 靠它）。 */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--skeleton);
+  border-radius: var(--sk-radius, 12px);
+}
+
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    45deg,
+    transparent 38%,
+    var(--wash-lift) 50%,
+    transparent 62%
+  );
+  transform: translateX(-100%);
+  /* 真正的 animation，所以底部 prefers-reduced-motion 的 kill switch 能停掉它 */
+  animation: skeleton-shimmer 1.6s linear infinite;
+}
+
+@keyframes skeleton-shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* 输入框 / 文本域 */
+.ui-input,
+.ui-textarea,
+.ui-select {
+  width: 100%;
+  min-height: 30px;
+  padding: var(--sp-6) var(--sp-8);
+  font-size: var(--fs-13);
+  line-height: var(--lh-normal);
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-xs);
+  transition: border-color var(--dur-2) var(--ease-easy),
+    background var(--dur-2) var(--ease-easy);
+}
+
+.ui-textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.ui-input::placeholder,
+.ui-textarea::placeholder {
+  color: var(--ink-4);
+}
+
+.ui-input:hover,
+.ui-textarea:hover,
+.ui-select:hover {
+  border-color: var(--line);
+}
+
+.ui-input:focus,
+.ui-textarea:focus,
+.ui-select:focus {
+  border-color: var(--accent-3);
+  background: var(--surface);
+}
+
+.ui-input:disabled,
+.ui-textarea:disabled,
+.ui-select:disabled {
+  color: var(--ink-5);
+  cursor: not-allowed;
+}
+
+.ui-select {
+  cursor: pointer;
+  padding-right: var(--sp-24);
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink-4) 50%),
+    linear-gradient(135deg, var(--ink-4) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 13px, calc(100% - 11px) 13px;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+}
+
+.ui-hint {
+  font-size: var(--fs-11);
+  line-height: var(--lh-normal);
+  color: var(--ink-4);
+}
+
+/* 复选框：原生 input 视觉隐藏，用相邻的自绘方块呈现。
+   input 仍可聚焦、可切换，focus 环画在方块上，语义由原生控件保证。 */
+.ui-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-8);
+  font-size: var(--fs-13);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.ui-checkbox input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.ui-checkbox-box {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--on-accent);
+  transition: background var(--dur-2) var(--ease-easy),
+    border-color var(--dur-2) var(--ease-easy);
+}
+
+.ui-checkbox input:checked + .ui-checkbox-box {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.ui-checkbox input:focus-visible + .ui-checkbox-box {
+  outline: var(--focus-ring-width) solid var(--focus-ring-color);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.ui-checkbox input:disabled ~ .ui-checkbox-box,
+.ui-checkbox input:disabled ~ .ui-checkbox-label {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ui-checkbox-box svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* 卡片 */
+.ui-card {
+  display: block;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  box-shadow: var(--sh-1);
+  padding: var(--sp-16);
+}
+
+.ui-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-12);
+  margin-bottom: var(--sp-12);
+}
+
+.ui-card-title {
+  font-size: var(--fs-15);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-tight);
+  color: var(--ink);
+}
+
+.ui-card-subtitle {
+  margin-top: var(--sp-4);
+  font-size: var(--fs-12);
+  line-height: var(--lh-normal);
+  color: var(--ink-3);
+}
+
+.ui-card-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  flex: none;
+}
+
+/* Tabs：tablist 一行，tabpanel 是与当前 tab 关联的展示区 */
+.ui-tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  border-bottom: 1px solid var(--line);
+}
+
+.ui-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-6);
+  padding: var(--sp-8) var(--sp-12);
+  font-size: var(--fs-13);
+  color: var(--ink-3);
+  border-radius: var(--r-xs) var(--r-xs) 0 0;
+  transition: color var(--dur-2) var(--ease-easy),
+    background var(--dur-2) var(--ease-easy);
+}
+
+.ui-tab:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--surface-hover);
+}
+
+.ui-tab[aria-selected='true'] {
+  color: var(--accent);
+  font-weight: var(--fw-medium);
+}
+
+.ui-tab[aria-selected='true']::after {
+  content: '';
+  position: absolute;
+  left: var(--sp-8);
+  right: var(--sp-8);
+  bottom: -1px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+.ui-tab:disabled {
+  color: var(--ink-5);
+  cursor: not-allowed;
+}
+
+.ui-tabpanel {
+  padding-top: var(--sp-12);
+}
+
+/* Tooltip：wrapper 相对定位，气泡绝对定位在上方；靠 :hover/:focus-within 显示，
+   不依赖 title=，所以读屏和键盘用户一样能拿到提示。 */
+.ui-tooltip {
+  position: relative;
+  display: inline-flex;
+}
+
+.ui-tooltip-bubble {
+  position: absolute;
+  bottom: calc(100% + var(--sp-8));
+  left: 50%;
+  transform: translateX(-50%) translateY(var(--sp-4));
+  z-index: var(--z-dropdown);
+  max-width: 240px;
+  padding: var(--sp-6) var(--sp-8);
+  font-size: var(--fs-12);
+  line-height: var(--lh-normal);
+  color: var(--surface);
+  background: var(--overlay);
+  border-radius: var(--r-xs);
+  box-shadow: var(--sh-overlay);
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity var(--dur-2) var(--ease-easy),
+    transform var(--dur-2) var(--ease-enter),
+    visibility var(--dur-2);
+}
+
+.ui-tooltip:hover > .ui-tooltip-bubble,
+.ui-tooltip:focus-within > .ui-tooltip-bubble {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* Popover：CSS 锚定在 wrapper 下方。
+   局限：只做简单的「左对齐 + 下方」定位，不做碰撞检测/自动翻转，
+   贴近视口边缘时可能溢出 —— 需要精确避让的消费方应自行传入定位。 */
+.ui-popover-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.ui-popover {
+  position: absolute;
+  top: calc(100% + var(--sp-6));
+  left: 0;
+  z-index: var(--z-dropdown);
+  min-width: 180px;
+  padding: var(--sp-8);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  box-shadow: var(--sh-3);
+  animation: popoverIn var(--dur-2) var(--ease-enter);
+}
+
+@keyframes popoverIn {
+  from {
+    opacity: 0;
+    transform: translateY(calc(var(--sp-2) * -1));
+  }
+}
+
+/* Segmented：一组成段按钮，风格对齐 ProfileGrid 里的 ad-hoc .seg */
+.ui-segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+}
+
+.ui-segmented button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-6);
+  height: 24px;
+  padding: 0 var(--sp-10);
+  font-size: var(--fs-12);
+  color: var(--ink-3);
+  border-radius: var(--r-xs);
+  transition: background var(--dur-2) var(--ease-easy),
+    color var(--dur-2) var(--ease-easy);
+}
+
+.ui-segmented button:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.ui-segmented button[aria-pressed='true'] {
+  background: var(--surface);
+  color: var(--accent);
+  box-shadow: var(--sh-1);
+}
+
+.ui-segmented button:disabled {
+  color: var(--ink-5);
+  cursor: not-allowed;
+}
+
+/* 语义色 chip 的 info 档：app.css 只定义了 ok/warn/bad/accent，
+   Badge 别名需要的 info 档在这里补齐，不改动 app.css。 */
+.chip.info {
+  background: var(--accent-2);
+  color: var(--blue);
+}
+
+/* 加载指示器：复用 app.css 的 rot 关键帧，时长/缓动走动效令牌 */
+.ui-spinner {
+  display: inline-block;
+  flex: none;
+  border-style: solid;
+  border-color: var(--line-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: rot var(--dur-6) linear infinite;
 }
 
 /* 无障碍：尊重系统「减少动态效果」 */

@@ -16,17 +16,52 @@ import type { Profile, ProxyConfig, ProxyInput, ProxyProtocol, ProxyRecord } fro
 import { Button, Icon, Modal, cx, useToast } from '@renderer/components/ui'
 import { bridge, errorMessage } from '@renderer/lib/api'
 import { formatRelative } from '@renderer/lib/format'
+import { useI18n } from '@renderer/lib/i18n'
 import './proxy.css'
 
 export interface PanelProps {
   profiles: Profile[]
 }
 
-const PROTOCOL_OPTIONS: Array<{ value: ProxyProtocol; label: string }> = [
-  { value: 'http', label: 'HTTP' },
-  { value: 'https', label: 'HTTPS' },
-  { value: 'socks5', label: 'SOCKS5' }
+/**
+ * 列表读取的三态（DESIGN.md §不可判读状态）。
+ * 用两个布尔量表达时，「读完了但没读到」和「读失败」会共用同一个合法组合，
+ * 歧义从类型里就进来了；联合类型逼每一态都必须回答「画什么」。
+ */
+type ProxyListState =
+  | { kind: 'loading' }
+  | { kind: 'error'; message: string }
+  | { kind: 'ready'; records: ProxyRecord[] }
+
+/**
+ * 剥掉 Electron 给 IPC 失败套的通道名外壳。
+ * DESIGN.md「错误原文不要带协议噪音」：原始消息形如
+ * `Error invoking remote method 'ss:proxies:list': Error: EACCES: ...`，
+ * 前半截会把真正原因挤出屏幕。AuditPanel 用的是同一条正则，但它在那个文件里
+ * 没有导出；这里按同样的口径内联一份，不为此新建共享文件。
+ */
+function cleanIpcMessage(raw: string): string {
+  const m = /Error invoking remote method '[^']*':\s*(?:Error:\s*)?([\s\S]*)$/.exec(raw)
+  return (m?.[1] ?? raw).trim()
+}
+
+const PROTOCOL_OPTIONS: Array<{ value: ProxyProtocol; labelKey: string }> = [
+  { value: 'http', labelKey: 'proxy.protocol.http' },
+  { value: 'https', labelKey: 'proxy.protocol.https' },
+  { value: 'socks5', labelKey: 'proxy.protocol.socks5' },
+  { value: 'socks5h', labelKey: 'proxy.protocol.socks5h' }
 ]
+
+/**
+ * 表格首批渲染多少条 / 每次「加载更多」加多少条。
+ *
+ * 为什么不全量渲染：代理池没有条数上限，商家一次给几百条很常见，
+ * 每行 8 列（名称、协议、地址、出口 IP、时区、延迟、检测时间、4 个操作按钮）
+ * 就是十几个 DOM 节点。几百行铺开时滚动、以及每次检测回填触发的整表 diff
+ * 都会明显掉帧。数据仍一次取全，这里只控制「一次画多少行」。
+ */
+const PROXY_PAGE = 100
+const PROXY_STEP = 200
 
 interface FormState {
   name: string
@@ -63,9 +98,12 @@ function checkTone(record: ProxyRecord): string {
 
 export function ProxyPanel({ profiles }: PanelProps) {
   const toast = useToast()
+  const { t } = useI18n()
 
-  const [records, setRecords] = useState<ProxyRecord[]>([])
-  const [loading, setLoading] = useState(true)
+  const [list, setList] = useState<ProxyListState>({ kind: 'loading' })
+  // 读不到时列表按「没有」处理，所有读 records 的地方（统计、工具栏守卫）照旧，
+  // 但「画什么」由下面的 list.kind 三态分支决定，不再由一个布尔量说了算。
+  const records = list.kind === 'ready' ? list.records : []
 
   // 挂载成功后 App 持有的 profiles 不会自动刷新，这里记下本次会话里改过的值，
   // 保证挂载弹层里显示的是「刚挂上去的那条」，而不是刷新前的旧值
@@ -89,17 +127,31 @@ export function ProxyPanel({ profiles }: PanelProps) {
 
   const [checkingId, setCheckingId] = useState<string | null>(null)
   const [checkingAll, setCheckingAll] = useState(false)
+  /** 表格当前渲染多少条（见 PROXY_PAGE 的注释） */
+  const [visibleCount, setVisibleCount] = useState(PROXY_PAGE)
 
   const reload = useCallback(async (): Promise<void> => {
+    setList({ kind: 'loading' })
+    // 重新读到的是另一份数据，已展开的条数回到首批
+    setVisibleCount(PROXY_PAGE)
     try {
       const list = await bridge().proxies.list()
-      setRecords(list)
+      setList({ kind: 'ready', records: list })
     } catch (err) {
-      toast.push(errorMessage(err), 'err')
-    } finally {
-      setLoading(false)
+      // 读失败是权威结论，留在原地；不再弹会消失的 toast，否则又退化成「空」
+      setList({ kind: 'error', message: cleanIpcMessage(errorMessage(err)) })
     }
-  }, [toast])
+  }, [])
+
+  /**
+   * 变更成功后就地回填列表。
+   * 不退回 loading：逐条回填才不会让正在看的那一行跳位（见 checkOne 的注释）。
+   * 非 ready 态（读失败/加载中）里成功变更也算「列表现在可读了」，直接落到 ready，
+   * 这样用户新建/删除后能看到结果，行为和改造前一致。
+   */
+  const updateRecords = (fn: (prev: ProxyRecord[]) => ProxyRecord[]): void => {
+    setList((prev) => ({ kind: 'ready', records: fn(prev.kind === 'ready' ? prev.records : []) }))
+  }
 
   useEffect(() => {
     void reload()
@@ -140,11 +192,11 @@ export function ProxyPanel({ profiles }: PanelProps) {
     const host = form.host.trim()
     const port = Number(form.port)
     if (!host) {
-      toast.push('请填写代理主机', 'err')
+      toast.push(t('proxy.err.hostRequired'), 'err')
       return
     }
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      toast.push('端口必须是 1-65535 之间的整数', 'err')
+      toast.push(t('proxy.err.portInvalid'), 'err')
       return
     }
 
@@ -163,12 +215,12 @@ export function ProxyPanel({ profiles }: PanelProps) {
     try {
       if (editing) {
         const next = await bridge().proxies.update(editing.id, payload)
-        setRecords((prev) => prev.map((r) => (r.id === next.id ? next : r)))
-        toast.push(`已保存「${next.name}」`, 'ok')
+        updateRecords((prev) => prev.map((r) => (r.id === next.id ? next : r)))
+        toast.push(t('proxy.toast.saved', { name: next.name }), 'ok')
       } else {
         const created = await bridge().proxies.create(payload)
-        setRecords((prev) => [...prev, created])
-        toast.push(`已新增「${created.name}」`, 'ok')
+        updateRecords((prev) => [...prev, created])
+        toast.push(t('proxy.toast.created', { name: created.name }), 'ok')
       }
       setFormOpen(false)
     } catch (err) {
@@ -188,7 +240,7 @@ export function ProxyPanel({ profiles }: PanelProps) {
 
   const submitImport = async (): Promise<void> => {
     if (!importText.trim()) {
-      toast.push('先粘贴几行代理地址', 'err')
+      toast.push(t('proxy.err.pasteFirst'), 'err')
       return
     }
     setImporting(true)
@@ -197,8 +249,8 @@ export function ProxyPanel({ profiles }: PanelProps) {
       setImportErrors(result.errors)
       await reload()
       toast.push(
-        `导入完成：新增 ${result.added} 条，跳过 ${result.skipped} 条` +
-          (result.errors.length > 0 ? `，${result.errors.length} 行有问题` : ''),
+        t('proxy.toast.importDone', { added: result.added, skipped: result.skipped }) +
+          (result.errors.length > 0 ? t('proxy.toast.importErrorLines', { n: result.errors.length }) : ''),
         result.added > 0 ? 'ok' : 'info'
       )
       // 有错误就留在弹层里让人逐行看，没错才关掉
@@ -217,14 +269,24 @@ export function ProxyPanel({ profiles }: PanelProps) {
     try {
       const result = await bridge().proxies.check(record.id)
       // 只回填这一行：整表重排会让用户正在看的行跳位置
-      setRecords((prev) => prev.map((r) => (r.id === record.id ? { ...r, lastCheck: result } : r)))
+      updateRecords((prev) => prev.map((r) => (r.id === record.id ? { ...r, lastCheck: result } : r)))
       if (result.ok) {
         toast.push(
-          `「${record.name}」可用 · ${result.ip ?? '出口未知'} · ${result.latencyMs ?? 0}ms`,
+          t('proxy.toast.checkOk', {
+            name: record.name,
+            ip: result.ip ?? t('proxy.unknownExit'),
+            ms: result.latencyMs ?? 0
+          }),
           'ok'
         )
       } else {
-        toast.push(`「${record.name}」检测失败：${result.error ?? '未知原因'}`, 'err')
+        toast.push(
+          t('proxy.toast.checkFail', {
+            name: record.name,
+            reason: result.error ?? t('proxy.unknownReason')
+          }),
+          'err'
+        )
       }
     } catch (err) {
       toast.push(errorMessage(err), 'err')
@@ -237,9 +299,12 @@ export function ProxyPanel({ profiles }: PanelProps) {
     setCheckingAll(true)
     try {
       const list = await bridge().proxies.checkAll()
-      setRecords(list)
+      updateRecords(() => list)
       const ok = list.filter((r) => r.lastCheck?.ok === true).length
-      toast.push(`检测完成：${ok}/${list.length} 条可用`, ok === list.length ? 'ok' : 'info')
+      toast.push(
+        t('proxy.toast.checkAllDone', { ok, total: list.length }),
+        ok === list.length ? 'ok' : 'info'
+      )
     } catch (err) {
       toast.push(errorMessage(err), 'err')
     } finally {
@@ -256,20 +321,27 @@ export function ProxyPanel({ profiles }: PanelProps) {
       setApplied((prev) => ({ ...prev, [profile.id]: updated.proxy }))
 
       if (record === null) {
-        toast.push(`「${profile.name}」已改为直连`, 'ok')
+        toast.push(t('proxy.toast.direct', { name: profile.name }), 'ok')
       } else if (record.lastCheck === null) {
-        toast.push(`已挂载到「${profile.name}」，但该代理尚未检测，无法校验出口时区`, 'info')
+        toast.push(t('proxy.toast.mountedUnchecked', { name: profile.name }), 'info')
       } else if (
         record.lastCheck.timezone !== undefined &&
         record.lastCheck.timezone !== profile.fingerprint.timezone
       ) {
         // 出口时区与指纹时区打架时，网站看到的是「时区在美国、IP 在日本」的矛盾身份
         toast.push(
-          `已挂载到「${profile.name}」，但时区不一致：代理 ${record.lastCheck.timezone} ≠ 环境 ${profile.fingerprint.timezone}`,
+          t('proxy.toast.mountedTzMismatch', {
+            name: profile.name,
+            proxyTz: record.lastCheck.timezone,
+            envTz: profile.fingerprint.timezone
+          }),
           'info'
         )
       } else {
-        toast.push(`已把「${record.name}」挂到「${profile.name}」`, 'ok')
+        toast.push(
+          t('proxy.toast.mounted', { proxy: record.name, profile: profile.name }),
+          'ok'
+        )
       }
       setMountTarget(null)
     } catch (err) {
@@ -284,8 +356,8 @@ export function ProxyPanel({ profiles }: PanelProps) {
     setDeleting(true)
     try {
       await bridge().proxies.remove(pendingDelete.id)
-      setRecords((prev) => prev.filter((r) => r.id !== pendingDelete.id))
-      toast.push(`已删除「${pendingDelete.name}」，原挂载该代理的环境已改为直连`, 'ok')
+      updateRecords((prev) => prev.filter((r) => r.id !== pendingDelete.id))
+      toast.push(t('proxy.toast.deleted', { name: pendingDelete.name }), 'ok')
       setPendingDelete(null)
     } catch (err) {
       toast.push(errorMessage(err), 'err')
@@ -300,24 +372,24 @@ export function ProxyPanel({ profiles }: PanelProps) {
     <div className="tool-panel">
       <header className="tool-head px-headbar">
         <div>
-          <h2>代理池</h2>
-          <p>集中管理出口代理，真实探测出口 IP 与时区，再把代理挂到环境上。</p>
+          <h2>{t('proxy.title')}</h2>
+          <p>{t('proxy.subtitle')}</p>
         </div>
         <div className="px-toolbar">
           <Button variant="ghost" icon="download" onClick={openImport}>
-            粘贴导入
+            {t('proxy.import.paste')}
           </Button>
           <Button
             variant="ghost"
             icon="reload"
             onClick={() => void checkAll()}
             disabled={checkingAll || records.length === 0}
-            title={records.length === 0 ? '先添加代理再检测' : '逐条串行检测全部代理'}
+            title={records.length === 0 ? t('proxy.checkAll.titleEmpty') : t('proxy.checkAll.title')}
           >
-            {checkingAll ? '检测中…' : '全部检测'}
+            {checkingAll ? t('proxy.checking') : t('proxy.checkAll')}
           </Button>
           <Button variant="primary" icon="plus" onClick={openCreate}>
-            新建代理
+            {t('proxy.create')}
           </Button>
         </div>
       </header>
@@ -325,51 +397,64 @@ export function ProxyPanel({ profiles }: PanelProps) {
       <div className="tool-body">
         <div className="px-bar">
           <span className="px-count">
-            共 <b>{stats.total}</b> 条
+            {t('proxy.count.prefix')}
+            <b>{stats.total}</b>
+            {t('proxy.count.suffix')}
           </span>
-          <span className="px-dot px-ok">可用 {stats.ok}</span>
-          <span className="px-dot px-bad">异常 {stats.bad}</span>
-          <span className="px-dot px-dim">未检测 {stats.unchecked}</span>
+          <span className="px-dot px-ok">{t('proxy.stat.ok', { n: stats.ok })}</span>
+          <span className="px-dot px-bad">{t('proxy.stat.bad', { n: stats.bad })}</span>
+          <span className="px-dot px-dim">{t('proxy.stat.unchecked', { n: stats.unchecked })}</span>
           <span className="px-spacer" />
-          <span className="px-hint">检测走 CONNECT 隧道，只认真实出口，不伪造结果</span>
+          <span className="px-hint">{t('proxy.hint')}</span>
         </div>
 
-        {loading ? (
-          <div className="px-empty">正在读取代理…</div>
+        {list.kind === 'loading' ? (
+          <div className="px-empty">{t('proxy.loading')}</div>
+        ) : list.kind === 'error' ? (
+          /* 读不到 ≠ 没有代理。琥珀态 + 重试入口，和空态的虚线框/引导动作一眼可分。
+             用 warn 不用 red：读不到是「不知道」，不是确认数据坏了（DESIGN.md §不可判读状态）。 */
+          <div className="px-err">
+            <b>{t('proxy.error.title')}</b>
+            <p>{t('proxy.error.reason', { message: list.message })}</p>
+            <p className="px-err-hint">{t('proxy.error.hint')}</p>
+            <Button variant="ghost" icon="reload" onClick={() => void reload()}>
+              {t('common.retry')}
+            </Button>
+          </div>
         ) : records.length === 0 ? (
           <div className="px-empty px-empty-guide">
             <div className="mark">
               <Icon name="globe" size={20} strokeWidth={2} />
             </div>
-            <h3>还没有代理</h3>
+            <h3>{t('proxy.empty.title')}</h3>
             <p>
-              一条代理对应一个出口身份。可以先建一条，也可以把商家给的地址整段粘进来：
+              {t('proxy.empty.body')}
               <br />
               <code>http://user:pass@1.2.3.4:8080</code> · <code>1.2.3.4:8080:user:pass</code> ·{' '}
               <code>1.2.3.4:8080</code>
             </p>
             <div className="px-empty-actions">
               <Button variant="ghost" icon="download" onClick={openImport}>
-                粘贴导入
+                {t('proxy.import.paste')}
               </Button>
               <Button variant="primary" icon="plus" onClick={openCreate}>
-                新建代理
+                {t('proxy.create')}
               </Button>
             </div>
           </div>
         ) : (
           <div className="px-table">
             <div className="px-row px-head">
-              <span>名称</span>
-              <span>协议</span>
-              <span>地址</span>
-              <span>出口 IP</span>
-              <span>时区</span>
-              <span>延迟</span>
-              <span>最近检测</span>
-              <span className="px-ops">操作</span>
+              <span>{t('common.name')}</span>
+              <span>{t('proxy.table.protocol')}</span>
+              <span>{t('proxy.table.address')}</span>
+              <span>{t('proxy.table.exitIp')}</span>
+              <span>{t('proxy.table.timezone')}</span>
+              <span>{t('proxy.table.latency')}</span>
+              <span>{t('proxy.table.lastCheck')}</span>
+              <span className="px-ops">{t('common.actions')}</span>
             </div>
-            {records.map((record) => {
+            {records.slice(0, visibleCount).map((record) => {
               const check = record.lastCheck
               return (
                 <div className="px-row" key={record.id}>
@@ -377,7 +462,7 @@ export function ProxyPanel({ profiles }: PanelProps) {
                     <span className="n">{record.name}</span>
                     <span className="px-tags">
                       {record.region ? <span className="px-tag">{record.region}</span> : null}
-                      {record.username ? <span className="px-tag">认证</span> : null}
+                      {record.username ? <span className="px-tag">{t('proxy.tag.auth')}</span> : null}
                     </span>
                   </div>
                   <span className={cx('px-proto', record.protocol)}>{record.protocol}</span>
@@ -386,7 +471,7 @@ export function ProxyPanel({ profiles }: PanelProps) {
                   </span>
                   <div className="px-exit">
                     {check === null ? (
-                      <span className="px-dim">未检测</span>
+                      <span className="px-dim">{t('proxy.unchecked')}</span>
                     ) : check.ok ? (
                       <>
                         <span className="px-mono px-ok">{check.ip ?? '—'}</span>
@@ -394,7 +479,7 @@ export function ProxyPanel({ profiles }: PanelProps) {
                       </>
                     ) : (
                       <span className="px-bad px-ellipsis" title={check.error}>
-                        {check.error ?? '检测失败'}
+                        {check.error ?? t('proxy.checkFailed')}
                       </span>
                     )}
                   </div>
@@ -405,14 +490,14 @@ export function ProxyPanel({ profiles }: PanelProps) {
                     {check?.ok && typeof check.latencyMs === 'number' ? `${check.latencyMs} ms` : '—'}
                   </span>
                   <span className={cx('px-time', checkTone(record))}>
-                    {check === null ? '未检测' : formatRelative(check.at)}
+                    {check === null ? t('proxy.unchecked') : formatRelative(check.at)}
                   </span>
                   <div className="px-ops">
                     <button
                       type="button"
                       className="px-icon"
-                      title="检测这条代理"
-                      aria-label="检测这条代理"
+                      title={t('proxy.action.check')}
+                      aria-label={t('proxy.action.check')}
                       disabled={checkingId === record.id}
                       onClick={() => void checkOne(record)}
                     >
@@ -421,8 +506,8 @@ export function ProxyPanel({ profiles }: PanelProps) {
                     <button
                       type="button"
                       className="px-icon"
-                      title="挂载到环境"
-                      aria-label="挂载到环境"
+                      title={t('proxy.action.mount')}
+                      aria-label={t('proxy.action.mount')}
                       onClick={() => setMountTarget(record)}
                     >
                       <Icon name="swap" size={13} />
@@ -430,8 +515,8 @@ export function ProxyPanel({ profiles }: PanelProps) {
                     <button
                       type="button"
                       className="px-icon"
-                      title="编辑"
-                      aria-label="编辑"
+                      title={t('common.edit')}
+                      aria-label={t('common.edit')}
                       onClick={() => openEdit(record)}
                     >
                       <Icon name="sliders" size={13} />
@@ -439,8 +524,8 @@ export function ProxyPanel({ profiles }: PanelProps) {
                     <button
                       type="button"
                       className="px-icon px-danger"
-                      title="删除"
-                      aria-label="删除"
+                      title={t('common.delete')}
+                      aria-label={t('common.delete')}
                       onClick={() => setPendingDelete(record)}
                     >
                       <Icon name="trash" size={13} />
@@ -449,6 +534,17 @@ export function ProxyPanel({ profiles }: PanelProps) {
                 </div>
               )
             })}
+            {visibleCount < records.length ? (
+              <div style={{ display: 'flex', justifyContent: 'center', padding: '10px 0' }}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setVisibleCount((n) => n + PROXY_STEP)}
+                >
+                  {t('common.loadMore', { n: records.length - visibleCount })}
+                </Button>
+              </div>
+            ) : null}
           </div>
         )}
       </div>
@@ -456,7 +552,7 @@ export function ProxyPanel({ profiles }: PanelProps) {
       {/* 新建 / 编辑 */}
       <Modal
         open={formOpen}
-        title={editing ? '编辑代理' : '新建代理'}
+        title={editing ? t('proxy.form.editTitle') : t('proxy.create')}
         icon={editing ? 'sliders' : 'plus'}
         tone="accent"
         align="left"
@@ -465,40 +561,40 @@ export function ProxyPanel({ profiles }: PanelProps) {
         footer={
           <>
             <Button variant="ghost" onClick={() => setFormOpen(false)}>
-              取消
+              {t('common.cancel')}
             </Button>
             <Button variant="primary" onClick={() => void submitForm()} disabled={saving}>
-              {saving ? '保存中…' : '保存'}
+              {saving ? t('proxy.form.saving') : t('common.save')}
             </Button>
           </>
         }
-        note={editing ? '改了地址或凭证后，旧的检测结果会被清空' : '保存后建议立即检测一次，确认出口可用'}
+        note={editing ? t('proxy.form.noteEdit') : t('proxy.form.noteCreate')}
       >
         <div className="px-form">
           <label className="px-field">
-            <span>名称</span>
+            <span>{t('common.name')}</span>
             <input
               value={form.name}
-              placeholder="例如 美国住宅 01（留空则用地址）"
+              placeholder={t('proxy.form.namePlaceholder')}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
             />
           </label>
           <div className="px-field-row">
             <label className="px-field">
-              <span>协议</span>
+              <span>{t('proxy.form.protocol')}</span>
               <select
                 value={form.protocol}
                 onChange={(e) => setForm({ ...form, protocol: e.target.value as ProxyProtocol })}
               >
                 {PROTOCOL_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
-                    {opt.label}
+                    {t(opt.labelKey)}
                   </option>
                 ))}
               </select>
             </label>
             <label className="px-field">
-              <span>端口</span>
+              <span>{t('proxy.form.port')}</span>
               <input
                 value={form.port}
                 inputMode="numeric"
@@ -508,39 +604,39 @@ export function ProxyPanel({ profiles }: PanelProps) {
             </label>
           </div>
           <label className="px-field">
-            <span>主机</span>
+            <span>{t('proxy.form.host')}</span>
             <input
               value={form.host}
-              placeholder="1.2.3.4 或 proxy.example.com"
+              placeholder={t('proxy.form.hostPlaceholder')}
               onChange={(e) => setForm({ ...form, host: e.target.value })}
             />
           </label>
           <div className="px-field-row">
             <label className="px-field">
-              <span>用户名</span>
+              <span>{t('proxy.form.username')}</span>
               <input
                 value={form.username}
                 autoComplete="off"
-                placeholder="可留空"
+                placeholder={t('proxy.form.optional')}
                 onChange={(e) => setForm({ ...form, username: e.target.value })}
               />
             </label>
             <label className="px-field">
-              <span>密码</span>
+              <span>{t('proxy.form.password')}</span>
               <input
                 type="password"
                 value={form.password}
                 autoComplete="new-password"
-                placeholder="可留空"
+                placeholder={t('proxy.form.optional')}
                 onChange={(e) => setForm({ ...form, password: e.target.value })}
               />
             </label>
           </div>
           <label className="px-field">
-            <span>地区备注</span>
+            <span>{t('proxy.form.region')}</span>
             <input
               value={form.region}
-              placeholder="仅用于列表识别，例如 洛杉矶"
+              placeholder={t('proxy.form.regionPlaceholder')}
               onChange={(e) => setForm({ ...form, region: e.target.value })}
             />
           </label>
@@ -550,7 +646,7 @@ export function ProxyPanel({ profiles }: PanelProps) {
       {/* 粘贴导入 */}
       <Modal
         open={importOpen}
-        title="粘贴导入"
+        title={t('proxy.import.paste')}
         icon="download"
         tone="accent"
         align="left"
@@ -559,18 +655,18 @@ export function ProxyPanel({ profiles }: PanelProps) {
         footer={
           <>
             <Button variant="ghost" onClick={() => setImportOpen(false)}>
-              关闭
+              {t('common.close')}
             </Button>
             <Button variant="primary" onClick={() => void submitImport()} disabled={importing}>
-              {importing ? '导入中…' : '开始导入'}
+              {importing ? t('proxy.import.importing') : t('proxy.import.start')}
             </Button>
           </>
         }
-        note="相同 host:port 视为重复，重复行会跳过而不是报错"
+        note={t('proxy.import.note')}
       >
         <div className="px-form">
           <label className="px-field">
-            <span>每行一条，支持三种写法</span>
+            <span>{t('proxy.import.label')}</span>
             <textarea
               className="px-textarea"
               value={importText}
@@ -581,7 +677,7 @@ export function ProxyPanel({ profiles }: PanelProps) {
           </label>
           {importErrors.length > 0 ? (
             <div className="px-errors">
-              <div className="h">以下行没有导入</div>
+              <div className="h">{t('proxy.import.errorsTitle')}</div>
               <ul>
                 {importErrors.map((err) => (
                   <li key={err}>{err}</li>
@@ -595,7 +691,7 @@ export function ProxyPanel({ profiles }: PanelProps) {
       {/* 挂载到环境 */}
       <Modal
         open={mountTarget !== null}
-        title="挂载代理"
+        title={t('proxy.mount.title')}
         icon="swap"
         tone="accent"
         align="left"
@@ -603,19 +699,24 @@ export function ProxyPanel({ profiles }: PanelProps) {
         onClose={() => setMountTarget(null)}
         footer={
           <Button variant="ghost" onClick={() => setMountTarget(null)}>
-            取消
+            {t('common.cancel')}
           </Button>
         }
-        note="挂载只影响之后启动的窗口，正在运行的环境需要重启才换出口"
+        note={t('proxy.mount.note')}
       >
         {mountTarget !== null ? (
           <div className="px-form">
             <p className="px-mount-note">
-              把 <b>{mountTarget.name}</b>（{mountTarget.host}:{mountTarget.port}）挂到哪个环境？出口时区：
-              {mountTarget.lastCheck?.timezone ?? '未检测'}
+              {t('proxy.mount.promptBefore')}
+              <b>{mountTarget.name}</b>
+              {t('proxy.mount.promptAfter', {
+                host: mountTarget.host,
+                port: mountTarget.port,
+                tz: mountTarget.lastCheck?.timezone ?? t('proxy.unchecked')
+              })}
             </p>
             {profiles.length === 0 ? (
-              <div className="px-mount-empty">还没有环境，先去环境页建一个再回来挂载。</div>
+              <div className="px-mount-empty">{t('proxy.mount.noProfiles')}</div>
             ) : (
               <div className="px-envlist">
                 {profiles.map((profile) => {
@@ -639,17 +740,19 @@ export function ProxyPanel({ profiles }: PanelProps) {
                         <span className={cx('tz', mismatch && 'px-warn')}>
                           {profile.fingerprint.timezone}
                         </span>
-                        <span className="cur">{proxy ? `${proxy.host}:${proxy.port}` : '直连'}</span>
+                        <span className="cur">
+                          {proxy ? `${proxy.host}:${proxy.port}` : t('proxy.direct')}
+                        </span>
                       </button>
                       {alreadyHere ? (
                         <button
                           type="button"
                           className="unlink"
                           disabled={applyingId !== null}
-                          title="把这个环境改回直连"
+                          title={t('proxy.action.direct')}
                           onClick={() => void applyTo(profile, null)}
                         >
-                          直连
+                          {t('proxy.direct')}
                         </button>
                       ) : null}
                     </div>
@@ -664,22 +767,22 @@ export function ProxyPanel({ profiles }: PanelProps) {
       {/* 删除确认 */}
       <Modal
         open={pendingDelete !== null}
-        title="删除代理"
+        title={t('proxy.delete.title')}
         icon="alert"
         onClose={() => setPendingDelete(null)}
         footer={
           <>
             <Button variant="ghost" onClick={() => setPendingDelete(null)}>
-              取消
+              {t('common.cancel')}
             </Button>
             <Button variant="danger" onClick={() => void confirmDelete()} disabled={deleting}>
-              {deleting ? '删除中…' : '删除'}
+              {deleting ? t('proxy.delete.deleting') : t('common.delete')}
             </Button>
           </>
         }
-        note="删除后无法恢复，重新导入需要原始地址与密码"
+        note={t('proxy.delete.note')}
       >
-        确定删除「{pendingDelete?.name ?? ''}」？挂载了这条代理的环境会一并改为直连。
+        {t('proxy.delete.confirm', { name: pendingDelete?.name ?? '' })}
       </Modal>
     </div>
   )

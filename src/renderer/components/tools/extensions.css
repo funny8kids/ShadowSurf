@@ -1,0 +1,253 @@
+/*
+ * 本地扩展面板样式。
+ *
+ * 只写本模块自己的类（ext- 前缀），颜色 / 圆角 / 字体全部走 tokens.css 的令牌，
+ * 不碰 app.css，也不重复定义其它工具面板的骨架类。
+ */
+
+/* ────────────────────────────── 面板头 ────────────────────────────── */
+
+.ext-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.ext-count {
+  flex: none;
+  min-width: 26px;
+  height: 22px;
+  padding: 0 8px;
+  display: inline-grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  background: var(--surface-3);
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+}
+
+/* ────────────────────────────── 新增表单 ────────────────────────────── */
+
+.ext-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+
+.ext-form-fields {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(150px, 220px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+/* Field 默认是 104px 标签列 + 值 + 30px 动作列的三列网格；
+   表单里改成上下排，路径输入才能拿到整行宽度。 */
+.ext-form .field {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  padding: 0;
+}
+
+.ext-form .field > label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.ext-form .field-hint {
+  grid-column: auto;
+  margin-top: 0;
+}
+
+/* Field 的第三列是给右侧 action 占位的空 span；改成上下排之后它会多出一个
+   flex item，白占一份 gap。没有 action 时直接收起。 */
+.ext-form .field > span:empty {
+  display: none;
+}
+
+.ext-form .ext-path-input {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+/* ────────────────────────────── 列表 ────────────────────────────── */
+
+.ext-list {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+
+.ext-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--line-2);
+  transition: background var(--dur-3) var(--ease-easy);
+}
+
+.ext-row:last-child {
+  border-bottom: none;
+}
+
+.ext-row:hover {
+  background: var(--surface-hover);
+}
+
+.ext-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ext-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ext-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.ext-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+
+.ext-row.off .ext-name {
+  color: var(--ink-3);
+}
+
+.ext-row.off .ext-path {
+  color: var(--ink-4);
+}
+
+.ext-ops {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ────────────────────────────── 三态 ────────────────────────────── */
+
+.ext-loading {
+  padding: 30px 24px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r);
+  font-size: 12px;
+  color: var(--ink-3);
+  text-align: center;
+}
+
+.ext-error {
+  padding: 16px 18px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--amber);
+  border-radius: var(--r);
+}
+
+.ext-error b {
+  display: block;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--amber);
+}
+
+.ext-error-reason {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  word-break: break-all;
+}
+
+.ext-error button {
+  margin-top: 10px;
+}
+
+.ext-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 40px 24px;
+  background: var(--surface);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-lg);
+  text-align: center;
+}
+
+.ext-empty-mark {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r);
+  background: var(--accent-2);
+  color: var(--accent);
+}
+
+.ext-empty h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.ext-empty p {
+  margin: 0;
+  max-width: 420px;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--ink-3);
+  text-wrap: pretty;
+}
+
+/* ────────────────────────────── 窄窗口 ────────────────────────────── */
+
+@media (max-width: 720px) {
+  .ext-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .ext-form-fields {
+    grid-template-columns: 1fr;
+  }
+}

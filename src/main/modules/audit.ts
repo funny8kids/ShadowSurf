@@ -24,6 +24,10 @@ import type {
   OSKind
 } from '@shared/types'
 import { CollectionStore, GATE_ACTION_PREFIX, type Stores } from '@main/store'
+// 走相对路径而不是 `@main/store/...`：别名 `@main/store` 是前缀匹配，子路径会被
+// 整体替换掉（把它换成替身的环境里会解析失败）。这两个文件零依赖，直接引真实实现。
+import { StoreCorruptError } from '../store/json-file'
+import { evictInPlace } from '../store/evict'
 import { bridgeFor } from '@main/core/cdp'
 import { judgeMask } from '@main/core/mask-gate'
 import type { GateEvent } from '@main/agent/actions'
@@ -31,6 +35,135 @@ import type { ConsentOutcome, ConsentRequest } from '@main/agent/consent'
 import { digest, verifyChain, ZERO_HASH } from './audit-chain'
 import { boundDetail, boundMatched, boundTarget } from './audit-bound'
 import type { ModuleContext } from './context'
+
+/* ────────────────────────────── 审计：批量落盘 ────────────────────────────── */
+
+/**
+ * 一次动作 = 一次全量重写 audit.json（5000 条 ≈ 3MB）是主进程最大的同步阻塞源：
+ * clone×2 + stringify + fsync 实测约 29ms，10 动作/秒就是主进程 30% 时间在阻塞。
+ *
+ * 这里改成「内存缓冲 + 定时批量落盘」：`appendAudit` 只推进内存里的链尾并返回，
+ * 真正写盘由 `flushAudit` 合并成**一次** `replaceAll`（整份数组一次写）。
+ *
+ * 注意不能写成「缓冲 N 条，然后逐条 `stores.audit.add(each)`」：`add` 内部是
+ * 一次读-改-原子 rename，逐条调用仍然是「每条一次全量重写」，等于没批。
+ * 批量写走 `replaceAll`，因此淘汰（`evictInPlace`）也要在这里补一次。
+ *
+ * ── 崩溃窗口（有意的权衡）──
+ * 进程被强杀（SIGKILL / 断电）会丢掉最多 AUDIT_FLUSH_MS(200ms) 或
+ * AUDIT_BATCH_MAX(20) 条还没落盘的记录。审计是**诊断用途**，不是事务日志，
+ * 这个窗口可以接受；正常退出（含 Electron 的 before-quit）走 process 'exit'
+ * 钩子，会把缓冲写干净。
+ *
+ * ── 可见性 ──
+ * `listAudit` / `verifyAudit` 都先 flush：读盘的人必须看到链尾，否则面板会少
+ * 最后几条、校验会拿旧文件算出一个「通过」。
+ */
+
+/** 定时落盘的间隔。崩溃窗口的上限之一 */
+const AUDIT_FLUSH_MS = 200
+/** 缓冲条数上限：攒到这个数就立刻落盘，避免高频自动化一直拖到最后 */
+const AUDIT_BATCH_MAX = 20
+
+/**
+ * 必须与 store/index.ts 里 audit store 的 maxItems 一致。
+ * 批量写走 replaceAll，不经过 CollectionStore.add 的淘汰，所以这里补一次同样的裁剪
+ * （同样是「闸门记录不淘汰」）。
+ */
+const AUDIT_MAX_ITEMS = 5000
+
+const isGateAudit = (entry: AuditEntry): boolean => entry.action.startsWith(GATE_ACTION_PREFIX)
+
+interface AuditTail {
+  seq: number
+  hash: string
+}
+
+/** 还没落盘的记录 */
+let pending: AuditEntry[] = []
+let flushTimer: ReturnType<typeof setTimeout> | null = null
+/** 链尾（含未落盘的部分）。null = 还没读过盘 */
+let tail: AuditTail | null = null
+let pendingStores: Stores | null = null
+let exitHookInstalled = false
+
+function clearFlushTimer(): void {
+  if (flushTimer !== null) {
+    clearTimeout(flushTimer)
+    flushTimer = null
+  }
+}
+
+/**
+ * 把缓冲写盘。**不抛**：它既被定时器调用（那里没人 catch），也被 verify/list 调用。
+ * 写失败只记日志并把链尾置空（下一次 append 重新读盘续号），不能把错误吞成静默。
+ */
+export function flushAudit(stores: Stores): void {
+  clearFlushTimer()
+  if (pending.length === 0) return
+
+  const batch = pending
+  pending = []
+  try {
+    const merged = stores.audit.list().concat(batch)
+    // replaceAll 不走 CollectionStore.add，淘汰要自己补（见 AUDIT_MAX_ITEMS）
+    evictInPlace(merged, AUDIT_MAX_ITEMS, isGateAudit)
+    stores.audit.replaceAll(merged)
+    // 锚点在记录落盘之后写（顺序不能反：先写锚点会留下「锚点指向不存在的记录」）。
+    // setAuditHead 内部吞掉写盘失败（见 store/settings.ts）。
+    const last = batch[batch.length - 1]
+    stores.settings.setAuditHead({ seq: last.seq, hash: last.hash })
+  } catch (err) {
+    // 这一批没能落盘。链尾必须退回「盘上真实最后一条」，否则下一条会按已丢弃的
+    // seq 续号，校验时凭空多出一个断点（把一次磁盘失败报成一次篡改）。
+    tail = null
+    console.error(
+      '[audit] 批量落盘失败，本批记录已丢弃：' + (err instanceof Error ? err.message : String(err))
+    )
+  }
+}
+
+function scheduleFlush(stores: Stores): void {
+  pendingStores = stores
+
+  // 正常退出兜底：Electron 的 before-quit / 进程退出都会走到 'exit'，
+  // 这时把缓冲写干净（同步 fs，exit 钩子里允许）。只装一次。
+  if (!exitHookInstalled) {
+    exitHookInstalled = true
+    process.once('exit', () => {
+      if (pendingStores !== null) flushAudit(pendingStores)
+    })
+  }
+
+  if (flushTimer !== null) return
+  flushTimer = setTimeout(() => {
+    flushTimer = null
+    if (pendingStores !== null) flushAudit(pendingStores)
+  }, AUDIT_FLUSH_MS)
+  // 不要因为这个定时器把进程钉住：退出由上面的 'exit' 钩子兜底
+  flushTimer.unref?.()
+}
+
+/**
+ * 链尾（seq / hash）。第一次调用读一次盘建缓存，之后只跟内存里的追加走 ——
+ * 每条都 `stores.audit.list()`（读全量 3MB）是这次要消除的另一个热点。
+ * flush 失败时 `tail` 会被置回 null，下一次调用重新读盘。
+ */
+function auditTail(stores: Stores): AuditTail {
+  if (tail !== null) return tail
+
+  const all = stores.audit.list()
+  // 读到了损坏判定就必须当场失败（和 add() 的 fail-closed 语义一致）：
+  // 缓冲起来的话，这个错误只会在定时器里抛，没人接得住。
+  const corruption = stores.audit.corruption
+  if (corruption !== null) {
+    throw new StoreCorruptError(corruption.kind, corruption.file, corruption.detail)
+  }
+
+  const last = all.length > 0 ? all[all.length - 1] : null
+  tail = last === null ? { seq: 0, hash: ZERO_HASH } : { seq: last.seq, hash: last.hash }
+  return tail
+}
 
 /* ────────────────────────────── 审计：写入与校验 ────────────────────────────── */
 
@@ -45,10 +178,11 @@ export function appendAudit(
   detail?: string,
   actor = 'local'
 ): AuditEntry {
-  const all = stores.audit.list()
-  const last = all.length > 0 ? all[all.length - 1] : null
-  const seq = last ? last.seq + 1 : 1
-  const prev = last ? last.hash : ZERO_HASH
+  // 链尾从内存缓存取，不再每条都 stores.audit.list()（读全量 3MB）。
+  // 首次调用才读一次盘，之后跟着本进程的追加走；flush 失败时缓存失效重读。
+  const last = auditTail(stores)
+  const seq = last.seq === 0 ? 1 : last.seq + 1
+  const prev = last.seq === 0 ? ZERO_HASH : last.hash
   const at = Date.now()
 
   // 收口点只有这一个：所有调用方的 target / detail 都从这里过。
@@ -81,16 +215,12 @@ export function appendAudit(
     prev,
     hash: digest(prev, seq, at, actor, action, safeTarget ?? '', safeDetail ?? '')
   }
-  stores.audit.add(entry)
-  // 追加成功后立刻把尾部锚点写到 settings（**另一个文件**）。
-  //
-  // 顺序不能反：先写锚点再追加的话，崩溃会留下「锚点指向一条不存在的记录」，
-  // 那和「尾部被删」在校验时长得一模一样，只能靠文案去猜。现在这个顺序崩溃时
-  // 留下的是「锚点落后于日志」，语义明确，而且下一次追加会自动对齐。
-  //
-  // setAuditHead 内部吞掉写盘失败（见 store/settings.ts）：记录已经落盘了，
-  // 不能因为锚点写不进去就把这次追加报成失败。
-  stores.settings.setAuditHead({ seq: entry.seq, hash: entry.hash })
+  // 批量缓冲：链尾先更新（同一批里后一条的 prev 指向前一条），落盘由
+  // flushAudit 合并成一次（见文件顶部「审计：批量落盘」）。
+  tail = { seq: entry.seq, hash: entry.hash }
+  pending.push(entry)
+  if (pending.length >= AUDIT_BATCH_MAX) flushAudit(stores)
+  else scheduleFlush(stores)
   return entry
 }
 
@@ -214,6 +344,8 @@ export function auditConsent(stores: Stores, outcome: ConsentOutcome, req: Conse
 /** 最新在前，默认 200 条：面板只需要近期记录，全量拉过来既慢又没必要 */
 export function listAudit(stores: Stores, limit = 200): AuditEntry[] {
   const cap = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 200
+  // 先 flush：缓冲里的记录还没落盘，面板读盘就会少最后几条
+  flushAudit(stores)
   return stores.audit.list().reverse().slice(0, cap)
 }
 
@@ -236,6 +368,10 @@ export function listAudit(stores: Stores, limit = 200): AuditEntry[] {
  * 校验内核在 `./audit-chain.ts`：那边零依赖，能被 Node 单测。
  */
 export function verifyAudit(stores: Stores): AuditVerifyResult {
+  // 校验读盘：缓冲里还没落盘的记录必须先写下去，否则链尾对不上，
+  // settings 里的锚点也还停在上一批 —— 校验会把正常状态报成「锚点落后」。
+  flushAudit(stores)
+
   // 先读一次，再问「读到了吗」。
   //
   // `corruption` 是**上一次读失败**留下的判定，没读过就恒为 null —— 先查它，

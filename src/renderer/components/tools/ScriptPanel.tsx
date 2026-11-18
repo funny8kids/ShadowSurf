@@ -18,15 +18,18 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type {
   AutomationScript,
   Profile,
+  ScheduleKind,
+  ScheduleRecord,
   ScriptRunResult,
   ScriptStep,
   TaskRecord
 } from '@shared/types'
 import type { ScriptRunOptions } from '@shared/ipc'
 import type { ActionType, AgentStep } from '@shared/protocol'
-import { Button, Icon, Modal, cx, useToast } from '@renderer/components/ui'
+import { Badge, Button, Icon, Modal, Toggle, cx, useToast } from '@renderer/components/ui'
 import { bridge, errorMessage } from '@renderer/lib/api'
 import { ACTION_LABEL, formatRelative, profileNo } from '@renderer/lib/format'
+import { useI18n } from '@renderer/lib/i18n'
 import './script.css'
 
 export interface PanelProps {
@@ -34,6 +37,49 @@ export interface PanelProps {
 }
 
 const DEFAULT_DELAY = 300
+
+/**
+ * 脚本库列表的读取状态。
+ *
+ * DESIGN.md #1「不可判读状态」：空 / 错 / 加载必须三态可分。
+ * 旧实现把「读失败」压进 toast + 空数组，结果「读不到」和「确实没有」画成同一张脸——
+ * 用户据此以为库是空的，去新建同名的脚本，反而覆盖了自己读不到的那份。
+ * 这里用可辨识联合把三态在类型层就分开，渲染层必须逐分支处理。
+ */
+type ScriptListState =
+  | { kind: 'loading' }
+  | { kind: 'error'; message: string }
+  | { kind: 'ready'; scripts: AutomationScript[] }
+
+/** 任务选择器（「从任务导入」弹窗里那张表）的读取状态，同样按三态拆开 */
+type TaskPickerState =
+  | { kind: 'idle' }
+  | { kind: 'loading' }
+  | { kind: 'error'; message: string }
+  | { kind: 'ready'; tasks: TaskRecord[] }
+
+/**
+ * 定时任务列表的读取状态。
+ *
+ * 同样遵守「空 / 错 / 加载三态可分」：读失败时不能把列表画成空，
+ * 否则用户会以为任务被删了，转身又建一条同名的。
+ */
+type ScheduleListState =
+  | { kind: 'loading' }
+  | { kind: 'error'; message: string }
+  | { kind: 'ready'; items: ScheduleRecord[] }
+
+/**
+ * 去掉 Electron 套在 IPC 失败外的通道名前缀。
+ *
+ * 原始消息长这样：`Error invoking remote method 'ss:script:list': Error: EACCES: ...`
+ * 前半截是通道名，用户不需要知道，而且会把真正的原因挤到屏幕外。
+ * DESIGN.md 要求读失败必须「带错误原因原文」，所以这里只剥壳、不改写原因本身。
+ */
+function cleanIpcMessage(raw: string): string {
+  const m = /Error invoking remote method '[^']*':\s*(?:Error:\s*)?([\s\S]*)$/.exec(raw)
+  return (m?.[1] ?? raw).trim()
+}
 
 /**
  * 动作类型 → 中文：**不在这里自己写一份**。
@@ -52,9 +98,9 @@ const ACTION_ORDER: ActionType[] = ['click', 'type', 'press', 'scroll', 'navigat
 const NEEDS_SELECTOR = new Set<ActionType>(['click', 'type', 'press'])
 
 const SELECTOR_HINT: Partial<Record<ActionType, string>> = {
-  click: '如 role=button name=登录',
-  type: '如 role=textbox name=邮箱',
-  press: '如 role=textbox name=搜索'
+  click: 'script.hint.selector.click',
+  type: 'script.hint.selector.type',
+  press: 'script.hint.selector.press'
 }
 
 function cloneScript(script: AutomationScript): AutomationScript {
@@ -63,9 +109,9 @@ function cloneScript(script: AutomationScript): AutomationScript {
   return { ...script, steps: steps.map((step) => ({ ...step })) }
 }
 
-function blankScript(): AutomationScript {
+function blankScript(name: string): AutomationScript {
   const now = Date.now()
-  return { id: '', name: '未命名脚本', description: '', steps: [], createdAt: now, updatedAt: now }
+  return { id: '', name, description: '', steps: [], createdAt: now, updatedAt: now }
 }
 
 /**
@@ -118,12 +164,14 @@ function importableSteps(task: TaskRecord): ScriptStep[] {
 
 export function ScriptPanel({ profiles }: PanelProps) {
   const toast = useToast()
+  const { t } = useI18n()
 
   const [scripts, setScripts] = useState<AutomationScript[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [draft, setDraft] = useState<AutomationScript | null>(null)
   const [dirty, setDirty] = useState(false)
-  const [loading, setLoading] = useState(true)
+  /** 脚本库的读取状态：空 / 错 / 加载三态分列，读失败走内联琥珀而不是 toast */
+  const [listState, setListState] = useState<ScriptListState>({ kind: 'loading' })
   const [saving, setSaving] = useState(false)
   const [running, setRunning] = useState(false)
   const [runProfileId, setRunProfileId] = useState('')
@@ -131,29 +179,61 @@ export function ScriptPanel({ profiles }: PanelProps) {
 
   const [importOpen, setImportOpen] = useState(false)
   const [tasks, setTasks] = useState<TaskRecord[]>([])
-  const [tasksLoading, setTasksLoading] = useState(false)
+  /** 任务选择器的读取状态；idle = 弹窗还没打开过，没读就不该显示「空」 */
+  const [taskPicker, setTaskPicker] = useState<TaskPickerState>({ kind: 'idle' })
 
   const [pendingSelect, setPendingSelect] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<AutomationScript | null>(null)
   /** 回放被风险闸门拦下，等用户看过原因再决定续不续 */
   const [pendingRun, setPendingRun] = useState<ScriptRunResult | null>(null)
 
+  /* ── 定时任务 ── */
+
+  const [scheduleState, setScheduleState] = useState<ScheduleListState>({ kind: 'loading' })
+  const [schedKind, setSchedKind] = useState<ScheduleKind>('launch')
+  const [schedTarget, setSchedTarget] = useState('')
+  // 脚本定时必须指定运行环境：AutomationScript.profileId 只是录制来源，不能当运行环境
+  const [schedProfileId, setSchedProfileId] = useState('')
+  const [schedMode, setSchedMode] = useState<'interval' | 'daily'>('interval')
+  const [schedMinutes, setSchedMinutes] = useState('30')
+  const [schedDailyAt, setSchedDailyAt] = useState('09:00')
+  const [schedSaving, setSchedSaving] = useState(false)
+  const [schedUpdatingId, setSchedUpdatingId] = useState<string | null>(null)
+  const [schedRunningId, setSchedRunningId] = useState<string | null>(null)
+  const [schedDeleteTarget, setSchedDeleteTarget] = useState<ScheduleRecord | null>(null)
+
   const loadScripts = useCallback(async () => {
-    setLoading(true)
+    // 读失败不是「空」：先声明进入 loading，成功写 ready，失败写带原因的 error。
+    // 不再 toast —— toast 会自己消失，而「读不到」必须留在页面上等人处理。
+    setListState({ kind: 'loading' })
     try {
       const list = await bridge().scripts.list()
       setScripts(list)
       setSelectedId((current) => current ?? list[0]?.id ?? null)
+      setListState({ kind: 'ready', scripts: list })
     } catch (err) {
-      toast.push(errorMessage(err), 'err')
-    } finally {
-      setLoading(false)
+      setListState({ kind: 'error', message: cleanIpcMessage(errorMessage(err)) })
     }
-  }, [toast])
+  }, [])
 
   useEffect(() => {
     void loadScripts()
   }, [loadScripts])
+
+  const loadSchedules = useCallback(async () => {
+    // 与脚本库同一口径：先 loading，成功 ready，失败带原文的 error。
+    setScheduleState({ kind: 'loading' })
+    try {
+      const items = await bridge().schedules.list()
+      setScheduleState({ kind: 'ready', items })
+    } catch (err) {
+      setScheduleState({ kind: 'error', message: cleanIpcMessage(errorMessage(err)) })
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadSchedules()
+  }, [loadSchedules])
 
   // 选中项变化或落盘后刷新草稿；编辑期间 scripts 不变，所以不会冲掉正在改的内容
   useEffect(() => {
@@ -179,6 +259,25 @@ export function ScriptPanel({ profiles }: PanelProps) {
     [scripts]
   )
 
+  /** 定时任务表单的目标候选：按 action 类型在「环境」和「脚本」之间切换 */
+  const scheduleTargets = useMemo(
+    () =>
+      schedKind === 'launch'
+        ? profiles.map((p) => ({ id: p.id, label: `${profileNo(p.id)} ${p.name}` }))
+        : scripts.map((s) => ({ id: s.id, label: s.name })),
+    [schedKind, profiles, scripts]
+  )
+
+  // 切换动作类型后，原来选的目标可能不属于新类型；自动落到第一个可用目标，
+  // 避免提交出「类型是 launch、targetId 却是脚本 id」的混合配置。
+  useEffect(() => {
+    setSchedTarget((current) =>
+      scheduleTargets.some((item) => item.id === current)
+        ? current
+        : (scheduleTargets[0]?.id ?? '')
+    )
+  }, [scheduleTargets])
+
   const importableTasks = useMemo(
     () => tasks.filter((task) => task.steps.some((s) => s.status === 'ok')),
     [tasks]
@@ -202,7 +301,7 @@ export function ScriptPanel({ profiles }: PanelProps) {
       return
     }
     setSelectedId(null)
-    setDraft(blankScript())
+    setDraft(blankScript(t('script.untitled')))
     setDirty(true)
     setResult(null)
   }
@@ -280,7 +379,7 @@ export function ScriptPanel({ profiles }: PanelProps) {
     if (!draft) return
     const name = draft.name.trim()
     if (!name) {
-      toast.push('先给脚本起个名字', 'err')
+      toast.push(t('script.err.needName'), 'err')
       return
     }
     setSaving(true)
@@ -292,7 +391,7 @@ export function ScriptPanel({ profiles }: PanelProps) {
       })
       setSelectedId(saved.id)
       setDirty(false)
-      toast.push('脚本已保存', 'ok')
+      toast.push(t('script.toast.saved'), 'ok')
     } catch (err) {
       toast.push(errorMessage(err), 'err')
     } finally {
@@ -310,7 +409,7 @@ export function ScriptPanel({ profiles }: PanelProps) {
         setDraft(null)
         setDirty(false)
       }
-      toast.push('脚本已删除', 'ok')
+      toast.push(t('script.toast.deleted'), 'ok')
     } catch (err) {
       toast.push(errorMessage(err), 'err')
     } finally {
@@ -323,17 +422,17 @@ export function ScriptPanel({ profiles }: PanelProps) {
   async function run(options?: ScriptRunOptions) {
     if (!draft) return
     if (!draft.id) {
-      toast.push('先保存脚本，再选择环境回放', 'err')
+      toast.push(t('script.err.saveFirst'), 'err')
       return
     }
     // 按钮已按 dirty 禁用，但确认弹窗是直接调 run() 的，绕过了按钮。
     // 主进程读的是库里的版本，草稿没保存时「用户看到要跑的」和「实际跑的」不是同一份。
     if (dirty) {
-      toast.push('有未保存的修改，先保存再回放', 'err')
+      toast.push(t('script.err.unsavedRun'), 'err')
       return
     }
     if (!runProfileId) {
-      toast.push('先选择一个环境', 'err')
+      toast.push(t('script.err.needProfile'), 'err')
       return
     }
     setRunning(true)
@@ -348,7 +447,9 @@ export function ScriptPanel({ profiles }: PanelProps) {
         return
       }
       toast.push(
-        res.ok ? `回放完成：${res.executed}/${res.total} 步` : `第 ${res.failedAt} 步失败`,
+        res.ok
+          ? t('script.toast.runOk', { executed: res.executed, total: res.total })
+          : t('script.toast.runFail', { n: res.failedAt ?? '?' }),
         res.ok ? 'ok' : 'err'
       )
     } catch (err) {
@@ -381,32 +482,147 @@ export function ScriptPanel({ profiles }: PanelProps) {
 
   async function openImport() {
     setImportOpen(true)
-    setTasksLoading(true)
+    // 每次打开都重读：上次读失败后关掉再开，应该有机会恢复，而不是永远停在 error。
+    setTaskPicker({ kind: 'loading' })
     try {
       const list = await bridge().tasks.list()
       setTasks(list)
+      setTaskPicker({ kind: 'ready', tasks: list })
     } catch (err) {
-      toast.push(errorMessage(err), 'err')
-    } finally {
-      setTasksLoading(false)
+      // 选择器读失败同样不能伪装成「没有任务」：内联错误 + 重试，不用 toast。
+      setTaskPicker({ kind: 'error', message: cleanIpcMessage(errorMessage(err)) })
     }
   }
 
   function applyImport(task: TaskRecord) {
     const steps = importableSteps(task)
     if (steps.length === 0) {
-      toast.push('这个任务没有可复用的成功步骤', 'err')
+      toast.push(t('script.err.noSteps'), 'err')
       return
     }
     setDraft((prev) => {
-      const base = prev ?? blankScript()
-      const name = base.name === '未命名脚本' || !base.name.trim() ? task.intent.slice(0, 40) : base.name
+      const base = prev ?? blankScript(t('script.untitled'))
+      const name =
+        base.name === t('script.untitled') || !base.name.trim()
+          ? task.intent.slice(0, 40)
+          : base.name
       return { ...base, name, steps, profileId: task.profileId }
     })
     setDirty(true)
     setResult(null)
     setImportOpen(false)
-    toast.push(`已导入 ${steps.length} 步，保存后即可回放`, 'ok')
+    toast.push(t('script.toast.imported', { n: steps.length }), 'ok')
+  }
+
+  /* ────────────────────────────── 定时任务操作 ────────────────────────────── */
+
+  function scheduleTargetName(rec: ScheduleRecord): string {
+    if (rec.kind === 'launch') {
+      return profiles.find((p) => p.id === rec.targetId)?.name ?? rec.targetId
+    }
+    return scripts.find((s) => s.id === rec.targetId)?.name ?? rec.targetId
+  }
+
+  function scheduleCycleText(rec: ScheduleRecord): string {
+    if (typeof rec.everyMinutes === 'number') {
+      return t('sched.everyMinutes', { n: rec.everyMinutes })
+    }
+    if (rec.dailyAt) return t('sched.dailyAt', { time: rec.dailyAt })
+    return '—'
+  }
+
+  async function addSchedule() {
+    if (!schedTarget) return
+    setSchedSaving(true)
+    try {
+      const saved = await bridge().schedules.create(
+        schedMode === 'interval'
+          ? {
+              kind: schedKind,
+              targetId: schedTarget,
+              everyMinutes: Number(schedMinutes),
+              enabled: true
+            }
+          : { kind: schedKind, targetId: schedTarget, dailyAt: schedDailyAt, enabled: true }
+      )
+      // 主进程按 createdAt 降序返回；新建的排最前，本地镜像保持同一顺序
+      setScheduleState((prev) =>
+        prev.kind === 'ready'
+          ? { kind: 'ready', items: [saved, ...prev.items] }
+          : { kind: 'ready', items: [saved] }
+      )
+      toast.push(t('sched.saved'), 'ok')
+    } catch (err) {
+      // 校验失败（间隔越界 / 时间格式错 / 目标为空）由主进程给原文
+      toast.push(errorMessage(err), 'err')
+    } finally {
+      setSchedSaving(false)
+    }
+  }
+
+  async function toggleSchedule(rec: ScheduleRecord, enabled: boolean) {
+    setSchedUpdatingId(rec.id)
+    try {
+      const saved = await bridge().schedules.update(rec.id, { enabled })
+      setScheduleState((prev) =>
+        prev.kind === 'ready'
+          ? {
+              kind: 'ready',
+              items: prev.items.map((item) => (item.id === saved.id ? saved : item))
+            }
+          : prev
+      )
+      toast.push(t('sched.saved'), 'ok')
+    } catch (err) {
+      toast.push(errorMessage(err), 'err')
+    } finally {
+      setSchedUpdatingId(null)
+    }
+  }
+
+  async function runScheduleNow(rec: ScheduleRecord) {
+    setSchedRunningId(rec.id)
+    try {
+      const res = await bridge().schedules.runNow(rec.id)
+      // 手动触发不推进 lastRunAt（主进程保证），这里只把结果镜像到列表，
+      // 不重读整个列表 —— 避免面板闪一下 loading。
+      setScheduleState((prev) =>
+        prev.kind === 'ready'
+          ? {
+              kind: 'ready',
+              items: prev.items.map((item) =>
+                item.id === rec.id ? { ...item, lastResult: res.message } : item
+              )
+            }
+          : prev
+      )
+      toast.push(
+        res.ok ? t('sched.ran') : t('sched.runFailed', { message: res.message }),
+        res.ok ? 'ok' : 'err'
+      )
+    } catch (err) {
+      toast.push(errorMessage(err), 'err')
+    } finally {
+      setSchedRunningId(null)
+    }
+  }
+
+  async function confirmRemoveSchedule() {
+    const target = schedDeleteTarget
+    if (!target) return
+    try {
+      await bridge().schedules.remove(target.id)
+      setScheduleState((prev) =>
+        prev.kind === 'ready'
+          ? { kind: 'ready', items: prev.items.filter((item) => item.id !== target.id) }
+          : prev
+      )
+      toast.push(t('sched.removed'), 'ok')
+    } catch (err) {
+      toast.push(errorMessage(err), 'err')
+    } finally {
+      setSchedDeleteTarget(null)
+    }
   }
 
   /* ────────────────────────────── 渲染 ────────────────────────────── */
@@ -415,18 +631,15 @@ export function ScriptPanel({ profiles }: PanelProps) {
     <div className="tool-panel scr-panel">
       <header className="tool-head scr-head">
         <div>
-          <h2>自动化脚本</h2>
-          <p>
-            把一次跑通的执行记录沉淀成脚本，之后在任意环境里按原样重放。回放不走模型，
-            每一步都按选择器重新定位元素，找不到就停下。
-          </p>
+          <h2>{t('script.title')}</h2>
+          <p>{t('script.subtitle')}</p>
         </div>
         <div className="scr-head-actions">
           <Button icon="download" onClick={() => void openImport()}>
-            从任务导入
+            {t('script.importFromTask')}
           </Button>
           <Button variant="primary" icon="plus" onClick={startNew}>
-            新建脚本
+            {t('script.create')}
           </Button>
         </div>
       </header>
@@ -434,16 +647,24 @@ export function ScriptPanel({ profiles }: PanelProps) {
       <div className="scr-wrap">
         <aside className="scr-side">
           <div className="scr-side-head">
-            <span>脚本库</span>
+            <span>{t('script.library')}</span>
             <span className="scr-count">{scripts.length}</span>
           </div>
 
-          {loading ? (
-            <div className="scr-side-empty">正在读取脚本…</div>
-          ) : sorted.length === 0 ? (
-            <div className="scr-side-empty">
-              还没有脚本。可以从历史任务导入，或新建一个空脚本手工编排。
+          {listState.kind === 'loading' ? (
+            <div className="scr-side-empty">{t('script.loading')}</div>
+          ) : listState.kind === 'error' ? (
+            <div className="scr-err">
+              <b>{t('script.error.title')}</b>
+              <p className="scr-err-reason">{listState.message}</p>
+              {/* DESIGN.md：读不到 ≠ 没有脚本。现在既不能说有也不能说没有，所以停下别动、再读一次。 */}
+              <p className="scr-err-hint">{t('script.error.hint')}</p>
+              <Button size="sm" variant="ghost" icon="reload" onClick={() => void loadScripts()}>
+                {t('common.retry')}
+              </Button>
             </div>
+          ) : sorted.length === 0 ? (
+            <div className="scr-side-empty">{t('script.emptyLibrary')}</div>
           ) : (
             <div className="scr-list">
               {sorted.map((item) => (
@@ -458,7 +679,9 @@ export function ScriptPanel({ profiles }: PanelProps) {
                     <span className="tm">{formatRelative(item.updatedAt)}</span>
                   </div>
                   <div className="r2">
-                    <span className="env-tag">{item.steps.length} 步</span>
+                    <span className="env-tag">
+                      {t('script.stepsCount', { n: item.steps.length })}
+                    </span>
                     {item.description ? <span className="d">{item.description}</span> : null}
                   </div>
                 </button>
@@ -473,13 +696,10 @@ export function ScriptPanel({ profiles }: PanelProps) {
               <div className="scr-empty-mark">
                 <Icon name="play" size={16} strokeWidth={2} />
               </div>
-              <h3>选一个脚本开始编辑</h3>
-              <p>
-                左侧是脚本库。第一次使用建议先点「从任务导入」：挑一个已经跑通的任务，
-                它成功的步骤会直接变成可回放的脚本。
-              </p>
+              <h3>{t('script.empty.title')}</h3>
+              <p>{t('script.empty.body')}</p>
               <Button variant="primary" icon="download" onClick={() => void openImport()}>
-                从任务导入
+                {t('script.importFromTask')}
               </Button>
             </div>
           ) : (
@@ -488,40 +708,42 @@ export function ScriptPanel({ profiles }: PanelProps) {
                 <input
                   className="scr-title"
                   value={draft.name}
-                  aria-label="脚本名称"
-                  placeholder="脚本名称"
+                  aria-label={t('script.nameAria')}
+                  placeholder={t('script.namePlaceholder')}
                   onChange={(e) => patchDraft({ name: e.target.value })}
                 />
                 <input
                   className="scr-desc"
                   value={draft.description ?? ''}
-                  aria-label="脚本说明"
-                  placeholder="一句话说明这个脚本做什么（可选）"
+                  aria-label={t('script.descAria')}
+                  placeholder={t('script.descPlaceholder')}
                   onChange={(e) => patchDraft({ description: e.target.value })}
                 />
               </div>
 
               <div className="scr-bar">
                 <span className="scr-steps-count">
-                  共 {draft.steps.length} 步
-                  {dirty ? <i className="scr-dirty">未保存</i> : null}
+                  {t('script.stepsTotal', { n: draft.steps.length })}
+                  {dirty ? <i className="scr-dirty">{t('script.unsaved')}</i> : null}
                 </span>
 
                 <div className="scr-spacer" />
 
                 <label className="scr-run-field">
-                  环境
+                  {t('script.profile')}
                   <select
                     className="scr-input scr-run-select"
                     value={runProfileId}
-                    aria-label="回放环境"
+                    aria-label={t('script.replayProfileAria')}
                     onChange={(e) => setRunProfileId(e.target.value)}
                   >
-                    {profiles.length === 0 ? <option value="">暂无环境</option> : null}
+                    {profiles.length === 0 ? (
+                      <option value="">{t('script.noProfiles')}</option>
+                    ) : null}
                     {profiles.map((p) => (
                       <option key={p.id} value={p.id}>
                         {profileNo(p.id)} {p.name}
-                        {p.status === 'running' ? '（运行中）' : ''}
+                        {p.status === 'running' ? t('script.runningSuffix') : ''}
                       </option>
                     ))}
                   </select>
@@ -534,13 +756,13 @@ export function ScriptPanel({ profiles }: PanelProps) {
                   onClick={() => void run()}
                   title={
                     !draft.id
-                      ? '先保存脚本再回放'
+                      ? t('script.run.title.noId')
                       : dirty
-                        ? '有未保存的修改，保存后再回放，避免重放旧版本'
-                        : '在当前环境回放'
+                        ? t('script.run.title.dirty')
+                        : t('script.run.title.ok')
                   }
                 >
-                  {running ? '回放中…' : '回放'}
+                  {running ? t('script.running') : t('script.run')}
                 </Button>
                 <Button
                   variant="primary"
@@ -548,7 +770,7 @@ export function ScriptPanel({ profiles }: PanelProps) {
                   disabled={saving || !dirty}
                   onClick={() => void save()}
                 >
-                  {saving ? '保存中…' : '保存'}
+                  {saving ? t('script.saving') : t('common.save')}
                 </Button>
                 {draft.id ? (
                   <Button
@@ -556,9 +778,9 @@ export function ScriptPanel({ profiles }: PanelProps) {
                     size="sm"
                     icon="trash"
                     onClick={() => setDeleteTarget(draft)}
-                    ariaLabel="删除脚本"
+                    ariaLabel={t('script.delete.title')}
                   >
-                    删除
+                    {t('common.delete')}
                   </Button>
                 ) : null}
               </div>
@@ -569,8 +791,15 @@ export function ScriptPanel({ profiles }: PanelProps) {
                   <div>
                     <b>
                       {result.ok
-                        ? `回放完成，执行了 ${result.executed} / ${result.total} 步`
-                        : `回放到第 ${result.failedAt ?? '?'} 步中断，已执行 ${result.executed} / ${result.total} 步`}
+                        ? t('script.result.ok', {
+                            executed: result.executed,
+                            total: result.total
+                          })
+                        : t('script.result.fail', {
+                            at: result.failedAt ?? '?',
+                            executed: result.executed,
+                            total: result.total
+                          })}
                     </b>
                     {result.error ? <span>{result.error}</span> : null}
                   </div>
@@ -579,9 +808,7 @@ export function ScriptPanel({ profiles }: PanelProps) {
 
               <div className="scr-steps">
                 {draft.steps.length === 0 ? (
-                  <div className="scr-steps-empty">
-                    还没有步骤。点下面的「添加步骤」手工编排，或用「从任务导入」把一次成功的执行搬过来。
-                  </div>
+                  <div className="scr-steps-empty">{t('script.steps.empty')}</div>
                 ) : (
                   draft.steps.map((step, index) => (
                     <div className="scr-step" key={`${index}-${step.action}`}>
@@ -590,7 +817,7 @@ export function ScriptPanel({ profiles }: PanelProps) {
                         <select
                           className="scr-input scr-sel"
                           value={step.action}
-                          aria-label={`第 ${index + 1} 步动作`}
+                          aria-label={t('script.step.actionAria', { n: index + 1 })}
                           onChange={(e) => changeAction(index, e.target.value as ActionType)}
                         >
                           {ACTION_ORDER.map((action) => (
@@ -604,19 +831,21 @@ export function ScriptPanel({ profiles }: PanelProps) {
                           <input
                             className="scr-input scr-selector"
                             value={step.selector ?? ''}
-                            aria-label={`第 ${index + 1} 步选择器`}
-                            placeholder={SELECTOR_HINT[step.action] ?? 'role=button name=登录'}
+                            aria-label={t('script.step.selectorAria', { n: index + 1 })}
+                            placeholder={t(
+                              SELECTOR_HINT[step.action] ?? 'script.step.selectorFallback'
+                            )}
                             onChange={(e) => patchStep(index, { selector: e.target.value })}
                           />
                         ) : (
                           <span className="scr-step-hint">
                             {step.action === 'navigate'
-                              ? '整页跳转，不需要定位元素'
+                              ? t('script.step.hint.navigate')
                               : step.action === 'scroll'
-                                ? '整页滚动，不需要定位元素'
+                                ? t('script.step.hint.scroll')
                                 : step.action === 'extract'
-                                  ? '按描述从当前页取数'
-                                  : '脚本到这里结束'}
+                                  ? t('script.step.hint.extract')
+                                  : t('script.step.hint.done')}
                           </span>
                         )}
 
@@ -624,7 +853,7 @@ export function ScriptPanel({ profiles }: PanelProps) {
                           <button
                             type="button"
                             className="scr-icon"
-                            aria-label="上移"
+                            aria-label={t('script.step.moveUp')}
                             disabled={index === 0}
                             onClick={() => moveStep(index, -1)}
                           >
@@ -633,7 +862,7 @@ export function ScriptPanel({ profiles }: PanelProps) {
                           <button
                             type="button"
                             className="scr-icon"
-                            aria-label="下移"
+                            aria-label={t('script.step.moveDown')}
                             disabled={index === draft.steps.length - 1}
                             onClick={() => moveStep(index, 1)}
                           >
@@ -642,7 +871,7 @@ export function ScriptPanel({ profiles }: PanelProps) {
                           <button
                             type="button"
                             className="scr-icon danger"
-                            aria-label="删除这一步"
+                            aria-label={t('script.step.remove')}
                             onClick={() => removeStep(index)}
                           >
                             <Icon name="close" size={11} strokeWidth={2.4} />
@@ -653,7 +882,7 @@ export function ScriptPanel({ profiles }: PanelProps) {
                       <div className="scr-extra">
                         {step.action === 'type' ? (
                           <label>
-                            输入文本
+                            {t('script.step.text')}
                             <input
                               className="scr-input scr-param"
                               value={step.text ?? ''}
@@ -664,7 +893,7 @@ export function ScriptPanel({ profiles }: PanelProps) {
 
                         {step.action === 'press' ? (
                           <label>
-                            按键
+                            {t('script.step.key')}
                             <input
                               className="scr-input scr-param"
                               value={step.key ?? ''}
@@ -677,24 +906,24 @@ export function ScriptPanel({ profiles }: PanelProps) {
                         {step.action === 'scroll' ? (
                           <>
                             <label>
-                              方向
+                              {t('script.step.direction')}
                               <select
                                 className="scr-input scr-param"
                                 value={step.key ?? 'down'}
                                 onChange={(e) => patchStep(index, { key: e.target.value })}
                               >
-                                <option value="down">向下</option>
-                                <option value="up">向上</option>
-                                <option value="top">到顶部</option>
-                                <option value="bottom">到底部</option>
+                                <option value="down">{t('script.step.down')}</option>
+                                <option value="up">{t('script.step.up')}</option>
+                                <option value="top">{t('script.step.top')}</option>
+                                <option value="bottom">{t('script.step.bottom')}</option>
                               </select>
                             </label>
                             <label>
-                              像素
+                              {t('script.step.pixels')}
                               <input
                                 className="scr-input scr-param"
                                 value={step.text ?? ''}
-                                placeholder="留空 = 一屏"
+                                placeholder={t('script.step.pixelsPlaceholder')}
                                 onChange={(e) => patchStep(index, { text: e.target.value })}
                               />
                             </label>
@@ -703,7 +932,7 @@ export function ScriptPanel({ profiles }: PanelProps) {
 
                         {step.action === 'navigate' ? (
                           <label className="scr-grow">
-                            地址
+                            {t('script.step.address')}
                             <input
                               className="scr-input scr-param scr-wide"
                               value={step.url ?? ''}
@@ -715,11 +944,11 @@ export function ScriptPanel({ profiles }: PanelProps) {
 
                         {step.action === 'extract' ? (
                           <label className="scr-grow">
-                            取数指令
+                            {t('script.step.extractPrompt')}
                             <input
                               className="scr-input scr-param scr-wide"
                               value={step.text ?? ''}
-                              placeholder="如：当前商品的价格"
+                              placeholder={t('script.step.extractPlaceholder')}
                               onChange={(e) => patchStep(index, { text: e.target.value })}
                             />
                           </label>
@@ -727,18 +956,18 @@ export function ScriptPanel({ profiles }: PanelProps) {
 
                         {step.action === 'done' ? (
                           <label className="scr-grow">
-                            收尾说明
+                            {t('script.step.note')}
                             <input
                               className="scr-input scr-param scr-wide"
                               value={step.note ?? ''}
-                              placeholder="如：已提交订单"
+                              placeholder={t('script.step.notePlaceholder')}
                               onChange={(e) => patchStep(index, { note: e.target.value })}
                             />
                           </label>
                         ) : null}
 
                         <label>
-                          延时
+                          {t('script.step.delay')}
                           <input
                             className="scr-input scr-delay"
                             type="number"
@@ -757,7 +986,7 @@ export function ScriptPanel({ profiles }: PanelProps) {
 
                 <button type="button" className="scr-add" onClick={addStep}>
                   <Icon name="plus" size={12} strokeWidth={2.2} />
-                  添加步骤
+                  {t('script.addStep')}
                 </button>
               </div>
             </>
@@ -765,23 +994,214 @@ export function ScriptPanel({ profiles }: PanelProps) {
         </section>
       </div>
 
+      <section className="scr-editor" aria-label={t('sched.title')}>
+        <div className="scr-ed-head">
+          <div className="tool-head">
+            <h2>{t('sched.title')}</h2>
+            <p>{t('sched.desc')}</p>
+          </div>
+        </div>
+
+        {/* 新增表单：动作 → 目标 → 周期 → 添加。目标候选随动作类型切换 */}
+        <div className="scr-bar">
+          <select
+            className="scr-input scr-sel"
+            value={schedKind}
+            aria-label={`${t('sched.kind.launch')} / ${t('sched.kind.script')}`}
+            onChange={(e) => setSchedKind(e.target.value as ScheduleKind)}
+          >
+            <option value="launch">{t('sched.kind.launch')}</option>
+            <option value="script">{t('sched.kind.script')}</option>
+          </select>
+
+          <label className="scr-run-field">
+            {t('sched.target')}
+            <select
+              className="scr-input scr-run-select"
+              value={schedTarget}
+              disabled={scheduleTargets.length === 0}
+              onChange={(e) => setSchedTarget(e.target.value)}
+            >
+              {scheduleTargets.length === 0 ? <option value="">—</option> : null}
+              {scheduleTargets.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {schedKind === 'script' ? (
+            <label className="scr-run-field">
+              {t('sched.runProfile')}
+              <select
+                className="scr-input scr-run-select"
+                value={schedProfileId}
+                disabled={profiles.length === 0}
+                onChange={(e) => setSchedProfileId(e.target.value)}
+              >
+                {profiles.length === 0 ? <option value="">—</option> : null}
+                {profiles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+
+          <select
+            className="scr-input scr-sel"
+            value={schedMode}
+            aria-label={`${t('sched.mode.interval')} / ${t('sched.mode.daily')}`}
+            onChange={(e) => setSchedMode(e.target.value as 'interval' | 'daily')}
+          >
+            <option value="interval">{t('sched.mode.interval')}</option>
+            <option value="daily">{t('sched.mode.daily')}</option>
+          </select>
+
+          {schedMode === 'interval' ? (
+            <label className="scr-run-field">
+              {t('sched.everyMinutes', { n: 'N' })}
+              <input
+                className="scr-input scr-delay"
+                type="number"
+                min={1}
+                max={1440}
+                step={1}
+                value={schedMinutes}
+                onChange={(e) => setSchedMinutes(e.target.value)}
+              />
+            </label>
+          ) : (
+            <label className="scr-run-field">
+              {t('sched.dailyAt', { time: 'HH:MM' })}
+              <input
+                className="scr-input"
+                type="time"
+                value={schedDailyAt}
+                onChange={(e) => setSchedDailyAt(e.target.value)}
+              />
+            </label>
+          )}
+
+          <div className="scr-spacer" />
+
+          <Button
+            variant="primary"
+            icon="plus"
+            disabled={schedSaving || !schedTarget || (schedKind === 'script' && !schedProfileId)}
+            onClick={() => void addSchedule()}
+          >
+            {t('sched.add')}
+          </Button>
+        </div>
+
+        <div className="scr-steps">
+          {scheduleState.kind === 'loading' ? (
+            <div className="scr-steps-empty">{t('common.loading')}</div>
+          ) : scheduleState.kind === 'error' ? (
+            <div className="scr-err">
+              <b>{t('sched.readFailed')}</b>
+              <p className="scr-err-reason">{scheduleState.message}</p>
+              <Button size="sm" variant="ghost" icon="reload" onClick={() => void loadSchedules()}>
+                {t('common.retry')}
+              </Button>
+            </div>
+          ) : scheduleState.items.length === 0 ? (
+            <div className="scr-steps-empty">{t('sched.empty')}</div>
+          ) : (
+            scheduleState.items.map((rec) => {
+              const name = scheduleTargetName(rec)
+              const busy = schedUpdatingId === rec.id || schedRunningId === rec.id
+              return (
+                <div className="scr-step" key={rec.id}>
+                  <div className="scr-step-row">
+                    <Badge tone={rec.enabled ? 'ok' : 'neutral'}>
+                      {rec.kind === 'launch'
+                        ? t('sched.kind.launch')
+                        : t('sched.kind.script')}
+                    </Badge>
+                    <span className="scr-step-hint" title={name}>
+                      {name}
+                    </span>
+                    <span className="scr-steps-count">{scheduleCycleText(rec)}</span>
+                    <div className="scr-tools">
+                      <Toggle
+                        checked={rec.enabled}
+                        disabled={busy}
+                        label={t('sched.enabled')}
+                        onChange={(next) => void toggleSchedule(rec, next)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="scr-extra">
+                    <span>
+                      {t('sched.lastRun')}:{' '}
+                      {rec.lastRunAt === null ? t('sched.never') : formatRelative(rec.lastRunAt)}
+                    </span>
+                    {rec.lastResult ? (
+                      <span className="scr-step-hint" title={rec.lastResult}>
+                        {rec.lastResult}
+                      </span>
+                    ) : null}
+                    <div className="scr-spacer" />
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      icon="play"
+                      disabled={busy}
+                      onClick={() => void runScheduleNow(rec)}
+                    >
+                      {t('sched.runNow')}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      icon="trash"
+                      disabled={busy}
+                      onClick={() => setSchedDeleteTarget(rec)}
+                    >
+                      {t('sched.remove')}
+                    </Button>
+                  </div>
+                </div>
+              )
+            })
+          )}
+        </div>
+      </section>
+
       <Modal
         open={importOpen}
-        title="从历史任务导入"
+        title={t('script.import.title')}
         icon="download"
         tone="accent"
         align="left"
         maxWidth={560}
         onClose={() => setImportOpen(false)}
-        note="只导入执行成功的步骤。导入后请核对选择器，尤其是同名按钮较多的页面。"
-        footer={<Button onClick={() => setImportOpen(false)}>关闭</Button>}
+        note={t('script.import.note')}
+        footer={<Button onClick={() => setImportOpen(false)}>{t('common.close')}</Button>}
       >
-        {tasksLoading ? (
-          <div className="scr-modal-empty">正在读取任务…</div>
-        ) : importableTasks.length === 0 ? (
-          <div className="scr-modal-empty">
-            还没有带成功步骤的任务。先在影子面板里跑通一个任务，再回来导入。
+        {taskPicker.kind === 'idle' || taskPicker.kind === 'loading' ? (
+          <div className="scr-modal-empty">{t('script.import.loading')}</div>
+        ) : taskPicker.kind === 'error' ? (
+          <div className="scr-err">
+            <b>{t('script.import.errorTitle')}</b>
+            <p className="scr-err-reason">{taskPicker.message}</p>
+            <p className="scr-err-hint">{t('script.import.errorHint')}</p>
+            <Button
+              size="sm"
+              variant="ghost"
+              icon="reload"
+              onClick={() => void openImport()}
+            >
+              {t('common.retry')}
+            </Button>
           </div>
+        ) : importableTasks.length === 0 ? (
+          <div className="scr-modal-empty">{t('script.import.empty')}</div>
         ) : (
           <div className="scr-import-list">
             {importableTasks.map((task) => {
@@ -791,14 +1211,14 @@ export function ScriptPanel({ profiles }: PanelProps) {
                 <div className="scr-import-row" key={task.id}>
                   <div className="r1">
                     <span className="t">{task.intent}</span>
-                    <span className="c">{count} 步</span>
+                    <span className="c">{t('script.stepsCount', { n: count })}</span>
                   </div>
                   <div className="r2">
                     <span>
                       {env?.name ?? task.profileId} · {formatRelative(task.startedAt)}
                     </span>
                     <Button size="sm" variant="ghost" onClick={() => applyImport(task)}>
-                      导入
+                      {t('script.import.action')}
                     </Button>
                   </div>
                 </div>
@@ -810,12 +1230,12 @@ export function ScriptPanel({ profiles }: PanelProps) {
 
       <Modal
         open={pendingSelect !== null}
-        title="有未保存的修改"
+        title={t('script.unsaved.title')}
         icon="alert"
         onClose={() => setPendingSelect(null)}
         footer={
           <>
-            <Button onClick={() => setPendingSelect(null)}>继续编辑</Button>
+            <Button onClick={() => setPendingSelect(null)}>{t('script.continueEdit')}</Button>
             <Button
               variant="danger"
               onClick={() => {
@@ -823,7 +1243,7 @@ export function ScriptPanel({ profiles }: PanelProps) {
                 setPendingSelect(null)
                 if (next === '') {
                   setSelectedId(null)
-                  setDraft(blankScript())
+                  setDraft(blankScript(t('script.untitled')))
                   setDirty(true)
                   setResult(null)
                 } else if (next) {
@@ -832,24 +1252,24 @@ export function ScriptPanel({ profiles }: PanelProps) {
                 }
               }}
             >
-              放弃修改
+              {t('script.discard')}
             </Button>
           </>
         }
       >
-        当前脚本的改动还没有保存，切换后这些改动会丢失。
+        {t('script.unsaved.body')}
       </Modal>
 
       <Modal
         open={pendingRun !== null}
-        title="这一步需要你当面确认"
+        title={t('script.confirm.title')}
         icon="alert"
         onClose={() => setPendingRun(null)}
         footer={
           <>
-            <Button onClick={() => setPendingRun(null)}>取消</Button>
+            <Button onClick={() => setPendingRun(null)}>{t('common.cancel')}</Button>
             <Button variant="danger" onClick={() => void confirmRun()}>
-              重试这一步
+              {t('script.confirm.retry')}
             </Button>
           </>
         }
@@ -857,31 +1277,50 @@ export function ScriptPanel({ profiles }: PanelProps) {
         <p>{pendingRun?.error}</p>
         <p>
           {pendingRun && pendingRun.executed > 0
-            ? `前 ${pendingRun.executed} 步已经执行，可以从第 ${pendingRun.failedAt} 步继续，不会重放前面的步骤。`
-            : `可以从第 ${pendingRun?.failedAt ?? 1} 步开始执行。`}
+            ? t('script.confirm.continued', {
+                executed: pendingRun.executed,
+                at: pendingRun.failedAt ?? '?'
+              })
+            : t('script.confirm.startAt', { at: pendingRun?.failedAt ?? 1 })}
         </p>
-        <p>
-          点「重试这一步」后会弹出系统确认窗口，你需要在那里点「允许执行」；
-          这个页面没有代替它批准的能力。
-        </p>
-        <p>取消则页面停在当前状态，脚本不会自动回滚。</p>
+        <p>{t('script.confirm.native')}</p>
+        <p>{t('script.confirm.cancelNote')}</p>
       </Modal>
 
       <Modal
         open={deleteTarget !== null}
-        title="删除脚本"
+        title={t('script.delete.title')}
         icon="trash"
         onClose={() => setDeleteTarget(null)}
         footer={
           <>
-            <Button onClick={() => setDeleteTarget(null)}>取消</Button>
+            <Button onClick={() => setDeleteTarget(null)}>{t('common.cancel')}</Button>
             <Button variant="danger" onClick={() => void confirmDelete()}>
-              删除
+              {t('common.delete')}
             </Button>
           </>
         }
       >
-        确定删除「{deleteTarget?.name}」吗？删除后无法恢复，历史任务的记录不受影响。
+        {t('script.delete.confirm', { name: deleteTarget?.name ?? '' })}
+      </Modal>
+
+      <Modal
+        open={schedDeleteTarget !== null}
+        title={t('sched.remove')}
+        icon="trash"
+        onClose={() => setSchedDeleteTarget(null)}
+        footer={
+          <>
+            <Button onClick={() => setSchedDeleteTarget(null)}>{t('common.cancel')}</Button>
+            <Button variant="danger" onClick={() => void confirmRemoveSchedule()}>
+              {t('common.delete')}
+            </Button>
+          </>
+        }
+      >
+        {t('sched.removeConfirm', {
+          name: schedDeleteTarget ? scheduleTargetName(schedDeleteTarget) : ''
+        })}
       </Modal>
     </div>
   )

@@ -1,0 +1,41 @@
+/**
+ * 密度开关的专属样式。
+ *
+ * 为什么不复用 app.css 的 .theme-opt：
+ * tools/verify-theme.mjs 会全局查询 .theme-opt，并要求其中「恰好一个」处于
+ * aria-pressed=true（即主题）。密度是第二个也用 aria-pressed 的分段控件，
+ * 如果挂同一个类，校验脚本会把「亮色」和「舒适」两个高亮一起数进来，
+ * 一个正确的 UI 反而过不了主题校验的 gate。因此这里复制同样的视觉规则，
+ * 只是换一个类名，并统一收在 .density-switch 作用域下。
+ *
+ * 下面的值逐条来自 app.css 的 .theme-opt（194-220 行），全部走设计令牌；
+ * 容器仍复用 .theme-switch 的 flex / 背景 / 边框样式，只加本文件覆盖按钮外观。
+ */
+
+.density-switch .density-opt {
+  flex: 1;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-xs);
+  color: var(--ink-4);
+  transition: background var(--dur-2) var(--ease-easy),
+    color var(--dur-2) var(--ease-easy),
+    box-shadow var(--dur-2) var(--ease-easy);
+}
+
+.density-switch .density-opt:hover {
+  color: var(--ink-2);
+  background: var(--wash-lift);
+}
+
+.density-switch .density-opt[aria-pressed='true'] {
+  background: var(--surface);
+  color: var(--accent);
+  box-shadow: var(--sh-1), inset 0 0 0 1px var(--line-2);
+}
+
+.density-switch .density-opt:active {
+  transform: translateY(0.5px);
+  transition-duration: var(--dur-1);
+}

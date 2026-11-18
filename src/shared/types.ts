@@ -14,7 +14,7 @@ export type ProfileStatus = 'idle' | 'starting' | 'running' | 'error'
 export type OSKind = 'windows' | 'macos' | 'linux'
 
 export interface ProxyConfig {
-  type: 'http' | 'https' | 'socks5'
+  type: 'http' | 'https' | 'socks5' | 'socks5h'
   host: string
   port: number
   username?: string
@@ -25,6 +25,15 @@ export interface GeoPoint {
   latitude: number
   longitude: number
 }
+
+/**
+ * `navigator.permissions.query()` 的三种取值。
+ *
+ * 为什么自己定义而不是直接用 DOM 的 `PermissionState`：本文件被 main 与 renderer
+ * 共用，而 main 的 tsconfig 不带 DOM lib，引用 DOM 类型会让 node 侧 typecheck 失败。
+ * 字面量集合与 DOM 完全一致。
+ */
+export type FingerprintPermissionState = 'granted' | 'denied' | 'prompt'
 
 /**
  * 指纹配置。
@@ -58,14 +67,98 @@ export interface FingerprintConfig {
     vendor: string
     renderer: string
   }
-  canvas: 'noise' | 'off'
-  audio: 'noise' | 'off'
+  canvas: 'noise' | 'off' | 'block'
+  audio: 'noise' | 'off' | 'block'
   /** proxy=跟随代理出口 IP；disabled=直接屏蔽；real=暴露真实 */
   webrtc: 'proxy' | 'disabled' | 'real'
   /** 注入的字体白名单；空数组表示不干预 */
   fonts: string[]
   clientRectsNoise: boolean
   webgpu: boolean
+
+  /**
+   * 以下字段是后加的面。老盘上的 profile 没有它们，导入包
+   * （`main/modules/templates.ts` 的 parseFingerprint）也还没产生它们。
+   *
+   * 类型上先标成可选，是为了让这些**不在本次所有权内**的读取点继续编译；
+   * 运行时由 `applySurfaceDefaults`（shared/presets.ts）在唯一的注入入口
+   * `injectionConfig` 里补齐，缺字段永远到不了页面。
+   * 等所有构造函数都接上缺省之后，这里可以改成必填 —— 在那之前，
+   * 直接读这些字段的代码必须过 `applySurfaceDefaults`，不能裸读。
+   */
+  /** 桌面 Chrome 恒为 0；触屏值必须由用户显式指定 */
+  maxTouchPoints?: number
+  connection?: {
+    effectiveType: '4g' | '3g' | '2g' | 'slow-2g'
+    downlink: number
+    rtt: number
+    saveData: boolean
+  }
+  /** charging + level 1 是桌面 Chrome 在没有电池时的读数 */
+  battery?: {
+    charging: boolean
+    level: number
+    chargingTime: number
+    dischargingTime: number
+  }
+  /** 没有授权时 enumerateDevices 返回 []，所以默认全是 0 */
+  mediaDevices?: {
+    videoInput: number
+    audioInput: number
+    audioOutput: number
+  }
+  /** 查询时用的 descriptor name → 状态；未知名字由注入脚本按 'prompt' 处理 */
+  permissions?: Record<string, FingerprintPermissionState>
+  mediaCapabilities?: boolean
+  /** chrome-pdf=真桌面 Chrome 的那五个内置 PDF 插件；none=空表 */
+  plugins?: 'chrome-pdf' | 'none'
+  storageEstimate?: boolean
+  /** 是否接管 userAgentData.getHighEntropyValues 的返回值 */
+  uaHighEntropy?: boolean
+}
+
+/**
+ * `applySurfaceDefaults` 的输出：所有新增面都保证存在。
+ *
+ * `FingerprintConfig` 上这些字段是可选的（兼容还没接上的读取点），
+ * 但从这个类型出去的值可以裸读 —— 类型系统替我们把「补过了」这件事记住，
+ * 免得每个读取点都写一次 `??`。
+ */
+export type ResolvedFingerprintConfig = Omit<
+  FingerprintConfig,
+  | 'maxTouchPoints'
+  | 'connection'
+  | 'battery'
+  | 'mediaDevices'
+  | 'permissions'
+  | 'mediaCapabilities'
+  | 'plugins'
+  | 'storageEstimate'
+  | 'uaHighEntropy'
+> & {
+  maxTouchPoints: number
+  connection: {
+    effectiveType: '4g' | '3g' | '2g' | 'slow-2g'
+    downlink: number
+    rtt: number
+    saveData: boolean
+  }
+  battery: {
+    charging: boolean
+    level: number
+    chargingTime: number
+    dischargingTime: number
+  }
+  mediaDevices: {
+    videoInput: number
+    audioInput: number
+    audioOutput: number
+  }
+  permissions: Record<string, FingerprintPermissionState>
+  mediaCapabilities: boolean
+  plugins: 'chrome-pdf' | 'none'
+  storageEstimate: boolean
+  uaHighEntropy: boolean
 }
 
 /**
@@ -210,6 +303,22 @@ export interface Profile {
   /** 最近一次启动失败的原因，status==='error' 时有值 */
   lastError?: string
   /**
+   * 收藏 / 置顶。
+   *
+   * 可选而不是必填：老盘上的 profile 没有这个键，补 `false` 会让每个读取点
+   * 各自回答一次「缺字段算什么」，漏问一次就是「默认收藏」。
+   * 排序时才把 `undefined` 当假值处理（见 ProfileGrid 的排序表）。
+   */
+  favorite?: boolean
+  /**
+   * 每个环境的启动页。只作用于**人轨**的首个标签；影子轨始终从 about:blank 开始。
+   *
+   * 可选 + 允许空串：老盘没有这个键，而在设置里清空时需要能写回一个「没配」的值
+   * （`undefined` 在 `update` 的合并语义里等于「不改」，清不掉旧值）。
+   * 启动时统一 `trim()`，空白串回落到默认首页。
+   */
+  startUrl?: string
+  /**
    * 上一次会话结束时这个环境的伪装状态。
    *
    * 只用于界面与审计：重启后窗口重新测量，这条记录**必然**是旧的，
@@ -236,6 +345,19 @@ export interface Profile {
    * `onMaskState`。豁免是给「修不好但必须跑」的流水线用的，不是常开开关。
    */
   allowUnmaskedL2: boolean
+  /**
+   * 软删除时间戳（回收站）。null / undefined = 正常环境。
+   *
+   * 为什么软删除而不是直接抹掉：删环境不可逆，而误删代价很高（指纹、代理、
+   * Cookie 全没）。商业产品普遍有回收站，这里对齐。
+   * `profiles.list()` 默认不返回 deletedAt 非空的环境；回收站视图走 `listTrash()`。
+   */
+  deletedAt?: number | null
+  /**
+   * 该环境要加载的扩展 id 列表（见 ExtensionRecord）。
+   * 空数组 / undefined = 不加载任何扩展（默认）。
+   */
+  extensionIds?: string[]
 }
 
 /**
@@ -368,7 +490,11 @@ export interface SystemInfo {
 
 /* ────────────────────────────── 代理池 ────────────────────────────── */
 
-export type ProxyProtocol = 'http' | 'https' | 'socks5'
+/**
+ * `socks5h` = SOCKS5 + 远程 DNS（把域名交给代理解析），
+ * 与 `socks5`（本地解析）的出口行为不同，必须作为独立协议保留。
+ */
+export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'
 
 export interface ProxyCheck {
   ok: boolean
@@ -797,3 +923,145 @@ export interface IpcError {
 }
 
 export type Result<T> = { ok: true; data: T } | { ok: false; error: IpcError }
+
+/* ────────────────────────────── 本地团队 / 协作（LOCAL-ONLY） ────────────────────────────── */
+
+/**
+ * 本地团队角色。
+ *
+ * 这是**单机多角色**，不是云端多用户：没有登录、没有账号体系、没有服务端。
+ * 角色描述的是「本机上这个成员能做什么」，用来在本地协作/演示时表达权限差异，
+ * 绝不代表存在一个能跨设备鉴权的身份。把这份数据同步到云上需要一整套账号、
+ * 凭证与传输加密，那与本项目「数据不出本机、零遥测」的约束冲突，不在这一层。
+ */
+export type TeamRole = 'owner' | 'admin' | 'member' | 'viewer'
+
+/**
+ * 本地成员。
+ *
+ * `id` 是本地短 ID，不是全局身份；`lastActiveAt` 为 null 表示从未活跃。
+ * 没有密码、没有邮箱 —— 任何「登录字段」都会暗示这里存在可跨机验证的身份，
+ * 而本机根本没有这样的凭证来源。
+ */
+export interface TeamMember {
+  id: string
+  name: string
+  role: TeamRole
+  createdAt: number
+  lastActiveAt: number | null
+  disabled: boolean
+}
+
+/**
+ * 某个环境（profile）对某个成员的本地授权。
+ *
+ * `permission` 只有两级：'use'（能使用/启动）与 'manage'（能改）。
+ * 它和角色是两件事：角色是全局的，share 是逐环境的；owner/admin 不需要
+ * share 也能用/管所有环境（见 team-policy.ts 的说明）。
+ */
+export interface TeamProfileShare {
+  profileId: string
+  memberId: string
+  permission: 'use' | 'manage'
+}
+
+/**
+ * 本地活动日志条目（运营日志，append-only）。
+ *
+ * 注意：这**不是** `AuditEntry` 那套防篡改哈希链。活动日志记的是「谁在什么时候
+ * 改了什么」，回答运营问题；审计链记的是「这条记录是否被改过」，回答完整性问题。
+ * 两者不能互相冒充 —— 不要因为有活动日志就宣称「有团队审计」。
+ *
+ * actorId / actorName 是本地成员维度，给操作补上「谁」这一列（原审计链缺的正是它）。
+ */
+export interface TeamActivity {
+  id: string
+  at: number
+  actorId: string
+  actorName: string
+  action: string
+  target: string
+  detail?: string
+}
+
+/**
+ * 渲染层快照。
+ *
+ * 刻意用「整份快照」而不是让界面自己拼三份列表：成员、分享、活动必须在同一时刻
+ * 读出，否则界面会出现「成员已删、分享还在」的撕裂画面。
+ *
+ * `initialized` 表达的是「是否已经建过本地所有者」，这是一个**事实**而不是空态：
+ * 它让界面能区分「首次进入正在播种」与「确实没有任何成员」，呼应「读不到 ≠ 不存在」。
+ */
+export interface TeamState {
+  initialized: boolean
+  members: TeamMember[]
+  activity: TeamActivity[]
+  shares: TeamProfileShare[]
+}
+
+/* ────────────────────────────── 扩展管理 ────────────────────────────── */
+
+/**
+ * 一条本地扩展记录。
+ *
+ * 只支持「已解压的扩展目录」（unpacked extension）：Electron 的
+ * `session.loadExtension` 收的就是目录路径。CRX 包需要先解包；
+ * 本项目不做在线商店 / 远程安装 —— 那是供应链攻击面，不是这个项目的定位。
+ */
+export interface ExtensionRecord {
+  id: string
+  name: string
+  /** 扩展目录的绝对路径（必须含 manifest.json） */
+  path: string
+  enabled: boolean
+  createdAt: number
+}
+
+/* ────────────────────────────── Cookie 预热 ────────────────────────────── */
+
+export interface WarmupStepResult {
+  url: string
+  ok: boolean
+  /** 失败原因原文；成功时为空 */
+  error?: string
+  /** 该页停留时长（毫秒） */
+  dwellMs: number
+}
+
+export interface WarmupReport {
+  profileId: string
+  startedAt: number
+  finishedAt: number
+  steps: WarmupStepResult[]
+  /** 成功页数 / 总数 */
+  okCount: number
+  total: number
+}
+
+/* ────────────────────────────── 定时任务 ────────────────────────────── */
+
+/** 定时任务的动作：启动环境，或跑一条自动化脚本 */
+export type ScheduleKind = 'launch' | 'script'
+
+export interface ScheduleRecord {
+  id: string
+  kind: ScheduleKind
+  /** launch 时是 profileId；script 时是 scriptId */
+  targetId: string
+  /**
+   * script 模式要在哪个环境里跑。
+   * launch 模式不用（目标本身就是环境）。
+   */
+  profileId?: string
+  /** 间隔模式：每 N 分钟；与 dailyAt 二选一 */
+  everyMinutes?: number
+  /** 每日模式：'HH:MM'（本地时间，24 小时制） */
+  dailyAt?: string
+  enabled: boolean
+  /** 上一次触发时间；null = 从未 */
+  lastRunAt: number | null
+  /** 上一次触发的结果（成功/失败原因） */
+  lastResult?: string
+  createdAt: number
+}

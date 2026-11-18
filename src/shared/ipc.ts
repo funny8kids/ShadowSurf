@@ -34,7 +34,15 @@ import type {
   LocalApiState,
   MaskRow,
   InjectionIssue,
-  StoreHealth
+  StoreHealth,
+  TeamMember,
+  TeamProfileShare,
+  TeamActivity,
+  TeamState,
+  ExtensionRecord,
+  ScheduleRecord,
+  ScheduleKind,
+  WarmupReport
 } from './types'
 import type { AgentEvent, RunRequest, PageSnapshot } from './protocol'
 
@@ -50,7 +58,39 @@ export const CH = {
     stop: 'ss:profiles:stop',
     regenerate: 'ss:profiles:regenerate',
     preview: 'ss:profiles:preview',
-    setExemption: 'ss:profiles:set-exemption'
+    setExemption: 'ss:profiles:set-exemption',
+    /**
+     * 按当前挂载代理的出口，校准指纹里的时区 / 语言 / 坐标。
+     *
+     * 单独一条通道而不是让渲染层先 `proxies.check` 再 `profiles.update`：
+     * 出口信息不能由渲染层声明。主进程自己探测（或复用 5 分钟内的缓存）、
+     * 自己落库、自己写审计，才能保证写进去的地理参数与实际出口一致。
+     */
+    matchGeo: 'ss:profiles:match-geo',
+    /** 回收站：列出已软删除的环境 */
+    trash: 'ss:profiles:trash',
+    /** 从回收站恢复 */
+    restore: 'ss:profiles:restore',
+    /** 彻底删除（连同分区数据） */
+    purge: 'ss:profiles:purge'
+  },
+  extensions: {
+    list: 'ss:extensions:list',
+    create: 'ss:extensions:create',
+    update: 'ss:extensions:update',
+    remove: 'ss:extensions:remove'
+  },
+  warmup: {
+    /** 对一个环境按给定 URL 列表做 Cookie 预热（顺序访问，带停留） */
+    run: 'ss:warmup:run'
+  },
+  schedules: {
+    list: 'ss:schedules:list',
+    create: 'ss:schedules:create',
+    update: 'ss:schedules:update',
+    remove: 'ss:schedules:remove',
+    /** 立即触发一次（不影响下次计划时间） */
+    runNow: 'ss:schedules:run-now'
   },
   window: {
     open: 'ss:window:open',
@@ -151,6 +191,21 @@ export const CH = {
   data: {
     cookies: 'ss:data:cookies',
     clearCookies: 'ss:data:clearCookies',
+    /**
+     * 导出某个环境的 Cookie。
+     *
+     * 单独一条而不是复用 `cookies`：那条返回的是给界面看的结构化列表，
+     * 而导出要的是**别的工具能直接吃的文件内容**（Netscape 文本 / JSON）。
+     * 让界面自己拼字符串的话，格式知识就散到渲染层去了 —— 而格式知识必须只有一份。
+     */
+    exportCookies: 'ss:data:exportCookies',
+    /**
+     * 导入 Cookie 到某个环境。
+     *
+     * 导入是**写**操作，所以它必须有明确的失败语义：写不进去的条数要报出来，
+     * 不能只报「成功导入 N 条」—— 那会让用户以为整个文件都进去了。
+     */
+    importCookies: 'ss:data:importCookies',
     downloads: 'ss:data:downloads',
     clearDownloads: 'ss:data:clearDownloads',
     history: 'ss:data:history',
@@ -162,6 +217,21 @@ export const CH = {
     stop: 'ss:localApi:stop',
     /** 把令牌写进剪贴板；不返回令牌本身 —— 渲染层永远拿不到明文 */
     copyToken: 'ss:localApi:copyToken'
+  },
+  /**
+   * 本地团队（LOCAL-ONLY）。
+   *
+   * 全部是本机操作：没有登录、没有跨设备同步、没有遥测。通道名沿用 `ss:<域>:<动作>`
+   * 规律，让主进程和渲染层都不用手写字符串。
+   */
+  team: {
+    state: 'ss:team:state',
+    memberAdd: 'ss:team:member-add',
+    memberUpdate: 'ss:team:member-update',
+    memberRemove: 'ss:team:member-remove',
+    shareSet: 'ss:team:share-set',
+    shareRemove: 'ss:team:share-remove',
+    activity: 'ss:team:activity'
   },
   push: {
     windowState: 'ss:push:window-state',
@@ -192,6 +262,27 @@ export const CH = {
 } as const
 
 /* ────────────────────────────── 暴露给渲染层的 API ────────────────────────────── */
+
+/**
+ * 一次「按代理校准地理」的结果。
+ *
+ * `ok` 写死为字面量 `true`：失败不会以 `{ ok:false }` 返回，而是由统一的
+ * `Result` 包装抛给渲染层（preload 的 `invoke` 会 throw）。这样调用方只需要
+ * 处理成功形状，不用维护“成功里还套着失败”的第二套分支。
+ *
+ * `country` / `ip` 在探测回包缺字段时是空字符串而不是 undefined：
+ * 渲染层直接展示即可，不需要在每个调用点写 `??`。
+ */
+export interface GeoMatchResult {
+  ok: true
+  timezone: string
+  locale: string
+  languages: string[]
+  /** 出口国家。ip-api 返回的是国家名（例如 "Germany"），不是 ISO 代码 */
+  country: string
+  /** 出口 IP */
+  ip: string
+}
 
 export interface ProfilesAPI {
   list(): Promise<Profile[]>
@@ -227,6 +318,28 @@ export interface ProfilesAPI {
    * 关闭不需要确认：收紧永远是安全方向。
    */
   setExemption(id: string, enabled: boolean, confirmName: string): Promise<Profile>
+  /**
+   * 按当前挂载代理的出口校准地理字段（timezone / locale / languages / geolocation）。
+   *
+   * 主进程会先找代理记录：5 分钟内的成功探测直接复用，否则现场探测并回写
+   * `lastCheck`。未挂代理、代理记录不存在、探测失败、出口没返回时区都会抛错，
+   * **不会**用当前值冒充“已校准”。成功后返回出口信息供界面提示。
+   */
+  matchGeo(id: string): Promise<GeoMatchResult>
+  /** 回收站列表（不含正常环境） */
+  trash(): Promise<Profile[]>
+  /** 从回收站恢复 */
+  restore(id: string): Promise<Profile>
+  /** 彻底删除，连同磁盘分区数据 */
+  purge(id: string): Promise<void>
+  /**
+   * 环境列表的主进程推送。
+   *
+   * 订阅它而不是只靠每次操作后的本地 setState：定时任务、地理校准、伪装状态
+   * 回收等**不是由当前界面发起**的变更不会经过本地更新路径。缺少这条订阅时，
+   * 界面上会一直显示旧的环境列表（例如定时任务启动了环境，卡片仍是空闲态）。
+   */
+  onState(cb: (profiles: Profile[]) => void): () => void
 }
 
 export interface WindowAPI {
@@ -444,9 +557,51 @@ export interface InjectionAPI {
   list(): Promise<InjectionIssue[]>
 }
 
+/**
+ * Cookie 导出格式。
+ *
+ * `'netscape'` = 制表符分隔的文本（curl / Cookie Editor / EditThisCookie 通吃）；
+ * `'json'` = `{version, exportedAt, cookies:[…]}`（字段与本应用的 CookieItem 对齐，
+ * 不丢 sameSite 这类 Netscape 格式装不下的字段）。
+ *
+ * 之所以用字面量联合而不是 `string`：格式拼错了（比如 'JSON'）应该在编译期就红，
+ * 而不是运行期导出一份格式不对的文件、让别的工具读不出来。
+ */
+export type CookieExportFormat = 'netscape' | 'json'
+
+/**
+ * Cookie 导入结果。
+ *
+ * `imported` 与 `failed` **必须同时给**：只报成功数的话，用户无法判断
+ * 「有一部分没导进去」和「全都导进去了」—— 而后者是用户真正需要的答案。
+ */
+export interface CookieImportSummary {
+  /** 成功写入的条数 */
+  imported: number
+  /** 写入失败的条数 */
+  failed: number
+  /**
+   * 逐条原因（解析失败 + 写入失败合并）。
+   * 最多 10 条，截断时最后一条会变成「…另有 N 条未列出」的汇总。
+   */
+  errors: string[]
+}
+
 export interface DataAPI {
   cookies(profileId: string): Promise<CookieItem[]>
   clearCookies(profileId: string): Promise<number>
+  /**
+   * 导出某个环境的 Cookie，返回**文件内容**（字符串）。
+   *
+   * 返回内容而不是让界面拼：格式知识必须只有一份，而它属于主进程。
+   */
+  exportCookies(profileId: string, format: CookieExportFormat): Promise<string>
+  /**
+   * 把一段 Cookie 文本/JSON 导入某个环境。
+   *
+   * 格式自动识别（Netscape 文本 / JSON），坏行逐条报错而不是整份丢弃。
+   */
+  importCookies(profileId: string, text: string): Promise<CookieImportSummary>
   downloads(): Promise<DownloadItem[]>
   clearDownloads(): Promise<void>
   history(profileId: string): Promise<HistoryItem[]>
@@ -470,6 +625,30 @@ export interface LocalApiAPI {
   onState(cb: (s: LocalApiState) => void): () => void
 }
 
+export interface TeamAPI {
+  /** 一次拿到整份快照，避免成员/分享/活动三份列表在界面上拼出撕裂画面 */
+  state(): Promise<TeamState>
+  /** 新增本地成员。姓名会在主进程 trim 并校验，不信渲染层 */
+  memberAdd(input: { name: string; role: TeamMember['role'] }): Promise<TeamMember>
+  /** 改姓名 / 角色 / 禁用；最后一个 owner 不得降级或禁用 */
+  memberUpdate(
+    id: string,
+    patch: { name?: string; role?: TeamMember['role']; disabled?: boolean }
+  ): Promise<TeamMember>
+  /** 删除成员；最后一个 owner 不得删除 */
+  memberRemove(id: string): Promise<{ ok: true }>
+  /** 设置某环境对某成员的本地授权 */
+  shareSet(
+    profileId: string,
+    memberId: string,
+    permission: TeamProfileShare['permission']
+  ): Promise<TeamProfileShare>
+  /** 撤销某环境对某成员的本地授权 */
+  shareRemove(profileId: string, memberId: string): Promise<{ ok: true }>
+  /** 活动日志，最新在前（主进程已排序） */
+  activity(): Promise<TeamActivity[]>
+}
+
 export interface ShadowSurfAPI {
   profiles: ProfilesAPI
   window: WindowAPI
@@ -487,10 +666,44 @@ export interface ShadowSurfAPI {
   injection: InjectionAPI
   data: DataAPI
   localApi: LocalApiAPI
+  team: TeamAPI
+  extensions: ExtensionsAPI
+  warmup: WarmupAPI
+  schedules: SchedulesAPI
 }
 
 declare global {
   interface Window {
     ss: ShadowSurfAPI
   }
+}
+
+
+/* ────────────────────────────── 扩展 / 预热 / 定时 ────────────────────────────── */
+
+export interface ExtensionsAPI {
+  list(): Promise<ExtensionRecord[]>
+  create(input: { name: string; path: string; enabled?: boolean }): Promise<ExtensionRecord>
+  update(id: string, patch: Partial<Pick<ExtensionRecord, 'name' | 'path' | 'enabled'>>): Promise<ExtensionRecord>
+  remove(id: string): Promise<void>
+}
+
+export interface WarmupAPI {
+  /** urls 由用户提供；主进程顺序访问并返回逐条结果 */
+  run(profileId: string, urls: string[]): Promise<WarmupReport>
+}
+
+export interface SchedulesAPI {
+  list(): Promise<ScheduleRecord[]>
+  create(input: {
+    kind: ScheduleKind
+    targetId: string
+    profileId?: string
+    everyMinutes?: number
+    dailyAt?: string
+    enabled?: boolean
+  }): Promise<ScheduleRecord>
+  update(id: string, patch: Partial<ScheduleRecord>): Promise<ScheduleRecord>
+  remove(id: string): Promise<void>
+  runNow(id: string): Promise<{ ok: boolean; message: string }>
 }

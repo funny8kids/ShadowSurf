@@ -4,11 +4,17 @@
  * 一屏内要回答四个问题：这是谁（编号 + 名称）、跑在什么上（平台 / 版本）、
  * 从哪出去（代理 + 延迟）、指纹像不像（时区 / 语言 / 分辨率）。
  * 底部状态行区分「影子正在干活」与「影子待命」，进度条只在进行中出现。
+ *
+ * 包了 `memo`：200 个环境 × 40-60 个 DOM 节点，搜索框每敲一个键都会让父组件
+ * 重渲染，没有 memo 时每张卡片都要重新 diff。props 里的回调必须稳定
+ * （App.tsx 用 useCallback 传进来），否则 memo 永远命中不了。
  */
 
+import { memo } from 'react'
 import type { MaskRow, TaskRecord, Profile } from '@shared/types'
-import { MASK_TONE_LABEL, MASK_TONE_SHORT, maskHintOf, maskToneOf } from '@shared/mask-ui'
+import { MASK_TONE_SHORT, maskHintOf, maskToneOf } from '@shared/mask-ui'
 import { Button, Icon, cssVars } from './ui'
+import { useI18n } from '@renderer/lib/i18n'
 import {
   chromeMajor,
   countryLabel,
@@ -37,9 +43,11 @@ interface ProfileCardProps {
   onSelect: (id: string) => void
   onOpen: (id: string) => void
   onConfig: (id: string) => void
+  /** 收藏 / 置顶。收藏态会在排序里被提到最前（见 ProfileGrid） */
+  onToggleFavorite: (id: string) => void
 }
 
-export function ProfileCard({
+export const ProfileCard = memo(function ProfileCard({
   profile,
   task,
   mask = null,
@@ -47,8 +55,10 @@ export function ProfileCard({
   latency = null,
   onSelect,
   onOpen,
-  onConfig
+  onConfig,
+  onToggleFavorite
 }: ProfileCardProps) {
+  const { t } = useI18n()
   const fp = profile.fingerprint
   const progress = taskProgress(task)
   const running = Boolean(task && task.status === 'running')
@@ -57,25 +67,37 @@ export function ProfileCard({
 
   const tier = latencyTier(latency)
   const latencyText =
-    tier === 'timeout' ? '超时' : tier === 'unknown' ? '未探测' : `${Math.round(latency ?? 0)}ms`
+    tier === 'timeout'
+      ? t('profiles.latency.timeout')
+      : tier === 'unknown'
+        ? t('profiles.latency.unknown')
+        : `${Math.round(latency ?? 0)}ms`
 
   let statusClass = 'status'
-  let statusLabel = '影子待命'
+  let statusLabel = t('profiles.status.idle')
   if (running) {
     statusClass = 'status run'
-    statusLabel = `影子执行中 ${progress.done}/${Math.max(progress.total, progress.done)}`
+    statusLabel = t('profiles.card.runningStatus', {
+      done: progress.done,
+      total: Math.max(progress.total, progress.done)
+    })
   } else if (failed || starting) {
     statusClass = 'status warn'
-    statusLabel = starting ? '启动中' : '启动失败'
+    statusLabel = starting ? t('profiles.status.starting') : t('profiles.status.failed')
   }
 
   // 启动中也要算「有窗口」：此刻门禁已经在拦，界面不能还是灰的
   const maskTone = maskToneOf(mask, running || starting)
   const maskHint = maskHintOf(mask, running || starting)
-  const maskLabel = MASK_TONE_LABEL[maskTone]
+  const maskLabel = t(`profiles.mask.tone.${maskTone}`)
   const maskShort = MASK_TONE_SHORT[maskTone]
 
   const barWidth = running && progress.total > 0 ? (progress.done / progress.total) * 100 : 0
+
+  // 星标用文本 ★/☆ 而不是新增图标：ui.tsx 不在本次归属内，文本零依赖，
+  // 且读屏由外层按钮的 aria-label 承担（内层 span 标 aria-hidden）。
+  const favorite = profile.favorite === true
+  const favoriteLabel = favorite ? t('profiles.favorite.remove') : t('profiles.favorite.add')
 
   return (
     <article
@@ -90,14 +112,14 @@ export function ProfileCard({
       }}
       tabIndex={0}
       role="button"
-      aria-label={`打开环境 ${profile.name}`}
+      aria-label={t('profiles.card.openAria', { name: profile.name })}
       title={failed && profile.lastError ? profile.lastError : undefined}
     >
       <div className="env-top">
         <button
           type="button"
           className={`cb${selected ? ' on' : ''}`}
-          aria-label={selected ? '取消选择' : '选择环境'}
+          aria-label={selected ? t('profiles.deselect') : t('profiles.select')}
           aria-pressed={selected}
           onClick={(e) => {
             e.stopPropagation()
@@ -117,10 +139,10 @@ export function ProfileCard({
           <span
             className={`mask-dot ${maskTone}`}
             title={maskHint}
-            aria-label={`伪装状态：${maskLabel}`}
+            aria-label={t('profiles.mask.aria', { state: maskLabel })}
           >
             <i />
-            {maskShort !== '' ? <em>{maskShort}</em> : null}
+            {maskShort !== '' ? <em>{t(`profiles.mask.short.${maskTone}`)}</em> : null}
           </span>
         ) : null}
         {/*
@@ -132,23 +154,44 @@ export function ProfileCard({
         {profile.allowUnmaskedL2 ? (
           <span
             className="mask-dot exempt"
-            title="该环境已豁免伪装闸门（allowUnmaskedL2）：伪装不完整时仍可执行不可逆动作；伪装修好后自动收回"
-            aria-label="已豁免伪装闸门"
+            title={t('profiles.exempt.title')}
+            aria-label={t('profiles.exempt.aria')}
           >
             <i />
-            <em>已豁免</em>
+            <em>{t('profiles.exempt.badge')}</em>
           </span>
         ) : null}
         <button
           type="button"
           className="env-more"
-          aria-label="配置环境"
+          aria-label={t('profiles.card.configAria')}
           onClick={(e) => {
             e.stopPropagation()
             onConfig(profile.id)
           }}
         >
           <Icon name="more" size={13} />
+        </button>
+        {/*
+          收藏星标。放在标题行最右侧（more 之后）：`.env-more` 的 margin-left:auto
+          会把两者一起推到右端，这里再把星标自己的 auto 外边距清零，避免两个
+          auto 均分空白。keydown 也要拦 —— 否则回车既触发本按钮的 click，
+          又冒泡到卡片的 onKeyDown，把「收藏」做成了「打开环境」。
+        */}
+        <button
+          type="button"
+          className="env-more"
+          style={{ marginLeft: 0, color: favorite ? 'var(--amber)' : undefined, fontSize: 14 }}
+          aria-label={favoriteLabel}
+          aria-pressed={favorite}
+          title={favoriteLabel}
+          onClick={(e) => {
+            e.stopPropagation()
+            onToggleFavorite(profile.id)
+          }}
+          onKeyDown={(e) => e.stopPropagation()}
+        >
+          <span aria-hidden="true">{favorite ? '★' : '☆'}</span>
         </button>
       </div>
 
@@ -164,7 +207,7 @@ export function ProfileCard({
       <div className={`proxy${failed ? ' bad' : ''}${profile.proxy ? '' : ' none'}`}>
         <Icon name="globe" size={11} strokeWidth={2} />
         <span className="addr-text">
-          {profile.proxy ? `${profile.proxy.host}:${profile.proxy.port}` : '直连 · 未配置代理'}
+          {profile.proxy ? `${profile.proxy.host}:${profile.proxy.port}` : t('profiles.direct')}
         </span>
         <span className={`lat ${tier === 'fast' ? '' : tier === 'unknown' ? 'unknown' : 'slow'}`}>
           <i />
@@ -188,7 +231,7 @@ export function ProfileCard({
         <div className="env-actions" onClick={(e) => e.stopPropagation()}>
           {running ? (
             <Button size="sm" variant="ghost" onClick={() => onOpen(profile.id)}>
-              查看
+              {t('profiles.view')}
             </Button>
           ) : (
             <>
@@ -197,10 +240,10 @@ export function ProfileCard({
                 variant="ghost"
                 onClick={() => onConfig(profile.id)}
               >
-                配置
+                {t('profiles.configure')}
               </Button>
               <Button size="sm" variant="primary" onClick={() => onOpen(profile.id)}>
-                打开
+                {t('profiles.open')}
               </Button>
             </>
           )}
@@ -212,8 +255,8 @@ export function ProfileCard({
       </div>
 
       <span className="sr-only">
-        最后使用 {formatRelative(profile.lastUsedAt)}
+        {t('profiles.lastUsed', { time: formatRelative(profile.lastUsedAt) })}
       </span>
     </article>
   )
-}
+})

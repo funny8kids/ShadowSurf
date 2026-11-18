@@ -9,7 +9,7 @@
 /* ── 面板骨架（与其他工具面板共用同一套尺寸） ── */
 
 .tool-panel {
-  padding: 22px 26px 32px;
+  padding: 22px 0 32px;
   display: flex;
   flex-direction: column;
   gap: 18px;
@@ -25,8 +25,9 @@
 
 .tool-head h2 {
   margin: 0 0 4px;
-  font-size: 17px;
-  font-weight: 600;
+  font-size: var(--fs-21);
+  font-weight: 650;
+  letter-spacing: -0.02em;
   color: var(--ink);
 }
 
@@ -105,6 +106,45 @@
   font-size: 12px;
 }
 
+/* ── 读失败态（琥珀 / 未知） ──
+   读不到 ≠ 没有。这里用琥珀语义（--amber / --amber-2 / --amber-line），
+   不用 --red：红色是「确认坏了」这个结论，而读不到只是「还不知道」（DESIGN.md §不可判读状态）。
+   和空态的区分不能只靠文字：空态是灰色虚线框，这里是实心琥珀左边框 + 琥珀底 +
+   重试动作，遮住文字也能看出两者不是一张脸。 */
+.tpl-err {
+  padding: 20px 22px;
+  border: 1px solid var(--amber-line);
+  border-left: 3px solid var(--amber);
+  border-radius: var(--r);
+  background: var(--amber-2);
+  color: var(--amber-ink);
+}
+
+.tpl-err b {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--amber);
+}
+
+.tpl-err p {
+  max-width: 580px;
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+
+/* 环境原因那句是最该被读到的一句，用较深的墨色，别和错误原文同色 */
+.tpl-err-hint {
+  color: var(--ink-3);
+}
+
+.tpl-err button {
+  margin-top: 12px;
+}
+
 /* ── 模板卡片网格 ── */
 
 .tpl-grid {
@@ -121,7 +161,8 @@
   background: var(--surface-2);
   border: 1px solid var(--line);
   border-radius: var(--r);
-  transition: border-color 0.14s, background 0.14s;
+  transition: border-color var(--dur-3) var(--ease-easy),
+    background var(--dur-3) var(--ease-easy);
 }
 
 .tpl-card:hover {
@@ -228,7 +269,8 @@
   border: 1px solid var(--line-2);
   border-radius: var(--r-xs);
   cursor: pointer;
-  transition: border-color 0.14s, box-shadow 0.14s;
+  transition: border-color var(--dur-3) var(--ease-easy),
+    box-shadow var(--dur-3) var(--ease-easy);
 }
 
 .tpl-select:hover {
@@ -253,7 +295,9 @@
   border: 1px solid transparent;
   border-radius: var(--r-xs);
   cursor: pointer;
-  transition: color 0.14s, border-color 0.14s, background 0.14s;
+  transition: color var(--dur-3) var(--ease-easy),
+    border-color var(--dur-3) var(--ease-easy),
+    background var(--dur-3) var(--ease-easy);
 }
 
 .tpl-del:hover:not(:disabled) {
@@ -300,7 +344,9 @@
   background: var(--surface-2);
   border: 1px solid var(--line-2);
   border-radius: var(--r-sm);
-  transition: border-color 0.14s, background 0.14s, box-shadow 0.14s;
+  transition: border-color var(--dur-3) var(--ease-easy),
+    background var(--dur-3) var(--ease-easy),
+    box-shadow var(--dur-3) var(--ease-easy);
 }
 
 .tpl-field select {
@@ -393,7 +439,8 @@
   font-size: 12px;
   color: var(--ink-2);
   cursor: pointer;
-  transition: background 0.12s, color 0.12s;
+  transition: background var(--dur-3) var(--ease-easy),
+    color var(--dur-3) var(--ease-easy);
 }
 
 .tpl-pick-row:hover {
@@ -441,7 +488,9 @@
   background: var(--surface-2);
   border: 1px solid var(--line-2);
   border-radius: var(--r-sm);
-  transition: border-color 0.14s, background 0.14s, box-shadow 0.14s;
+  transition: border-color var(--dur-3) var(--ease-easy),
+    background var(--dur-3) var(--ease-easy),
+    box-shadow var(--dur-3) var(--ease-easy);
 }
 
 .tpl-json::placeholder {
@@ -486,7 +535,9 @@
   border-radius: var(--r-sm);
   cursor: pointer;
   white-space: nowrap;
-  transition: border-color 0.14s, background 0.14s, box-shadow 0.14s;
+  transition: border-color var(--dur-3) var(--ease-easy),
+    background var(--dur-3) var(--ease-easy),
+    box-shadow var(--dur-3) var(--ease-easy);
 }
 
 .tpl-file:hover {

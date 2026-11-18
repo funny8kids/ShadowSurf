@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShadowSurf 界面与交互对标评审 · Linear / Raycast / Arc / Chrome / Firefox</title>
+<link rel="stylesheet" href="assets/doc.css">
+<style>
+/* 本文专用：卡片与长代码允许换行，避免窄屏被 min-content 撑破 */
+.cols > .card{min-width:0}
+.card code{white-space:normal;overflow-wrap:anywhere}
+.road,.phase{min-width:0}
+.phase code,.v code,.note code,.refs code{white-space:normal;overflow-wrap:anywhere}
+</style>
+<script src="assets/doc.js"></script>
+</head>
+<body>
+<div class="shell">
+
+<aside class="toc">
+  <div class="toc-brand">
+    <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2.5-7 3.5 14 2.5-7H21"/></svg></div>
+    <b>ShadowSurf</b>
+  </div>
+  <div class="toc-doc">界面与交互对标评审<br>UI Parity Review · 2026-11</div>
+  <nav>
+    <div class="grp">结论</div>
+    <a href="#verdict">1 结论先行</a>
+    <div class="grp">格式</div>
+    <a href="#visual">2 视觉格式问题</a>
+    <div class="grp">交互</div>
+    <a href="#motion">3 交互丝滑度问题</a>
+    <div class="grp">矩阵</div>
+    <a href="#matrix">4 对标矩阵</a>
+    <div class="grp">差距</div>
+    <a href="#gaps">5 差距清单（按优先级）</a>
+    <div class="grp">边界</div>
+    <a href="#redline">6 三条不可动摇的结论</a>
+  </nav>
+</aside>
+
+<main class="content">
+
+<header class="doc-head">
+  <div class="doc-kicker">UI Parity Review · 2026-11</div>
+  <h1>ShadowSurf <em>界面与交互对标评审</em></h1>
+  <p class="sub">本文把 ShadowSurf 的渲染层与 Linear、Raycast、Arc、Chrome 146+、Firefox 157 逐维对齐，并与 AdsPower、GoLogin、Multilogin、BitBrowser 的操作面交叉核对。所有结论只写能在源码里指出 file:line 的事实，或能在远程实拍里复现的现象；不写「业界惯例」这类无法复核的句子。改法一律具体到 CSS 属性与取值。</p>
+  <div class="doc-meta">
+    <div><b>评审截止</b>　2026-11-18</div>
+    <div><b>覆盖</b>　21,283 行渲染层代码</div>
+    <div><b>方法</b>　逐行读源码 + 远程实拍</div>
+    <div class="rel"><b>关联</b>
+      <a href="index.html">设计中心</a>
+      <a href="competitive-parity.html">能力对位</a>
+      <a href="architecture.html">架构设计</a>
+      <a href="frontend.html">前端界面设计</a>
+    </div>
+  </div>
+</header>
+
+<!-- ============ 1 ============ -->
+<h2 id="verdict"><span class="n">01</span>结论先行</h2>
+<p class="lede">五条结论。每一条后面都跟着可复核的 file:line 或可复现的操作，不写「设计上应该」这种没有落点的句子。</p>
+
+<div class="verdicts">
+  <div class="v">
+    <div class="n">01</div>
+    <div>
+      <h4>问题不在审美，而在栅格不统一</h4>
+      <p>工具页的缩进是 <b>26px</b>，环境页是 24px：<code>app.css:578</code> 写的是 24px，而 <code>proxy.css:12</code> 等把它覆盖成 26px。切页时内容左边界横移 2px，标题、表头、卡片第一列全部跟着跳。Chrome 与 Linear 的做法是单一 <code>--page-pad</code> 贯穿所有页面；这里有两套值，而且没有一处是 token。证据：<code>app.css:578</code>、<code>proxy.css:12</code>。</p>
+    </div>
+  </div>
+  <div class="v">
+    <div class="n">02</div>
+    <div>
+      <h4>交互语义错位：看不见的东西仍然可点</h4>
+      <p><code>.env-actions</code> 用 <code>opacity:0</code> 隐藏（<code>app.css:1286-1299</code>），但没有 <code>pointer-events:none</code>——右下角空白处会点到看不见的「配置 / 打开」。标签关闭 X 同理（<code>app.css:2225</code>），而且 <code>BrowserShell.tsx:306</code> 写死 <code>tabIndex={-1}</code>，键盘完全不可达。Raycast / Arc 的等价控件是「hover 才出现，但出现时始终可聚焦」；这里连「出现时」都没做到。</p>
+    </div>
+  </div>
+  <div class="v">
+    <div class="n">03</div>
+    <div>
+      <h4>动效只进场不退场</h4>
+      <p>Modal（<code>ui.tsx:487</code>）、CommandPalette（<code>CommandPalette.tsx:86</code>）、Toast（<code>ui.tsx:558</code>）、批量条（<code>ProfileGrid.tsx:459</code>）全部是 unmount 瞬切，没有退场帧。<code>.cp-closing</code> 的退场动画已经在 <code>command-palette.css:61-67</code> 写好，但全仓库 <b>0 处引用</b>。Arc / Raycast 的浮层退出是 120–180ms 加速曲线，不是「消失」。</p>
+    </div>
+  </div>
+  <div class="v">
+    <div class="n">04</div>
+    <div>
+      <h4>三套刻度没落地</h4>
+      <p>字号硬编码 <b>286 处</b>（<code>var(--fs-*)</code> 仅 46 次）、动效时长硬编码 <b>56 行</b>（<code>0.14s</code> 出现 34 次）、圆角 <b>110 / 232</b> 绕过 token、间距约 <b>175 处</b>不在 4px 网格、<code>--sp-*</code> 在 <code>app.css</code> 里 <b>0 次引用</b>。密度开关因此名不副实：切到紧凑，主界面几乎不动——它只改了部分 chrome 尺寸，没有改内容间距。</p>
+    </div>
+  </div>
+  <div class="v">
+    <div class="n">05</div>
+    <div>
+      <h4>三态与对比度意识属上乘</h4>
+      <p>9 个面板中 <b>8 个</b>已经三态化；只有 ApiPanel 仍把「读不到」渲染成「已停止」（<code>ApiPanel.tsx:172-177</code>）。<code>--ink-4</code> 的对比度只有 <b>3.08:1</b>（<code>tokens.css:66-71</code>），却用在 <b>86 处</b>说明文字上，未达 WCAG AA 的 4.5:1。所以问题不是「不懂可访问性」，而是令牌值本身没达标——这是改一个值的事，不是重做体系的事。</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 2 ============ -->
+<h2 id="visual"><span class="n">02</span>视觉格式问题</h2>
+<p class="lede">下面是全量检索出来的格式统计，不是抽样。每一行给出证据位置；聚合类统计标注检索范围，避免把「感觉多」写成精确数字。</p>
+
+<div class="tbl-wrap">
+<table>
+<thead><tr>
+  <th style="min-width:150px">指标</th>
+  <th style="min-width:190px">实测</th>
+  <th style="min-width:280px">证据（file:line / 检索范围）</th>
+  <th style="min-width:190px">影响</th>
+</tr></thead>
+<tbody>
+<tr><td>硬编码 <code>font-size</code></td><td><b>286 处</b>，<b>17 种</b>值</td><td>全渲染层 <code>grep "font-size:"</code>；<code>tokens.css</code> 的 <code>--fs-*</code> 仅 <b>46 次</b>引用</td><td>标题字阶不可全局调整</td></tr>
+<tr><td>半像素字号</td><td><b>131 处</b></td><td>全渲染层 <code>font-size:13.5px</code> / <code>11.5px</code> 一类字面值</td><td>非整数渲染，DPR ≠ 1 时发虚</td></tr>
+<tr><td>硬编码动效时长</td><td><b>56 行</b>；<code>0.14s</code> 出现 <b>34 次</b></td><td><code>app.css</code> · <code>base.css</code> · <code>command-palette.css</code> 的 <code>transition</code> / <code>animation</code></td><td>快慢不可统一，退场曲线各写各的</td></tr>
+<tr><td>原生 <code>title</code></td><td><b>99 处</b>；Tooltip 组件 <b>0 使用</b></td><td>全渲染层 <code>title=</code> 字面量；<code>ui.tsx</code> 的 Tooltip 调用点为 0</td><td>延迟 1s+、不可主题化、不可键盘触发</td></tr>
+<tr><td>绕过 token 的圆角</td><td><b>110 / 232</b></td><td>全渲染层 <code>border-radius</code> 声明 232 处，其中 110 处为字面值，未走 <code>--r-*</code></td><td>同一屏出现两套圆角语言</td></tr>
+<tr><td>非 4px 网格间距</td><td>约 <b>175 处</b></td><td>全渲染层 <code>margin</code> / <code>padding</code> 中非 4 的倍数的值</td><td>纵向节奏不稳，密度切换后错位</td></tr>
+<tr><td><code>z-index</code> 魔法数字</td><td><b>6 档</b></td><td><code>app.css</code> 内 <code>z-index:</code> 去重后的取值</td><td>层级无语义，浮层顺序靠试</td></tr>
+<tr><td>图标尺寸与线宽</td><td><b>12 种</b><code>size</code> / <b>9 种</b><code>strokeWidth</code></td><td><code>ui.tsx</code> 图标组件与各处 <code>size=</code> / <code>strokeWidth=</code></td><td>视觉重量不一，同排图标不齐</td></tr>
+<tr><td>输入控件高度</td><td><b>5 套</b>：27 / 28 / 30 / 32 / 34px</td><td>各表单与搜索框的 <code>height</code> / <code>min-height</code></td><td>同屏控件高低不齐</td></tr>
+<tr><td>触控目标 &lt; 24px</td><td>至少 <b>7 类</b></td><td>图标按钮、标签关闭、表格行内操作等</td><td>违反 WCAG 2.2 SC 2.5.8</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="callout">
+  <div class="label">读法</div>
+  <p>这些数字的共同点是「值对、来源不对」——每个字号、圆角、时长都能在界面上找到对应，但没有一条来自令牌。所以改法不是重画，而是把它们替换回 <code>var(--fs-*)</code> / <code>var(--r-*)</code> / <code>var(--dur-*)</code>。这也是本文把「格式问题」与「审美问题」分开的原因：格式问题可以逐条替换，审美问题才需要重新设计。</p>
+</div>
+
+<!-- ============ 3 ============ -->
+<h2 id="motion"><span class="n">03</span>交互丝滑度问题</h2>
+<p class="lede">这一节只写会改变操作结果的缺陷，以及会让界面「看起来卡」的缺口。编号与 §05 的差距清单一一对应。</p>
+
+<h3>3.1 隐身可点：两个 P0</h3>
+<div class="cols">
+  <div class="card">
+    <h4>P0-5 · 环境操作区</h4>
+    <ul>
+      <li><b>现象：</b>环境卡片右下角有一片空白，点下去会触发看不见的「配置 / 打开」。</li>
+      <li><b>证据：</b><code>app.css:1286-1299</code> 用 <code>opacity:0</code> 隐藏 <code>.env-actions</code>，没有 <code>pointer-events</code>。CSS 里 <code>opacity:0</code> 只影响绘制，不影响命中测试。</li>
+      <li><b>对标：</b>Raycast 的隐藏操作在出现时仍可聚焦，未出现时完全不接收指针。</li>
+      <li><b>改法：</b><code>.env-actions{opacity:0;pointer-events:none}</code>；<code>.env-card:hover .env-actions,.env-actions:focus-within{opacity:1;pointer-events:auto}</code>。<code>focus-within</code> 必须保留，否则键盘用户永远进不去。</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4>P0-6 · 标签关闭键</h4>
+    <ul>
+      <li><b>现象：</b>标签未 hover 时关闭 X 不可见，但鼠标经过那片区域会点到它；键盘 Tab 永远到不了。</li>
+      <li><b>证据：</b><code>app.css:2225</code> 关闭键用 <code>opacity:0</code> 隐藏；<code>BrowserShell.tsx:306</code> 写死 <code>tabIndex={-1}</code>。</li>
+      <li><b>对标：</b>Chrome 的标签关闭键始终在 tab order 里，视觉可以淡，焦点不能断。</li>
+      <li><b>改法：</b>移除 <code>tabIndex={-1}</code>，补 <code>aria-label="关闭标签"</code>；<code>opacity</code> 只控制视觉，命中区保持 24×24。</li>
+    </ul>
+  </div>
+</div>
+
+<h3>3.2 溢出与键盘</h3>
+<div class="cols">
+  <div class="card">
+    <h4>P0-7 · 标签溢出硬裁</h4>
+    <ul>
+      <li><b>现象：</b>标签多了以后，文字被直接裁掉，没有最小宽度，也没有溢出入口。</li>
+      <li><b>证据：</b><code>app.css:2136</code> 容器 <code>overflow:hidden</code>；<code>.btab</code> 没有 <code>min-width</code>。</li>
+      <li><b>对标：</b>Chrome 标签先缩到下限，再出 chevron；Firefox 157 的紧凑模式也是缩到下限而不是裁字。</li>
+      <li><b>改法：</b><code>.btab{min-width:120px}</code>；容器改 <code>overflow-x:auto</code>，或加一个「更多标签」溢出菜单。</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4>P0-8 · 命令面板方向键不滚动</h4>
+    <ul>
+      <li><b>现象：</b>结果超过一屏后，方向键能改选中项，但选中行滚出可视区，用户看不到自己在哪。</li>
+      <li><b>证据：</b><code>CommandPalette.tsx:97-105</code> 只更新 activeIndex，没有调用 <code>scrollIntoView</code>。</li>
+      <li><b>对标：</b>Raycast / Linear 的选中项始终保持在视口内，方向键与滚动同步。</li>
+      <li><b>改法：</b>active 变化时 <code>ref.current?.scrollIntoView({block:'nearest'})</code>，包在 <code>useEffect</code> 里。</li>
+    </ul>
+  </div>
+</div>
+
+<h3>3.3 焦点与草稿</h3>
+<div class="cols">
+  <div class="card">
+    <h4>P0-9 · 抽屉无焦点管理且静默丢草稿</h4>
+    <ul>
+      <li><b>现象：</b>打开指纹抽屉后焦点留在原来的按钮上；按 Esc 或点遮罩关闭，填了一半的草稿直接消失，没有确认。</li>
+      <li><b>证据：</b><code>FingerprintDrawer.tsx:240-243</code> 关闭路径只 setState，没有焦点还原，也没有草稿持久化。</li>
+      <li><b>对标：</b>Linear 的抽屉打开即聚焦首个字段、Tab 锁在抽屉内、关闭后焦点回到触发按钮。</li>
+      <li><b>改法：</b>打开时 <code>firstField.focus()</code>；<code>keydown</code> 里 trap Tab；草稿写 <code>localStorage</code> 或关闭前 <code>confirm</code>；关闭后 <code>trigger.focus()</code>。</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4>P0-10 · 焦点环被抹掉</h4>
+    <ul>
+      <li><b>现象：</b>键盘焦点几乎看不见；少数替代光环的对比度只有约 1.1:1。</li>
+      <li><b>证据：</b>全渲染层 <code>outline:none</code> <b>12 处</b>；替代光环与背景对比度约 <b>1.1:1</b>。</li>
+      <li><b>对标：</b>WCAG 2.2 SC 2.4.13 要求焦点指示器与未聚焦态同像素对比度 ≥ 3:1。</li>
+      <li><b>改法：</b>删掉 <code>outline:none</code>，统一 <code>:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}</code>；把 <code>--focus-ring</code> 提到 ≥3:1。</li>
+    </ul>
+  </div>
+</div>
+
+<h3>3.4 任务页三态</h3>
+<div class="note warn">
+  <div class="lbl">P0-12 · 330px 装不下三态</div>
+  <p>任务页左栏宽度是 <b>330px</b>（<code>app.css:3574</code>），empty / loading / error 三种状态共用这一栏。错误文案一换行就挤压操作按钮，空态插图也被压成一条。Linear 的做法是空态与错误态占满右侧内容区，左栏只保留列表与筛选。</p>
+  <p><b>改法：</b>左栏改 <code>grid-template-columns:minmax(360px,420px) 1fr</code>；把 empty / error 移到右侧主区；loading 用骨架屏占位，不要用一行「加载中…」。</p>
+</div>
+
+<h3>3.5 退场动画缺失清单</h3>
+<div class="tbl-wrap">
+<table>
+<thead><tr>
+  <th style="min-width:150px">组件</th>
+  <th style="min-width:220px">证据</th>
+  <th style="min-width:170px">现状</th>
+  <th style="min-width:240px">期望</th>
+</tr></thead>
+<tbody>
+<tr><td>Modal</td><td><code>ui.tsx:487</code></td><td>unmount 瞬切</td><td>160ms 加速曲线淡出 + 轻微下移，动画结束再 unmount</td></tr>
+<tr><td>CommandPalette</td><td><code>CommandPalette.tsx:86</code>；<code>command-palette.css:61-67</code></td><td>瞬切；<code>.cp-closing</code> 已定义但 0 引用</td><td>140ms 缩放 0.98 + 淡出，复用 <code>.cp-closing</code></td></tr>
+<tr><td>Toast</td><td><code>ui.tsx:558</code></td><td>瞬切</td><td>120ms 上移 8px + 淡出</td></tr>
+<tr><td>批量操作条</td><td><code>ProfileGrid.tsx:459</code></td><td>瞬切</td><td>140ms 下移 + 淡出，高度同时收拢</td></tr>
+<tr><td>指纹抽屉</td><td><code>FingerprintDrawer.tsx:240-243</code></td><td>瞬切</td><td>180ms 右移 + 淡出，遮罩同步淡出</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>3.6 视图、列表与反馈</h3>
+<div class="tbl-wrap">
+<table>
+<thead><tr>
+  <th style="min-width:64px">编号</th>
+  <th style="min-width:220px">问题</th>
+  <th style="min-width:260px">证据</th>
+  <th style="min-width:260px">改法</th>
+</tr></thead>
+<tbody>
+<tr><td>P1-3</td><td>视图切换无过渡，且不重置滚动</td><td><code>App.tsx:323-326</code> 直接换 <code>view</code>，滚动容器保留旧 <code>scrollTop</code></td><td><code>useLayoutEffect</code> 里 <code>scroller.scrollTop=0</code>；外层 <code>key={view}</code> + 120ms 淡入</td></tr>
+<tr><td>P1-4</td><td>列表增删无动画</td><td>环境列表增删直接更新 DOM，无 FLIP / 高度过渡</td><td>新增行 120ms 淡入 + 上移；删除行高度收拢到 0 后再移除</td></tr>
+<tr><td>P1-5</td><td>骨架屏组件 0 使用</td><td><code>ui.tsx:798</code> 已有 Skeleton，调用点为 0</td><td>面板 loading 态渲染 <code>&lt;Skeleton&gt;</code>，1.6s、45° 扫光</td></tr>
+<tr><td>P1-6</td><td>数字无补间</td><td>统计数字直接 <code>setState</code>，无过渡</td><td><code>requestAnimationFrame</code> 300ms 补间，保留千分位</td></tr>
+<tr><td>P1-7</td><td>标签开合无宽度动画</td><td>标签栏直接增删节点</td><td><code>grid-template-columns:0fr → 1fr</code> 或 <code>width</code> 160ms</td></tr>
+<tr><td>P1-8</td><td>无 smooth scroll 与虚拟化</td><td>长列表全量渲染，锚点跳转瞬时</td><td><code>scroll-behavior:smooth</code>（尊重 reduced-motion）；&gt;200 行用 <code>content-visibility:auto</code> 或窗口化</td></tr>
+<tr><td>P1-9</td><td>hover 反馈不统一</td><td>各组件自定 hover 色与位移</td><td>定义 <code>--hover</code> 与 <code>--active</code>，全量替换</td></tr>
+<tr><td>P1-10</td><td>press / disabled 反馈不统一</td><td>部分按钮无 <code>:active</code>；disabled 只降 opacity</td><td><code>:active{transform:translateY(1px)}</code>；disabled <code>cursor:not-allowed</code> + <code>opacity:.38</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="callout">
+  <div class="label">这一节的判断</div>
+  <p>P0 的六条都会改变操作结果：点到看不见的按钮、标签关不掉、抽屉丢草稿、焦点看不见。P1 的八条不改变结果，但会让界面「看起来卡」或「看起来不跟手」。先修 P0，再修 P1；P1 里最先做的是退场动画与视图过渡，因为它们同时影响「高级感」和「操作确定性」。</p>
+</div>
+
+<!-- ============ 4 ============ -->
+<h2 id="matrix"><span class="n">04</span>对标矩阵</h2>
+<p class="lede">行 = 界面维度，列 = 顶级做法 / ShadowSurf 现状 / 差距。顶级做法只写能指出来源的做法；本项目现状只写代码事实。</p>
+
+<div class="tbl-wrap">
+<table>
+<thead><tr>
+  <th style="min-width:100px">维度</th>
+  <th style="min-width:260px">顶级做法</th>
+  <th style="min-width:300px">ShadowSurf 现状</th>
+  <th style="min-width:200px">差距</th>
+</tr></thead>
+<tbody>
+<tr><td>页面栅格</td><td>Linear / Chrome：单一页面内边距贯穿所有页面，侧栏与内容共用基线</td><td>环境页 24px（<code>app.css:578</code>），工具页 26px（<code>proxy.css:12</code>）</td><td>差 2px，切页横跳</td></tr>
+<tr><td>标题字阶</td><td>Linear：6 档字阶（12 / 13 / 14 / 16 / 20 / 24），全部 token</td><td>286 处硬编码、17 种值；<code>--fs-*</code> 仅 46 次引用</td><td>没有统一字阶，标题层级靠手感</td></tr>
+<tr><td>命令面板</td><td>Raycast / Arc：100ms 淡入 + 4px 抬升；方向键滚动跟随；退场 120–180ms</td><td>有 <code>⌘/Ctrl+K</code>、分组、过滤；方向键不 <code>scrollIntoView</code>（<code>CommandPalette.tsx:97-105</code>）；退场瞬切（<code>CommandPalette.tsx:86</code>）</td><td>键盘可用，但视觉与滚动断裂</td></tr>
+<tr><td>侧栏</td><td>Chrome / Firefox：可折叠、可拖宽，记住宽度</td><td>固定 <code>--side-w 196px</code>；有垂直 / 水平标签切换，但宽度不可拖</td><td>窄屏与分屏下不可调</td></tr>
+<tr><td>标签栏</td><td>Chrome 146+ 垂直标签、拖拽成组、溢出 chevron；Firefox 157 紧凑模式</td><td>有垂直 / 水平、分组着色、按标题 / URL 搜索；但 <code>overflow:hidden</code>（<code>app.css:2136</code>）、<code>.btab</code> 无 <code>min-width</code></td><td>溢出硬裁，标签不可读</td></tr>
+<tr><td>地址栏</td><td>Chrome：AI Mode 进地址栏；权限气泡锚定站点芯片</td><td>有地址栏（<code>--addr-h 40px</code>）；无权限气泡、无 AI 入口</td><td>缺气泡，权限反馈没有落点</td></tr>
+<tr><td>分屏</td><td>Chrome <code>Shift+Alt+N</code>：活动视图加粗边框，工具栏只作用于活动视图</td><td>有「双轨」（人 / 影子），无窗口内分屏</td><td>缺分屏，双轨不能替代</td></tr>
+<tr><td>环境列表</td><td>AdsPower / GoLogin：密度可调、批量操作条、行内动作 hover 出现但可聚焦</td><td>有搜索 / 筛选 / 批量 / 模板；行内动作 <code>opacity:0</code> 且可点（<code>app.css:1286-1299</code>）</td><td>隐身可点，键盘不可达</td></tr>
+<tr><td>环境卡片</td><td>Linear：hover 抬升 1px + 边框加深，动作常驻但弱化</td><td>卡片有 hover，但动作隐藏且不可聚焦</td><td>交互语义错位</td></tr>
+<tr><td>表格</td><td>Linear：行高 32 / 40 两档、列宽可拖、表头 sticky</td><td>有表格；输入控件 5 套高度（27 / 28 / 30 / 32 / 34px）</td><td>同屏控件不齐，密度不可调</td></tr>
+<tr><td>主题切换</td><td>Chrome / Firefox 157：一键浅 / 深 / 跟随系统，即时生效</td><td>三档已在 <code>html[data-theme]</code>，切换有过渡</td><td>基本达标</td></tr>
+<tr><td>密度</td><td>Firefox 157 紧凑模式：压间距与 chrome 尺寸，不动字号</td><td>有舒适 / 紧凑两档；<code>--sp-*</code> 在 <code>app.css</code> 0 引用</td><td>名不副实，主界面几乎不动</td></tr>
+<tr><td>动效</td><td>Fluent 2 / Material 3：八档时长 + 三档缓动；入场减速、出场加速</td><td>56 行硬编码，<code>0.14s</code> 34 次；退场全缺</td><td>只进场不退场</td></tr>
+<tr><td>三态</td><td>Linear：每个面板 loading / empty / error 三态齐全</td><td>9 个面板中 8 个三态化；ApiPanel 把读不到渲染成已停止（<code>ApiPanel.tsx:172-177</code>）</td><td>差一个面板</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note">
+  <div class="lbl">读法</div>
+  <p>这张表里没有一行是「审美不行」。14 个维度里，11 个的差距都能落到具体的 CSS 属性或组件调用上：栅格是 <code>padding-inline</code>，标签是 <code>min-width</code>，命令面板是 <code>scrollIntoView</code>，退场是 <code>transition</code> + <code>onTransitionEnd</code>。真正需要重新设计的只有分屏与地址栏气泡，而那两项不在本轮范围。</p>
+</div>
+
+<!-- ============ 5 ============ -->
+<h2 id="gaps"><span class="n">05</span>差距清单（按优先级）</h2>
+<p class="lede">P0 必修 15 条、P1 应修 18 条、P2 打磨 12 条。每条写「问题 + 证据 + 对标 + 改法」，改法具体到 CSS 属性或组件调用。</p>
+
+<div class="road">
+
+  <div class="phase">
+    <div class="phase-l">
+      <div class="p">P0</div>
+      <div class="m">必修 · 15 条</div>
+      <div class="st">会改变操作结果</div>
+    </div>
+    <div>
+      <h4>先把「格式不对」与「点错东西」修掉</h4>
+      <ul>
+        <li><b>P0-1 · 栅格缩进 26px vs 24px</b> — 证据：<code>app.css:578</code> 定义 24px，<code>proxy.css:12</code> 覆盖为 26px。对标：Linear 单一 <code>--page-pad</code>。改法：删除 <code>proxy.css</code> 的 26px 覆盖，统一 <code>padding-inline:var(--page-pad)</code>（24px）。</li>
+        <li><b>P0-2 · 切页内容横跳</b> — 证据：环境页与工具页左边界差 2px。对标：Arc 切空间时内容不动。改法：所有页面容器共用 <code>.page{padding-inline:var(--page-pad)}</code>，禁止页级覆盖。</li>
+        <li><b>P0-3 · 栅格没有单一来源</b> — 证据：页面容器、<code>app.css:2136</code> 标签栏、<code>app.css:578</code> 三处各自算内边距。对标：Fluent 2 的 <code>spacing</code> 单一 token。改法：新增 <code>--page-pad:24px</code>，三处替换为 <code>var(--page-pad)</code>。</li>
+        <li><b>P0-4 · 密度开关对主界面无效</b> — 证据：<code>--sp-*</code> 在 <code>app.css</code> 0 次引用。对标：Firefox 157 紧凑模式。改法：<code>[data-density='compact']</code> 下把 <code>--sp-*</code> 乘 0.75，页面间距全部走 <code>var(--sp-*)</code>。</li>
+        <li><b>P0-5 · 隐身可点：环境操作区</b> — 证据：<code>app.css:1286-1299</code> 用 <code>opacity:0</code> 隐藏 <code>.env-actions</code>，无 <code>pointer-events</code>。对标：Raycast 隐藏控件出现时仍可聚焦。改法：<code>pointer-events:none</code>；hover / <code>focus-within</code> 时 <code>auto</code>。</li>
+        <li><b>P0-6 · 标签关闭键不可达</b> — 证据：<code>app.css:2225</code> 关闭 X 未 hover 时 <code>opacity:0</code> 且可点；<code>BrowserShell.tsx:306</code> <code>tabIndex={-1}</code>。对标：Chrome 关闭键始终在 tab order。改法：移除 <code>tabIndex={-1}</code>，补 <code>aria-label</code>，<code>opacity</code> 只影响视觉。</li>
+        <li><b>P0-7 · 标签溢出硬裁</b> — 证据：<code>app.css:2136</code> <code>overflow:hidden</code>，<code>.btab</code> 无 <code>min-width</code>。对标：Chrome 缩到下限后出 chevron。改法：<code>.btab{min-width:120px}</code>，容器 <code>overflow-x:auto</code> 或溢出菜单。</li>
+        <li><b>P0-8 · 命令面板方向键不滚动</b> — 证据：<code>CommandPalette.tsx:97-105</code> 只改 activeIndex。对标：Raycast / Linear。改法：<code>scrollIntoView({block:'nearest'})</code>。</li>
+        <li><b>P0-9 · 抽屉无焦点管理且丢草稿</b> — 证据：<code>FingerprintDrawer.tsx:240-243</code> 关闭不确认、不还原焦点。对标：Linear 抽屉。改法：focus trap + 草稿落 <code>localStorage</code> + 关闭确认。</li>
+        <li><b>P0-10 · 焦点环被抹掉</b> — 证据：12 处 <code>outline:none</code>；替代光环约 1.1:1。对标：WCAG 2.4.13 ≥3:1。改法：删 <code>outline:none</code>，<code>:focus-visible</code> 用 2px 实线 + 2px offset。</li>
+        <li><b>P0-11 · <code>--ink-4</code> 对比度不足</b> — 证据：<code>tokens.css:66-71</code> 3.08:1，86 处使用。对标：WCAG AA 4.5:1。改法：<code>--ink-4</code> 提到 ≥4.5:1，或说明文字改用 <code>--ink-3</code>。</li>
+        <li><b>P0-12 · 任务页三态挤在 330px</b> — 证据：<code>app.css:3574</code> 左栏 330px。对标：Linear 空态占满内容区。改法：左栏 <code>minmax(360px,420px)</code>，空 / 错态移到右栏。</li>
+        <li><b>P0-13 · ApiPanel 把读不到渲染成已停止</b> — 证据：<code>ApiPanel.tsx:172-177</code>。对标：<code>docs/DESIGN.md</code> 三态规范。改法：判别联合 <code>{status:'idle'|'loading'|'error'|'ok'}</code>，error 显示原因与重试。</li>
+        <li><b>P0-14 · 动效只进场不退场</b> — 证据：<code>ui.tsx:487</code> · <code>CommandPalette.tsx:86</code> · <code>ui.tsx:558</code> · <code>ProfileGrid.tsx:459</code>；<code>.cp-closing</code> 在 <code>command-palette.css:61-67</code> 0 引用。对标：Arc / Raycast 120–180ms 退场。改法：统一 <code>transition</code> + <code>onTransitionEnd</code> 后 unmount。</li>
+        <li><b>P0-15 · 触控目标小于 24px</b> — 证据：图标按钮、标签关闭、表格行内操作等至少 7 类。对标：WCAG 2.5.8。改法：<code>min-width/height:24px</code>，16px 图标用 padding 撑开。</li>
+      </ul>
+      <div class="kpi">可验收：同一页面切换时左边界位移 0px；鼠标扫过环境卡片空白区不误触；Tab 能聚焦标签关闭键；命令面板 30 条结果方向键始终可见；抽屉关闭后焦点回到触发按钮；<code>--ink-4</code> 对比度 ≥4.5:1；所有触控目标 ≥24×24。</div>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-l">
+      <div class="p">P1</div>
+      <div class="m">应修 · 18 条</div>
+      <div class="st">不改变结果，但决定手感</div>
+    </div>
+    <div>
+      <h4>把「看起来卡」与「看起来不跟手」修掉</h4>
+      <ul>
+        <li><b>P1-1 · 原生 title 99 处，Tooltip 0 使用</b> — 证据：全渲染层 99 处 <code>title=</code>；<code>ui.tsx</code> 的 Tooltip 调用 0。对标：Raycast 即时 tooltip。改法：替换为 <code>&lt;Tooltip content&gt;</code>，延迟 400ms。</li>
+        <li><b>P1-2 · 图标尺寸与线宽发散</b> — 证据：12 种 <code>size</code>、9 种 <code>strokeWidth</code>。对标：Linear 统一 16 / 18 / 20 + 1.75。改法：图标组件只暴露 size token，<code>strokeWidth</code> 固定 1.75。</li>
+        <li><b>P1-3 · 视图切换无过渡且不重置滚动</b> — 证据：<code>App.tsx:323-326</code>。对标：Linear 切页 120ms 淡入。改法：<code>useLayoutEffect</code> 里 <code>scroller.scrollTop=0</code>；外层 <code>key={view}</code> + CSS animation。</li>
+        <li><b>P1-4 · 列表增删无动画</b> — 证据：环境列表增删直接 DOM 更新。对标：Linear 列表 FLIP。改法：新增行 fade / slide 120ms；删除行 <code>height→0</code>。</li>
+        <li><b>P1-5 · 骨架屏 0 使用</b> — 证据：<code>ui.tsx:798</code> 组件存在，调用点 0。对标：Linear 首屏骨架。改法：loading 态渲染 <code>&lt;Skeleton&gt;</code>，1.6s、45° 扫光。</li>
+        <li><b>P1-6 · 数字无补间</b> — 证据：统计数字直接 <code>setState</code>。对标：Raycast 计数 300ms。改法：<code>requestAnimationFrame</code> 补间。</li>
+        <li><b>P1-7 · 标签开合无宽度动画</b> — 证据：标签栏直接增删。对标：Arc 标签展开 160ms。改法：<code>grid-template-columns:0fr/1fr</code> 或 <code>width</code> transition。</li>
+        <li><b>P1-8 · 无 smooth scroll 与虚拟化</b> — 证据：长列表全量渲染。对标：Chrome 标签 / 历史虚拟化。改法：<code>content-visibility:auto</code>；&gt;200 行窗口化。</li>
+        <li><b>P1-9 · hover 反馈不统一</b> — 证据：各组件自定 hover 色。对标：Linear 统一 <code>--hover</code>。改法：定义 <code>--hover</code> 与 <code>--active</code>，全量替换。</li>
+        <li><b>P1-10 · press / disabled 反馈不统一</b> — 证据：部分按钮无 <code>:active</code>；disabled 只降 opacity。对标：Fluent 2。改法：<code>transform:translateY(1px)</code> + <code>cursor:not-allowed</code> + <code>opacity:.38</code>。</li>
+        <li><b>P1-11 · 字号 286 处硬编码</b> — 证据：17 种值，<code>--fs-*</code> 46 次。对标：Fluent 2 的字阶与 Material 3 的 type scale。改法：按 12 / 13 / 15 / 18 / 24 / 32 六档替换。</li>
+        <li><b>P1-12 · 动效时长 56 行硬编码</b> — 证据：<code>0.14s</code> 34 次。对标：Fluent 2 的 50 / 100 / 150 / 200 / 250 / 300 / 400 / 500ms 八档。改法：<code>var(--dur-1..8)</code>。</li>
+        <li><b>P1-13 · 圆角 110 / 232 绕过 token</b> — 证据：232 处 <code>border-radius</code>，110 处字面值。对标：Material 3 的 4 / 8 / 12 / 16 与 Fluent 2 的圆角档。改法：<code>var(--r-xs/sm/r/lg)</code>，重映射 4 / 8 / 12 / 16。</li>
+        <li><b>P1-14 · 间距约 175 处不在 4px 网格</b> — 证据：全渲染层 <code>margin</code> / <code>padding</code> 非 4 倍数。对标：Fluent 2 的 2 / 4 / 6 / 8 / 10 / 12 / 16 / 20 / 24 / 32 间距阶梯。改法：吸附到 4 的倍数。</li>
+        <li><b>P1-15 · z-index 6 档魔法数字</b> — 证据：<code>app.css</code> 内 6 个不同值。对标：Material 3 的 elevation 层级与 Fluent 2 的 shadow2 / 4 / 8 / 16 / 28 / 64。改法：<code>--z-base/dropdown/sticky/modal/palette/toast</code>。</li>
+        <li><b>P1-16 · 输入控件 5 套高度</b> — 证据：27 / 28 / 30 / 32 / 34px。对标：Fluent 2 的 32px 控件高度与紧凑 28px。改法：统一 <code>--ctl-h:32px</code>，紧凑 28px。</li>
+        <li><b>P1-17 · 半像素字号 131 处</b> — 证据：全渲染层 <code>font-size</code> 带 <code>.5px</code>。对标：整数像素排版，避免 DPR 缩放时半像素光栅。改法：收敛到整数。</li>
+        <li><b>P1-18 · 命令面板选中态用实色</b> — 证据：<code>CommandPalette.tsx</code> 选中行实色背景。对标：Raycast 4% wash。改法：<code>var(--accent-2)</code> 或 <code>color-mix(in srgb,var(--accent) 4%,transparent)</code>。</li>
+      </ul>
+      <div class="kpi">可验收：同一屏内所有图标视觉重量一致；切页无滚动残留；列表增删有 120ms 过渡；loading 有骨架；数字变化有补间；所有间距为 4 的倍数；所有圆角走 token；输入控件高度只剩 28 / 32 两档。</div>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-l">
+      <div class="p">P2</div>
+      <div class="m">打磨 · 12 条</div>
+      <div class="st">令牌覆盖率与细节一致性</div>
+    </div>
+    <div>
+      <h4>让三套刻度真正落地</h4>
+      <p>以下 12 条的证据均来自 §02 的统计；对标为 Fluent 2 与 Material 3 的令牌源。</p>
+      <ul>
+        <li><b>P2-1 · 间距吸附 4px 网格</b> — 把约 175 处非 4 倍数改成最近的 4 的倍数；先改页面容器，再改组件内边距。</li>
+        <li><b>P2-2 · <code>--sp-*</code> 替换 app.css 间距</b> — 按 2 / 4 / 6 / 8 / 10 / 12 / 16 / 20 / 24 / 32 十档逐段替换，目标是 <code>app.css</code> 内 0 处手写间距。</li>
+        <li><b>P2-3 · 圆角字面值替换</b> — 110 处 <code>border-radius</code> 改为 <code>var(--r-*)</code>，并按 Material 3 重映射到 4 / 8 / 12 / 16。</li>
+        <li><b>P2-4 · 字阶迁移</b> — 286 处 <code>font-size</code> 分批迁移到 <code>var(--fs-*)</code>，保留 6 档。</li>
+        <li><b>P2-5 · 动效时长迁移</b> — 56 行 <code>transition</code> / <code>animation</code> 改 <code>var(--dur-*)</code>，八档。</li>
+        <li><b>P2-6 · 缓动迁移</b> — 入场用 <code>--ease-decelerate</code>，出场用 <code>--ease-accelerate</code>，颜色与透明度用 easyEase。</li>
+        <li><b>P2-7 · 阴影补档</b> — 现有 <code>--sh-1/2/3</code> 之外补 <code>--sh-4</code> 与 shadow8 / 16 / 28 / 64，浮层按层级取用。</li>
+        <li><b>P2-8 · 图标收敛</b> — 12 种 <code>size</code> 收敛到 16 / 18 / 20 三档；9 种 <code>strokeWidth</code> 收敛到 1.75 一档。</li>
+        <li><b>P2-9 · z-index 语义化</b> — 6 档魔法数字改为 <code>--z-base/dropdown/sticky/modal/palette/toast</code>，禁止再写字面值。</li>
+        <li><b>P2-10 · 半像素字号收敛</b> — 131 处 <code>13.5px</code> / <code>11.5px</code> 一类改为整数，避免非整数光栅。</li>
+        <li><b>P2-11 · reduced-motion 覆盖 smooth scroll</b> — 在 <code>prefers-reduced-motion</code> 下同时关闭 <code>scroll-behavior:smooth</code>，不只关 animation。</li>
+        <li><b>P2-12 · 表格行高与密度联动</b> — 舒适 40px / 紧凑 32px 两档，行内控件随之缩放，不再出现 5 套输入高度。</li>
+      </ul>
+      <div class="kpi">可验收：<code>app.css</code> 内 <code>font-size</code> / <code>border-radius</code> / <code>transition</code> / <code>margin</code> / <code>padding</code> 字面值全部为 0；密度切换后内容间距按 0.75 变化；圆角与阴影按层级取 token；图标只剩 3 档尺寸与 1 档线宽。</div>
+    </div>
+  </div>
+
+</div>
+
+<h3>证据文件索引</h3>
+<ul class="refs">
+  <li><code>src/renderer/styles/app.css</code> — 页面栅格、环境卡片、标签栏、任务页、焦点环、z-index 与大部分动效字面值</li>
+  <li><code>src/renderer/styles/tokens.css</code> — <code>--ink-4</code>、<code>--fs-*</code>、<code>--sp-*</code>、<code>--r-*</code> 与布局尺寸令牌</li>
+  <li><code>src/renderer/styles/proxy.css</code> — 工具页 26px 缩进覆盖（<code>proxy.css:12</code>）</li>
+  <li><code>src/renderer/styles/command-palette.css</code> — <code>.cp-closing</code> 退场动画定义（<code>61-67</code>）与 0 引用</li>
+  <li><code>src/renderer/components/ui.tsx</code> — Modal（<code>487</code>）、Toast（<code>558</code>）、Skeleton（<code>798</code>）</li>
+  <li><code>src/renderer/components/CommandPalette.tsx</code> — 键盘导航（<code>97-105</code>）与 unmount 瞬切（<code>86</code>）</li>
+  <li><code>src/renderer/components/ProfileGrid.tsx</code> — 批量操作条（<code>459</code>）</li>
+  <li><code>src/renderer/components/FingerprintDrawer.tsx</code> — 抽屉焦点与草稿（<code>240-243</code>）</li>
+  <li><code>src/renderer/components/ApiPanel.tsx</code> — 读失败渲染成已停止（<code>172-177</code>）</li>
+  <li><code>src/renderer/components/BrowserShell.tsx</code> — 标签关闭键 <code>tabIndex={-1}</code>（<code>306</code>）</li>
+  <li><code>src/renderer/App.tsx</code> — 视图切换与滚动状态（<code>323-326</code>）</li>
+</ul>
+
+<!-- ============ 6 ============ -->
+<h2 id="redline"><span class="n">06</span>三条不可动摇的结论</h2>
+<p class="lede">这三条不是建议，是本轮评审的边界。越界就会把已经做对的东西一起推翻。</p>
+
+<div class="note danger">
+  <div class="lbl">结论一 · 不要为了「现代感」重做整个设计系统</div>
+  <p><b>事实：</b>令牌注释、三态规范、对比度意识这三件事，本项目已经做到了多数商业产品没有的程度。<code>tokens.css</code> 的每一组令牌都有注释；<code>docs/DESIGN.md</code> 写死了「不可判读状态」的判定标准与修法形式；9 个面板里 8 个已经三态化。<b>重做会丢掉这些正确性</b>——新系统看起来更「现代」，但会重新引入布尔量判断、会把 error 又压成 toast、会让对比度重新变成 3:1。</p>
+  <p><b>正确做法：</b>在现有令牌上做替换与补档，不重画。先改 <code>--ink-4</code> 与 <code>--page-pad</code> 两个值，再逐条替换字号、圆角、时长字面值。设计系统的问题从来不是「不够新」，是「令牌没有被使用」。</p>
+</div>
+
+<div class="note warn">
+  <div class="lbl">结论二 · 优先修栅格与交互语义</div>
+  <p><b>事实：</b>P0-1 / 2 / 3 / 5 / 6 / 7 / 8 全部是「格式不对」或「点错东西」：栅格 26px 与 24px、切页横跳、隐身可点、标签关闭不可达、标签溢出硬裁、命令面板方向键不滚动。这七条不需要新设计，只需要改属性与事件绑定。<b>它们是根因，不是表象。</b></p>
+  <p><b>顺序：</b>先 <code>--page-pad</code> 与 <code>pointer-events</code>，再 <code>min-width</code> 与 <code>scrollIntoView</code>，最后 <code>tabIndex</code> 与 <code>outline</code>。这七条修完，界面的「格式感」会立刻对齐 Chrome / Linear；之后再谈动效与密度，才不会像在给歪的地基刷漆。</p>
+</div>
+
+<div class="note danger">
+  <div class="lbl">结论三 · 密度 / 圆角 / 字号三套刻度必须真正落地</div>
+  <p><b>事实：</b><code>--sp-*</code> 在 <code>app.css</code> 里 0 次引用；圆角 110 / 232 绕过 token；字号 286 处硬编码，<code>--fs-*</code> 仅 46 次。密度开关切到紧凑时，主界面几乎不动——<b>开关名不副实，比没有开关更伤信任</b>。</p>
+  <p><b>验收线：</b>密度切换后，页面间距按 0.75 变化且字号不变；<code>app.css</code> 内 <code>margin</code> / <code>padding</code> 全部走 <code>--sp-*</code>；圆角全部走 <code>--r-*</code>；字号全部走 <code>--fs-*</code>。三条都达标，才算「刻度落地」；否则密度只是一个改了 chrome 高度的装饰开关。</p>
+</div>
+
+<div class="note info">
+  <div class="lbl">一句话总结</div>
+  <p>ShadowSurf 的界面不是「不好看」，是「格式没有统一来源」。把栅格收成一个 token、把交互语义补正、把三套刻度真正用起来，界面的完成度会比现在高一个档——这比换一套配色或重画组件库便宜得多，也安全得多。</p>
+</div>
+
+<footer class="doc-foot">
+  <div>ShadowSurf · 界面与交互对标评审 · UI Parity Review 2026-11 · 评审截止 2026-11-18</div>
+  <div class="rel">
+    <a href="index.html">← 返回设计中心</a>
+    <a href="competitive-parity.html">能力对位</a>
+    <a href="architecture.html">架构设计</a>
+    <a href="frontend.html">前端界面设计</a>
+  </div>
+</footer>
+
+</main>
+</div>
+
+</body>
+</html>

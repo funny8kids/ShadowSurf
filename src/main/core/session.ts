@@ -11,6 +11,8 @@
 
 import { app, session } from 'electron'
 import type { Session } from 'electron'
+import * as fs from 'node:fs'
+import { join } from 'node:path'
 import type { Profile, ProxyConfig } from '@shared/types'
 
 /**
@@ -109,16 +111,48 @@ export async function applyProxy(ses: Session, proxy: ProxyConfig | null): Promi
   // 不接管的话认证代理会弹出原生登录框，而 Agent 无法应答，环境等于不可用。
 }
 
+/**
+ * 清掉一个环境的全部站点数据。**删除环境时必须调用。**
+ *
+ * 删记录只删掉了「身份」：Cookie、localStorage、IndexedDB、Service Worker、
+ * Cache Storage 全在 `persist:ss_<id>` 分区里。不清理的话，用户以为环境没了，
+ * 站点看到的仍是一份可用的登录态，而且盘上留下一个再也没人认领的分区 ——
+ * 这是隐私泄漏，不是「一点磁盘垃圾」。
+ *
+ * `storages` 故意不显式传：Electron 的语义是「省略 = 清全部」
+ * （cookies / filesystem / indexdb / localstorage / shadercache / serviceworkers /
+ * cachestorage）。显式列一份反而更窄，将来 Electron 新增存储类型时会被漏掉。
+ * HTTP 缓存（disk cache）不属于 clearStorageData 的范围，由 clearCache 负责，
+ * 两者合起来覆盖「Cookie + localStorage + IndexedDB + cache」。
+ */
 export async function clearProfileData(profileId: string): Promise<void> {
+  // 从未启动过的环境没有分区目录。这里必须先判存在性：
+  // `session.fromPartition` 会**创建**目录，直接调等于「为了清理而造一个空分区」。
+  const dir = join(app.getPath('userData'), 'Partitions', partitionFor(profileId).replace('persist:', ''))
+  if (!fs.existsSync(dir)) return
+
   const ses = sessionFor(profileId)
   await ses.clearStorageData()
   await ses.clearCache()
+
+  // clearStorageData 只清「内容」：目录壳、Cookies/Cache 的 SQLite 文件仍留在盘上。
+  // 环境已经被删除，这个分区不会再被访问，所以直接把目录移除。
+  // 被占用（Windows 上偶发）时保留目录 —— 内容已清空，只剩空壳，不是隐私问题。
+  try {
+    fs.rmSync(dir, { recursive: true, force: true })
+  } catch {
+    /* 留给下次启动清理；内容已清 */
+  }
 }
 
 export function proxyLabel(p: ProxyConfig | null): string {
   if (!p) return '直连'
   const host = `${p.host}:${p.port}`
-  return p.type === 'socks5' ? `socks5://${host}` : host
+  if (p.type === 'socks5') return `socks5://${host}`
+  // socks5h 与 socks5 出口相同，差别只在 DNS 由谁解析（远程 vs 本地），
+  // 所以标签保留 socks5h 前缀，让用户看得出这条是「远程 DNS」语义。
+  if (p.type === 'socks5h') return `socks5h://${host}`
+  return host
 }
 
 /* ────────────────────────────── 内部实现 ────────────────────────────── */
@@ -149,8 +183,13 @@ function ensureLoginHook(): void {
 
 function rulesFor(proxy: ProxyConfig): string {
   const host = `${proxy.host}:${proxy.port}`
-  // socks5 用 URL 形式，Chromium 会自动把它应用到所有协议
-  if (proxy.type === 'socks5') return `socks5://${host}`
+  // socks5 用 URL 形式，Chromium 会自动把它应用到所有协议。
+  // socks5h 与 socks5 对 Chromium 是**同一个 `socks5://` scheme** —— Chromium 不区分
+  // 两者；差异只在 DNS 由谁解析：socks5h 要求「远程 DNS」（域名原样交给代理解析），
+  // 而 Chromium 的 `socks5://` 本来就由代理侧解析域名，语义一致。
+  // 早先只判 `socks5` 会让 socks5h 落到下面的 `http=...` 分支，于是 Chromium 对着
+  // SOCKS5 端口说 HTTP，环境里所有页面都加载失败。
+  if (proxy.type === 'socks5' || proxy.type === 'socks5h') return `socks5://${host}`
   // https 代理自身是 TLS 隧道；http 代理则同时承担 http 与 https 流量
   if (proxy.type === 'https') return `https=${host}`
   return `http=${host};https=${host}`
