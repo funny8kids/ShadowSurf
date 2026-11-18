@@ -136,6 +136,9 @@ npm ci
 npm run dev        # electron-vite 开发模式
 ```
 
+> Electron 45 的 npm 包不再声明 postinstall，首次 `require('electron')` 时会自动补装运行时（约 110 MB）。
+> 在 CI / 无缓存环境里，可以在打包前显式执行 `node node_modules/electron/install.js`（流水线已经这么做）。
+
 ### 检查与验收
 
 ```bash

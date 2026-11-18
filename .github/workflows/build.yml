@@ -74,6 +74,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Electron 45 不再带 npm postinstall（package.json 里没有 scripts），
+      # `node_modules/electron/dist` 不会在 npm ci 时出现；而 electron-builder.yml
+      # 用 electronDist 指向这份目录，缺了就直接失败。这里显式装一次。
+      - name: Download Electron binary
+        run: node node_modules/electron/install.js
+
       # dist:win = build + electron-builder --win --x64
       # 产物：release/ShadowSurf-<version>-win-x64-setup.exe / -portable.exe
       - name: Package (NSIS + portable)

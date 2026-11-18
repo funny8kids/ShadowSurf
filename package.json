@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "node tools/launch.mjs dev",
     "build": "electron-vite build",
-    "dist:win": "npm run build && electron-builder --win --x64",
+    "dist:win": "npm run build && electron-builder --win --x64 --publish never",
     "verify:package": "node tools/verify-package.mjs",
     "start": "node tools/launch.mjs preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
