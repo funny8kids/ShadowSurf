@@ -13,6 +13,7 @@ import type {
   FingerprintConfig,
   InjectionIssue,
   Profile,
+  ProxyGroup,
   ProxyProtocol
 } from '@shared/types'
 import { OS_TEMPLATES, PROFILE_COLORS, TIMEZONE_GEO } from '@shared/presets'
@@ -111,6 +112,27 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
   const { t } = useI18n()
   const [tab, setTab] = useState<Tab>('fingerprint')
   const [draft, setDraft] = useState<Profile | null>(null)
+  /** 可挂到环境的代理组。`null` = 读失败，保存时不覆盖已有绑定（同扩展列表的三态） */
+  const [proxyGroups, setProxyGroups] = useState<ProxyGroup[] | null>(null)
+  useEffect(() => {
+    if (!profile) {
+      setProxyGroups(null)
+      return
+    }
+    let alive = true
+    setProxyGroups(null)
+    void (async () => {
+      try {
+        const list = await bridge().proxyGroups.list()
+        if (alive) setProxyGroups(list)
+      } catch {
+        if (alive) setProxyGroups(null)
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [profile?.id])
   const [busy, setBusy] = useState(false)
   /** 地理校准的独立忙碌位：它探测代理可能耗时数秒，不能和保存共用 busy */
   const [geoBusy, setGeoBusy] = useState(false)
@@ -291,6 +313,9 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
         color: draft.color,
         fingerprint: draft.fingerprint,
         proxy: draft.proxy,
+        // 代理组是互斥字段：必须显式提交（包括 null = 退出组），否则从组切回单条
+        // 代理时主进程收不到「退出组」的指令，界面和出口会各说各话。
+        proxyGroupId: draft.proxyGroupId ?? null,
         // 空串表示「没配启动页」：undefined 在 update 的合并语义里等于「不改」，
         // 传它会导致用户清空后旧值永远清不掉。主进程启动时按 trim 后是否为空回落默认。
         startUrl: draft.startUrl?.trim() ?? '',
@@ -1033,10 +1058,33 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
               <div className="fieldset">
                 <div className="fs-head">
                   <h4>{t('fp.section.proxy')}</h4>
-                  <span className={`badge${draft.proxy ? '' : ' warn'}`}>
-                    {draft.proxy ? t('fp.proxy.configured') : t('fp.proxy.direct')}
+                  <span className={`badge${draft.proxy || draft.proxyGroupId ? '' : ' warn'}`}>
+                    {draft.proxyGroupId
+                      ? t('pg.title')
+                      : draft.proxy
+                        ? t('fp.proxy.configured')
+                        : t('fp.proxy.direct')}
                   </span>
                 </div>
+
+                <Field label={t('pg.assign')} hint={t('pg.assignHint')}>
+                  {proxyGroups === null ? (
+                    <span className="ext-empty">{t('wh.readFailed')}</span>
+                  ) : (
+                    <select
+                      className="val"
+                      value={draft.proxyGroupId ?? ''}
+                      onChange={(e) => patch({ proxyGroupId: e.target.value || null })}
+                    >
+                      <option value="">{t('pg.assignNone')}</option>
+                      {proxyGroups.map((g) => (
+                        <option value={g.id} key={g.id}>
+                          {g.name}（{t('pg.count', { n: g.proxyIds.length })}）
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </Field>
 
                 <Field label={t('fp.field.protocol')}>
                   <select

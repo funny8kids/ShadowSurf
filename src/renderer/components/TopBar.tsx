@@ -37,6 +37,9 @@ const CRUMB: Record<NavKey, { titleKey: string; subKey: string }> = {
   api: { titleKey: 'nav.api', subKey: 'crumb.api.sub' },
   audit: { titleKey: 'nav.audit', subKey: 'crumb.audit.sub' },
   extensions: { titleKey: 'nav.extensions', subKey: 'crumb.extensions.sub' },
+  'proxy-groups': { titleKey: 'nav.proxyGroups', subKey: 'crumb.proxyGroups.sub' },
+  sync: { titleKey: 'nav.sync', subKey: 'crumb.sync.sub' },
+  webhooks: { titleKey: 'nav.webhooks', subKey: 'crumb.webhooks.sub' },
   team: { titleKey: 'nav.members', subKey: 'crumb.team.sub' }
 }
 

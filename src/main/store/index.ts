@@ -13,6 +13,8 @@ import { CollectionStore } from './collection'
 import type { HealthStoreRef } from './health'
 import type {
   ProxyRecord,
+  ProxyGroup,
+  WebhookRecord,
   FingerprintTemplate,
   AutomationScript,
   AuditEntry,
@@ -51,6 +53,10 @@ export interface Stores {
   extensions: CollectionStore<ExtensionRecord>
   /** 定时任务（启动环境 / 跑脚本） */
   schedules: CollectionStore<ScheduleRecord>
+  /** 代理组：一组出口，按策略轮换 / 故障转移 */
+  proxyGroups: CollectionStore<ProxyGroup>
+  /** Webhook：任务 / 定时结果回调 */
+  webhooks: CollectionStore<WebhookRecord>
 }
 
 /**
@@ -93,7 +99,11 @@ export function getStores(): Stores {
       activity: new CollectionStore<TeamActivity>('team-activity', 2000),
       shares: new CollectionStore<TeamShareRecord>('team-shares'),
       extensions: new CollectionStore<ExtensionRecord>('extensions'),
-      schedules: new CollectionStore<ScheduleRecord>('schedules')
+      schedules: new CollectionStore<ScheduleRecord>('schedules'),
+      /** 代理组：一组出口，按策略轮换 / 故障转移 */
+      proxyGroups: new CollectionStore<ProxyGroup>('proxy-groups'),
+      /** Webhook：任务 / 定时结果回调 */
+      webhooks: new CollectionStore<WebhookRecord>('webhooks')
     }
   }
   return instance

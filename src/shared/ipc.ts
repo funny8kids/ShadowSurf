@@ -25,6 +25,12 @@ import type {
   FingerprintTemplate,
   AutomationScript,
   ScriptRunResult,
+  ScriptBatchResult,
+  ProxyGroup,
+  ProxyGroupStrategy,
+  WebhookRecord,
+  WebhookEvent,
+  WebhookTestResult,
   AuditEntry,
   AuditVerifyResult,
   ConsistencyReport,
@@ -142,7 +148,21 @@ export const CH = {
     import: 'ss:proxies:import',
     check: 'ss:proxies:check',
     checkAll: 'ss:proxies:checkAll',
-    apply: 'ss:proxies:apply'
+    apply: 'ss:proxies:apply',
+    /** 代理组：一组出口，按策略轮换 / 故障转移 */
+    groupList: 'ss:proxies:group-list',
+    groupCreate: 'ss:proxies:group-create',
+    groupUpdate: 'ss:proxies:group-update',
+    groupRemove: 'ss:proxies:group-remove'
+  },
+  /** Webhook：任务 / 定时结果回调 */
+  webhooks: {
+    list: 'ss:webhooks:list',
+    create: 'ss:webhooks:create',
+    update: 'ss:webhooks:update',
+    remove: 'ss:webhooks:remove',
+    /** 手动发一次测试事件 */
+    test: 'ss:webhooks:test'
   },
   templates: {
     list: 'ss:templates:list',
@@ -159,7 +179,9 @@ export const CH = {
     get: 'ss:scripts:get',
     save: 'ss:scripts:save',
     remove: 'ss:scripts:remove',
-    run: 'ss:scripts:run'
+    run: 'ss:scripts:run',
+    /** 多环境同动作（动作同步器） */
+    runBatch: 'ss:scripts:run-batch'
   },
   audit: {
     list: 'ss:audit:list',
@@ -505,6 +527,16 @@ export interface ScriptsAPI {
    * 那一步续跑 —— 但续跑时该步骤仍会再问一次。
    */
   run(scriptId: string, profileId: string, options?: ScriptRunOptions): Promise<ScriptRunResult>
+  /**
+   * 多环境同动作（动作同步器）：把同一条脚本在多个环境里依次回放。
+   *
+   * 与逐个调用 `run` 的区别在于**结论是聚合的**：返回逐环境结果，
+   * 让用户一眼看出「哪几个环境没跟上」，而不是自己去对日志。
+   *
+   * 含 L2 步骤时，每个环境仍会各自弹一次系统原生确认框 ——
+   * 一次确认放行 N 个环境的批量付款，风险就被摊薄成 N 份。
+   */
+  runBatch(scriptId: string, profileIds: string[]): Promise<ScriptBatchResult>
 }
 
 export interface ScriptRunOptions {
@@ -670,6 +702,8 @@ export interface ShadowSurfAPI {
   extensions: ExtensionsAPI
   warmup: WarmupAPI
   schedules: SchedulesAPI
+  proxyGroups: ProxyGroupsAPI
+  webhooks: WebhooksAPI
 }
 
 declare global {
@@ -686,6 +720,37 @@ export interface ExtensionsAPI {
   create(input: { name: string; path: string; enabled?: boolean }): Promise<ExtensionRecord>
   update(id: string, patch: Partial<Pick<ExtensionRecord, 'name' | 'path' | 'enabled'>>): Promise<ExtensionRecord>
   remove(id: string): Promise<void>
+}
+
+/* ────────────────────────────── 代理组 ────────────────────────────── */
+
+export interface ProxyGroupsAPI {
+  list(): Promise<ProxyGroup[]>
+  create(input: {
+    name: string
+    proxyIds: string[]
+    strategy: ProxyGroupStrategy
+    failover?: boolean
+  }): Promise<ProxyGroup>
+  update(
+    id: string,
+    patch: Partial<Pick<ProxyGroup, 'name' | 'proxyIds' | 'strategy' | 'failover'>>
+  ): Promise<ProxyGroup>
+  remove(id: string): Promise<void>
+}
+
+/* ────────────────────────────── Webhook ────────────────────────────── */
+
+export interface WebhooksAPI {
+  list(): Promise<WebhookRecord[]>
+  create(input: { url: string; events?: WebhookEvent[]; enabled?: boolean }): Promise<WebhookRecord>
+  update(
+    id: string,
+    patch: Partial<Pick<WebhookRecord, 'url' | 'events' | 'enabled'>>
+  ): Promise<WebhookRecord>
+  remove(id: string): Promise<void>
+  /** 手动发一次测试事件，返回真实 HTTP 状态 */
+  test(id: string): Promise<WebhookTestResult>
 }
 
 export interface WarmupAPI {

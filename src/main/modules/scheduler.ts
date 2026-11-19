@@ -20,6 +20,7 @@ import { appendAudit } from './audit'
 import { runScript } from './scripts'
 import type { ModuleContext } from './context'
 import { isDue, nextRunAt, validateSchedule } from './schedule-policy'
+import { emitWebhook } from './webhooks'
 
 /** 30 秒扫一次：对「每日 HH:MM」足够准，也不会把事件循环占满 */
 const SCAN_INTERVAL_MS = 30_000
@@ -152,6 +153,14 @@ export async function executeSchedule(
   const outcome = await performSchedule(ctx, rec)
   recordLastRun(ctx, rec, outcome.message)
   auditExecution(ctx, outcome)
+  // 定时结果回调：不阻塞、不重试，失败只进审计（见 webhooks.ts）
+  void emitWebhook(ctx.stores, 'schedule.done', {
+    scheduleId: rec.id,
+    kind: rec.kind,
+    targetId: rec.targetId,
+    ok: outcome.ok,
+    message: outcome.message
+  })
   return outcome.message
 }
 

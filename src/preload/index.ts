@@ -171,7 +171,26 @@ const api: ShadowSurfAPI = {
     get: (id) => invoke(CH.scripts.get, id),
     save: (script) => invoke(CH.scripts.save, script),
     remove: (id) => invoke(CH.scripts.remove, id),
-    run: (scriptId, profileId, options) => invoke(CH.scripts.run, scriptId, profileId, options)
+    run: (scriptId, profileId, options) => invoke(CH.scripts.run, scriptId, profileId, options),
+    // 多环境同动作（动作同步器）：逐环境结果由主进程聚合返回
+    runBatch: (scriptId, profileIds) => invoke(CH.scripts.runBatch, scriptId, profileIds)
+  },
+
+  // 代理组：一组出口，按轮换策略分配，故障转移时不退回直连
+  proxyGroups: {
+    list: () => invoke(CH.proxies.groupList),
+    create: (input) => invoke(CH.proxies.groupCreate, input),
+    update: (id, patch) => invoke(CH.proxies.groupUpdate, id, patch),
+    remove: (id) => invoke(CH.proxies.groupRemove, id)
+  },
+
+  // Webhook：任务 / 定时结果回调到外部系统
+  webhooks: {
+    list: () => invoke(CH.webhooks.list),
+    create: (input) => invoke(CH.webhooks.create, input),
+    update: (id, patch) => invoke(CH.webhooks.update, id, patch),
+    remove: (id) => invoke(CH.webhooks.remove, id),
+    test: (id) => invoke(CH.webhooks.test, id)
   },
 
   audit: {

@@ -1,0 +1,164 @@
+/* Webhook 面板样式。类名统一 wh- 前缀。 */
+
+.wh-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+.wh-card {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-12);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: var(--sp-12) var(--sp-16);
+}
+
+.wh-card-main {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-10);
+  flex: 1;
+  min-width: 0;
+}
+
+.wh-status {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ink-5);
+  flex: none;
+}
+
+.wh-status.on {
+  background: var(--green);
+}
+
+.wh-url {
+  font-size: var(--fs-13);
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wh-events {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  margin-top: var(--sp-4);
+  font-size: var(--fs-11);
+  color: var(--ink-4);
+}
+
+.wh-tag {
+  background: var(--surface-3);
+  border-radius: var(--r-2xs);
+  padding: var(--sp-2) var(--sp-6);
+}
+
+.wh-card-ops {
+  display: flex;
+  gap: var(--sp-4);
+  flex: none;
+}
+
+.wh-empty,
+.wh-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-12);
+  padding: var(--sp-32);
+  border: 1px dashed var(--line-dash);
+  border-radius: var(--r-lg);
+  color: var(--ink-3);
+  text-align: center;
+}
+
+.wh-empty .mark {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-md);
+  background: var(--accent-2);
+  color: var(--accent);
+}
+
+.wh-empty h3 {
+  color: var(--ink);
+  font-size: var(--fs-15);
+  font-weight: 600;
+}
+
+.wh-empty p {
+  font-size: var(--fs-12);
+  color: var(--ink-4);
+  max-width: 44ch;
+}
+
+.wh-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-16);
+}
+
+.wh-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+.wh-field > span {
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.wh-field small {
+  color: var(--ink-4);
+  font-size: var(--fs-11);
+}
+
+.wh-field input {
+  height: 34px;
+  padding: 0 var(--sp-10);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--ink);
+  font: inherit;
+}
+
+.wh-event-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: var(--sp-6);
+  margin-top: var(--sp-4);
+}
+
+.wh-event {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  padding: var(--sp-8);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-12);
+  cursor: pointer;
+  transition: background var(--dur-2) var(--ease-easy),
+    border-color var(--dur-2) var(--ease-easy);
+}
+
+.wh-event:hover {
+  background: var(--surface-hover);
+}
+
+.wh-event.on {
+  border-color: var(--accent);
+  background: var(--accent-wash);
+}

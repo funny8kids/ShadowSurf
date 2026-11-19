@@ -343,6 +343,55 @@ function safeOf(of: (fp: FingerprintConfig) => string, fp: FingerprintConfig): s
  * 或把已删除的环境悄悄放回正常列表。未知字段会抛错（见 `update`），
  * 所以这里不加就真的写不进去，而不是「接受了但没生效」。
  */
+/**
+ * 代理 / 代理组互斥解析。
+ *
+ * 两者同时挂着会有一句都说不清的真话：「这个环境到底从哪个出口出去」——
+ * 界面可能显示组名，session 却用了单条代理。所以在唯一写入口强制互斥：
+ * 后写的那个把前一个清掉。
+ *
+ * 语义关键点：`proxy: null` 是「用户明确清空代理」，必须同时也清掉 proxyGroupId；
+ * 而 `proxy: undefined` 是「这次不改」，不能顺手清掉组。区分靠 !== undefined。
+ */
+function resolveProxyFields(
+  patch: Partial<Profile>,
+  existing: StoredProfile
+): Pick<StoredProfile, 'proxy' | 'proxyGroupId'> {
+  const proxyTouched = patch.proxy !== undefined
+  const groupTouched = patch.proxyGroupId !== undefined
+
+  if (proxyTouched && groupTouched) {
+    // 两个都传：以组为准（组的策略更具体），单条代理被丢弃。
+    return {
+      proxy: existing.proxy,
+      proxyGroupId: cleanGroupId(patch.proxyGroupId)
+    }
+  }
+  if (groupTouched) {
+    return {
+      // 挂组时保留单条代理字段作为「组不可用时的显示回退」没有意义：
+      // 组全挂时我们直接失败，不会退回单条。所以清掉，避免两处事实打架。
+      proxy: null,
+      proxyGroupId: cleanGroupId(patch.proxyGroupId)
+    }
+  }
+  if (proxyTouched) {
+    return {
+      // proxyTouched 已保证 !== undefined，这里只是把 narrowing 交给 TS
+      proxy: patch.proxy ?? null,
+      // 显式挂单条代理 / 显式清空代理，都退出组
+      proxyGroupId: null
+    }
+  }
+  return { proxy: existing.proxy, proxyGroupId: existing.proxyGroupId ?? null }
+}
+
+function cleanGroupId(value: unknown): string | null {
+  if (value === null || value === undefined || value === '') return null
+  if (typeof value !== 'string') throw new Error('proxyGroupId 必须是字符串或 null')
+  return value.trim() || null
+}
+
 const WRITABLE: ReadonlySet<string> = new Set([
   'name',
   'group',
@@ -350,6 +399,7 @@ const WRITABLE: ReadonlySet<string> = new Set([
   'note',
   'tags',
   'proxy',
+  'proxyGroupId',
   'status',
   'lastUsedAt',
   'lastError',
@@ -589,7 +639,7 @@ export class ProfileStore {
       color: patch.color ?? existing.color,
       note: patch.note ?? existing.note,
       tags: Array.isArray(patch.tags) ? patch.tags.slice() : existing.tags,
-      proxy: patch.proxy !== undefined ? patch.proxy : existing.proxy,
+      ...resolveProxyFields(patch, existing),
       status: patch.status ?? existing.status,
       lastUsedAt: patch.lastUsedAt !== undefined ? patch.lastUsedAt : existing.lastUsedAt,
       lastError: patch.lastError !== undefined ? patch.lastError : existing.lastError,
@@ -694,7 +744,7 @@ export class ProfileStore {
           color: patch.color ?? existing.color,
           note: patch.note ?? existing.note,
           tags: Array.isArray(patch.tags) ? patch.tags.slice() : existing.tags,
-          proxy: patch.proxy !== undefined ? patch.proxy : existing.proxy,
+          ...resolveProxyFields(patch, existing),
           status: patch.status ?? existing.status,
           lastUsedAt: patch.lastUsedAt !== undefined ? patch.lastUsedAt : existing.lastUsedAt,
           lastError: patch.lastError !== undefined ? patch.lastError : existing.lastError,

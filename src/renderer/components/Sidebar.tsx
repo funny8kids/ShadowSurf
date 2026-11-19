@@ -24,6 +24,9 @@ export type NavKey =
   | 'api'
   | 'audit'
   | 'extensions'
+  | 'proxy-groups'
+  | 'sync'
+  | 'webhooks'
   | 'team'
 
 interface NavItem {
@@ -103,7 +106,10 @@ export function Sidebar({
     { key: 'data', label: t('nav.data'), icon: 'list' },
     { key: 'api', label: t('nav.api'), icon: 'external' },
     { key: 'audit', label: t('nav.audit'), icon: 'shield' },
-    { key: 'extensions', label: t('nav.extensions'), icon: 'square' }
+    { key: 'extensions', label: t('nav.extensions'), icon: 'square' },
+    { key: 'proxy-groups', label: t('nav.proxyGroups'), icon: 'globe' },
+    { key: 'sync', label: t('nav.sync'), icon: 'swap' },
+    { key: 'webhooks', label: t('nav.webhooks'), icon: 'send' }
   ]
 
   // 成员页是真实路由：本地团队的增删改都在这里，不再只是占位提示。

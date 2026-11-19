@@ -44,6 +44,8 @@ import { registerTrashModule } from '@main/modules/trash'
 import { registerExtensionsModule } from '@main/modules/extensions'
 import { registerWarmupModule } from '@main/modules/warmup'
 import { registerSchedulerModule, startScheduler } from '@main/modules/scheduler'
+import { registerProxyGroupsModule } from '@main/modules/proxy-groups'
+import { emitWebhook, registerWebhooksModule } from '@main/modules/webhooks'
 
 export interface HandlerContext {
   wm: WindowManager
@@ -403,6 +405,19 @@ export function registerHandlers(ctx: HandlerContext): void {
 
       stores.tasks.add(task)
       broadcast(CH.push.taskUpdate, task)
+      // 任务结束回调：投递失败不会抛回主流程（emitWebhook 内部消化）。
+      void emitWebhook(
+        stores,
+        task.status === 'done' ? 'task.done' : 'task.failed',
+        {
+          taskId: task.id,
+          profileId: task.profileId,
+          intent: task.intent,
+          status: task.status,
+          steps: task.steps.length,
+          tokens: task.tokens
+        }
+      )
       return task as TaskRecord
     } finally {
       if (activeRun === run) activeRun = null
@@ -520,6 +535,8 @@ export function registerHandlers(ctx: HandlerContext): void {
   registerExtensionsModule(moduleCtx)
   registerWarmupModule(moduleCtx)
   registerSchedulerModule(moduleCtx)
+  registerProxyGroupsModule(moduleCtx)
+  registerWebhooksModule(moduleCtx)
   // 调度器 30s 扫一次；应用关闭即停止（本地单机应用的边界，不冒充系统级 cron）
   startScheduler(moduleCtx)
 }

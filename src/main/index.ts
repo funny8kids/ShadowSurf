@@ -18,6 +18,7 @@ import { setMaskStateLookup, setMaskExemptionLookup } from '@main/agent/actions'
 import { maskRowOf } from '@main/core/mask-gate'
 import { appendAudit } from '@main/modules/audit'
 import { applyExtensionsToSession } from '@main/modules/extensions'
+import { resolveForProfile } from '@main/modules/proxy-groups'
 
 /**
  * 只允许单实例：两个进程同时写 profiles.json 会互相覆盖。
@@ -200,6 +201,9 @@ if (gotLock) {
       // 扩展在环境启动时装载到该环境的 session 上。放在组合根注入：
       // windows.ts 不认识 store，也不该认识 —— 它要能被纯 electron 探针单独加载。
       applyExtensions: (ses, profile) => applyExtensionsToSession(ses, stores, profile),
+      // 代理组出口解析：每次开窗都重新按策略选一条，结果只用于这次 session，不落盘。
+      // 组内全不通时直接抛错 -> 环境起不来，绝不退回直连（见 proxy-groups.ts）。
+      resolveProxyGroup: (profile) => resolveForProfile(profile, stores),
       // 状态只推给拥有这个窗口的那一个渲染进程，不做广播：
       // 否则控制台也会收到别人的标签页状态，跟着切成浏览器视图。
       onState: (state) => {

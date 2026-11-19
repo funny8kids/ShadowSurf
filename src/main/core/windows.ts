@@ -279,6 +279,17 @@ interface WindowManagerOptions {
     ses: Electron.Session,
     profile: StoredProfile
   ) => Promise<{ loaded: number; failed: Array<{ name: string; error: string }> } | void>
+  /**
+   * 代理组出口解析。由组合根注入（`proxy-groups.ts` 的 `resolveForProfile`），
+   * 理由同 applyExtensions：windows.ts 必须保持不依赖 store / modules。
+   *
+   * 返回**覆盖后的 Profile**（只改 proxy 字段）—— 调用方拿它去 setProxy，
+   * 但**不落盘**：轮换的下一次结果必须重新解析，落回盘上就等于把「轮换」
+   * 变成「一次性快照」。
+   *
+   * 不传 = 不解析（探针 / 旧调用方照常用 profile.proxy）。
+   */
+  resolveProxyGroup?: (profile: StoredProfile) => Promise<StoredProfile>
 }
 
 /**
@@ -512,8 +523,19 @@ export class WindowManager {
 
     this.wire(rec, handle)
 
-    // 顺序不能变：先落到正确的 session（UA/代理），再装扩展，再注入指纹，最后才发第一个请求
-    await applyProfileToSession(wc.session, profile)
+    // 顺序不能变：先解析代理组出口，再落到 session（UA/代理），再装扩展，再注入指纹，最后发第一个请求。
+    // 代理组解析结果只用于这一次 session 的配置，**不写回 profile** —— 轮换必须每次重新决策。
+    let sessionProfile = profile
+    if (this.opts.resolveProxyGroup) {
+      try {
+        sessionProfile = await this.opts.resolveProxyGroup(profile)
+      } catch (err) {
+        // 组内所有出口都不可用：直接失败，绝不退回直连（见 proxy-groups.ts 的注释）。
+        // 让环境在这里起不来，而不是拿着真实 IP 悄悄出门。
+        throw err
+      }
+    }
+    await applyProfileToSession(wc.session, sessionProfile)
     // 扩展失败不能拦住环境启动：坏扩展是「功能缺失」，不是「环境不可用」。
     // 明细由 applyExtensions 自己记审计；这里只留一行日志方便现场排查。
     if (this.opts.applyExtensions) {

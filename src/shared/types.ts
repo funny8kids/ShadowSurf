@@ -295,6 +295,14 @@ export interface Profile {
   seedHint: string
   fingerprint: FingerprintConfig
   proxy: ProxyConfig | null
+  /**
+   * 代理组 id（`ProxyGroup.id`）。
+   *
+   * 与 `proxy` 互斥：挂组时由主进程在启动前按组策略解析出实际出口，
+   * 解析结果不落回 `proxy`（落回去就等于把「轮换」变成了「一次性快照」）。
+   * 用户改单条代理时自动清空这个字段。
+   */
+  proxyGroupId?: string | null
   tags: string[]
   note: string
   createdAt: number
@@ -532,6 +540,61 @@ export interface ProxyInput {
   region?: string
 }
 
+/* ────────────────────────────── 代理组 ────────────────────────────── */
+
+/**
+ * 代理组的轮换策略。
+ *
+ * - `round-robin`：按组内顺序轮换，每启动一个环境换一条；
+ * - `random`：每次启动随机取一条（不可复现，但能打散「同一账号总从同一 IP 出去」）；
+ * - `sticky`：一直用同一条，只有它探测失败（故障转移）才换。
+ */
+export type ProxyGroupStrategy = 'round-robin' | 'random' | 'sticky'
+
+/**
+ * 代理组：一组出口，按策略给环境分配其中一条。
+ *
+ * 为什么需要它：商业指纹浏览器都把「一个环境挂一个代理」升级成「一个环境挂一个
+ * 代理池」，否则同一条线路一旦被目标站风控，整批账号一起废掉。
+ */
+export interface ProxyGroup {
+  id: string
+  name: string
+  /** 组内代理记录 id；顺序即 round-robin 的基准 */
+  proxyIds: string[]
+  strategy: ProxyGroupStrategy
+  /**
+   * 故障转移：选中的出口探测失败时自动换下一条。
+   *
+   * 关掉它时，选中的出口不通就直接失败 —— **不会退回直连**，
+   * 因为「用真实 IP 出去」比「这个环境起不来」危险得多。
+   */
+  failover: boolean
+  createdAt: number
+}
+
+/* ────────────────────────────── Webhook ────────────────────────────── */
+
+/** Webhook 关心的事件 */
+export type WebhookEvent = 'task.done' | 'task.failed' | 'schedule.done'
+
+export interface WebhookRecord {
+  id: string
+  /** 目标地址；只允许 http/https */
+  url: string
+  /** 订阅哪些事件；空数组 = 订阅全部 */
+  events: WebhookEvent[]
+  enabled: boolean
+  createdAt: number
+}
+
+/** Webhook 投递结果（测试按钮用） */
+export interface WebhookTestResult {
+  ok: boolean
+  status: number
+  error?: string
+}
+
 /** 一行 `host:port:user:pass` 或 `protocol://user:pass@host:port` */
 export interface ProxyImportResult {
   added: number
@@ -685,6 +748,32 @@ export interface ScriptRunResult {
    * 等于把授权交给可能已被攻破的那一层。
    */
   needsConfirm?: boolean
+}
+
+/**
+ * 一次「多环境同动作」的批量回放结果。
+ *
+ * 逐环境给结论，不给一个总数了事：批量执行里最要紧的信息是**哪个环境没跟上**，
+ * 一个「成功 3 / 失败 1」的总数会让人再去翻日志才知道该看谁。
+ */
+export interface ScriptBatchItem {
+  profileId: string
+  profileName: string
+  ok: boolean
+  executed: number
+  total: number
+  /** 这一步要人工确认（脚本含 L2 动作） */
+  needsConfirm?: boolean
+  error?: string
+}
+
+export interface ScriptBatchResult {
+  scriptId: string
+  items: ScriptBatchItem[]
+  okCount: number
+  failedCount: number
+  /** 需要人工确认而停下的环境数 */
+  confirmCount: number
 }
 
 /* ────────────────────────────── 审计日志 ────────────────────────────── */

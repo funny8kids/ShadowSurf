@@ -26,6 +26,9 @@ import { en as enTools2, zh as zhTools2 } from './catalog/tools2'
 import { en as enBrowser, zh as zhBrowser } from './catalog/browser'
 import { en as enAgent, zh as zhAgent } from './catalog/agent'
 import { en as enExtensions, zh as zhExtensions } from './catalog/extensions'
+import { en as enPg, zh as zhPg } from './catalog/proxy-groups'
+import { en as enSync, zh as zhSync } from './catalog/sync'
+import { en as enWh, zh as zhWh } from './catalog/webhooks'
 
 export type Lang = 'zh' | 'en'
 export type Dict = Record<string, string>
@@ -39,7 +42,10 @@ const ZH: Dict = {
   ...zhTools2,
   ...zhBrowser,
   ...zhAgent,
-  ...zhExtensions
+  ...zhExtensions,
+  ...zhPg,
+  ...zhSync,
+  ...zhWh
 }
 
 const EN: Dict = {
@@ -51,7 +57,10 @@ const EN: Dict = {
   ...enTools2,
   ...enBrowser,
   ...enAgent,
-  ...enExtensions
+  ...enExtensions,
+  ...enPg,
+  ...enSync,
+  ...enWh
 }
 
 const LANG_KEY = 'ss:lang'

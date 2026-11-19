@@ -15,7 +15,13 @@
  */
 
 import { CH } from '@shared/ipc'
-import type { AutomationScript, ScriptRunResult, ScriptStep } from '@shared/types'
+import type {
+  AutomationScript,
+  ScriptRunResult,
+  ScriptBatchResult,
+  ScriptBatchItem,
+  ScriptStep
+} from '@shared/types'
 import type { Action, ActionResult, ActionType, PageSnapshot, SnapshotElement } from '@shared/protocol'
 import { actionSemantic, describeAction } from '@shared/protocol'
 import type { ModuleContext } from './context'
@@ -26,6 +32,7 @@ import { captureSnapshot } from '@main/agent/snapshot'
 import { ApprovalRequiredError, MaskIncompleteError, executeAction } from '@main/agent/actions'
 import { assessRisk } from '@main/agent/risk'
 import { requestConsent, type ConsentOutcome } from '@main/agent/consent'
+import { appendAudit } from './audit'
 import { auditGate } from '@main/modules/audit'
 
 /** 步骤间默认等待，给页面留出渲染/请求的时间 */
@@ -291,6 +298,78 @@ export function registerScriptModule(ctx: ModuleContext): void {
     // 「这张票只对发起它的那个渲染进程有效」。留一个入口不传，这个不变量就破了个例。
     const senderId = typeof event?.sender?.id === 'number' ? event.sender.id : undefined
     return runScript(ctx, String(scriptId), String(profileId), rawOptions, senderId)
+  })
+
+  /**
+   * 动作同步器：同一脚本在多个环境里**依次**回放。
+   *
+   * 为什么串行：并发会让「同一瞬间给 10 个账号点同一个按钮」变成一种明显的
+   * 机器人特征；而且 L2 确认窗需要人当场点，并发弹 10 个窗口人根本处理不过来。
+   *
+   * 为什么不复用 run 的聚合错误：每个环境各自给结论，一次失败不中断整批。
+   * 含 L2 步骤时每个环境仍各自弹系统确认窗，**一次确认只放行一个环境**。
+   */
+  ctx.handle(CH.scripts.runBatch, async (event, rawScriptId, rawProfileIds) => {
+    const scriptId = String(rawScriptId)
+    const script = ctx.stores.scripts.get(scriptId)
+    if (!script) throw new Error('脚本不存在，可能已被删除')
+    if (!Array.isArray(rawProfileIds) || rawProfileIds.length === 0) {
+      throw new Error('请选择至少一个环境')
+    }
+    const ids = [...new Set(rawProfileIds.map((id) => String(id)))]
+    const senderId = typeof event?.sender?.id === 'number' ? event.sender.id : undefined
+    const items: ScriptBatchItem[] = []
+
+    for (const id of ids) {
+      const profile = ctx.stores.profiles.get(id)
+      if (!profile) {
+        items.push({
+          profileId: id,
+          profileName: id,
+          ok: false,
+          executed: 0,
+          total: script.steps.length,
+          error: '环境不存在，可能已被删除'
+        })
+        continue
+      }
+      try {
+        const res = await runScript(ctx, scriptId, id, undefined, senderId)
+        items.push({
+          profileId: id,
+          profileName: profile.name,
+          ok: res.ok,
+          executed: res.executed,
+          total: res.total,
+          ...(res.needsConfirm ? { needsConfirm: true } : {}),
+          ...(res.error ? { error: res.error } : {})
+        })
+      } catch (err) {
+        items.push({
+          profileId: id,
+          profileName: profile.name,
+          ok: false,
+          executed: 0,
+          total: script.steps.length,
+          error: err instanceof Error ? err.message : String(err)
+        })
+      }
+    }
+
+    const result: ScriptBatchResult = {
+      scriptId,
+      items,
+      okCount: items.filter((i) => i.ok).length,
+      failedCount: items.filter((i) => !i.ok && !i.needsConfirm).length,
+      confirmCount: items.filter((i) => i.needsConfirm).length
+    }
+    appendAudit(
+      ctx.stores,
+      '脚本·同步执行',
+      script.name,
+      `${String(ids.length)} 个环境：${String(result.okCount)} 完成 / ${String(result.failedCount)} 失败 / ${String(result.confirmCount)} 待确认`
+    )
+    return result
   })
 }
 

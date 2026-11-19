@@ -39,6 +39,9 @@ import { AuditPanel } from '@renderer/components/tools/AuditPanel'
 import { DataPanel } from '@renderer/components/tools/DataPanel'
 import { TeamPanel } from '@renderer/components/tools/TeamPanel'
 import { ExtensionsPanel } from '@renderer/components/tools/ExtensionsPanel'
+import { ProxyGroupsPanel } from '@renderer/components/tools/ProxyGroupsPanel'
+import { SyncPanel } from '@renderer/components/tools/SyncPanel'
+import { WebhooksPanel } from '@renderer/components/tools/WebhooksPanel'
 import { StoreHealthBanner } from '@renderer/components/StoreHealthBanner'
 import { bridge, errorMessage, hasBridge, onMaskState, onWindowState } from './lib/api'
 import { parseProxy } from './lib/proxy-parse'
@@ -567,6 +570,9 @@ function Shell() {
       nav('data', t('nav.data'), t('navHint.data'), 'list', ['data', 'cookie', 'shuju']),
       nav('api', t('nav.api'), t('navHint.api'), 'external', ['api', 'bendi']),
       nav('audit', t('nav.audit'), t('navHint.audit'), 'shield', ['audit', 'shenji', 'selfcheck']),
+      nav('sync', t('nav.sync'), t('crumb.sync.sub'), 'swap', ['sync', 'batch', 'tongbu']),
+      nav('proxy-groups', t('nav.proxyGroups'), t('crumb.proxyGroups.sub'), 'globe', ['proxy-group', 'pool', 'dailizu']),
+      nav('webhooks', t('nav.webhooks'), t('crumb.webhooks.sub'), 'send', ['webhook', 'hook', 'huijiao']),
       nav('team', t('nav.members'), t('palette.teamHint'), 'users', ['team', 'member', 'chengyuan', 'tuandui']),
       {
         id: 'action.new-profile',
@@ -693,6 +699,12 @@ function Shell() {
               <TeamPanel />
             ) : view === 'extensions' ? (
               <ExtensionsPanel />
+            ) : view === 'proxy-groups' ? (
+              <ProxyGroupsPanel />
+            ) : view === 'sync' ? (
+              <SyncPanel profiles={profiles} />
+            ) : view === 'webhooks' ? (
+              <WebhooksPanel />
             ) : (
               <ProfileGrid
                 profiles={profiles}

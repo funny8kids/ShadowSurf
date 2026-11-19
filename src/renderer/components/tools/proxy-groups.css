@@ -1,0 +1,228 @@
+/* 代理组面板样式。类名统一 pg- 前缀，不碰 proxy.css。 */
+
+.pg-panel .tool-body {
+  padding-bottom: var(--sp-24);
+}
+
+.pg-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: var(--sp-12);
+}
+
+.pg-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  box-shadow: var(--sh-1);
+  padding: var(--sp-16);
+}
+
+.pg-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-8);
+}
+
+.pg-card-head > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.pg-card-head h3 {
+  font-size: var(--fs-15);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-count {
+  color: var(--ink-4);
+  font-size: var(--fs-12);
+}
+
+.pg-card-ops {
+  display: flex;
+  gap: var(--sp-4);
+  flex: none;
+}
+
+.pg-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+  margin: var(--sp-12) 0;
+}
+
+.pg-tag {
+  font-size: var(--fs-11);
+  color: var(--ink-3);
+  background: var(--surface-3);
+  border-radius: var(--r-2xs);
+  padding: var(--sp-2) var(--sp-8);
+}
+
+.pg-tag.on {
+  color: var(--green);
+  background: var(--green-2);
+}
+
+.pg-members {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+}
+
+.pg-member {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-12);
+  color: var(--ink-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-2xs);
+  padding: var(--sp-2) var(--sp-8);
+}
+
+.pg-dim {
+  color: var(--ink-4);
+  font-size: var(--fs-12);
+}
+
+.pg-empty,
+.pg-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-12);
+  padding: var(--sp-32);
+  border: 1px dashed var(--line-dash);
+  border-radius: var(--r-lg);
+  color: var(--ink-3);
+  text-align: center;
+}
+
+.pg-empty .mark {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-md);
+  background: var(--accent-2);
+  color: var(--accent);
+}
+
+.pg-empty h3 {
+  color: var(--ink);
+  font-size: var(--fs-15);
+  font-weight: 600;
+}
+
+.pg-empty p {
+  font-size: var(--fs-12);
+  color: var(--ink-4);
+  max-width: 44ch;
+}
+
+.pg-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-16);
+}
+
+.pg-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+.pg-field > span,
+.pg-member-title > span {
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.pg-field input,
+.pg-field select {
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--ink);
+  padding: 0 var(--sp-10);
+  font: inherit;
+}
+
+.pg-field input:focus,
+.pg-field select:focus {
+  border-color: var(--accent-3);
+}
+
+.pg-failover p {
+  margin-top: var(--sp-6);
+  font-size: var(--fs-12);
+  color: var(--ink-4);
+  line-height: 1.5;
+}
+
+.pg-member-pick {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+.pg-member-title {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.pg-member-title small {
+  color: var(--ink-4);
+  font-size: var(--fs-11);
+}
+
+.pg-member-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: var(--sp-6);
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.pg-member-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-8);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background var(--dur-2) var(--ease-easy),
+    border-color var(--dur-2) var(--ease-easy);
+}
+
+.pg-member-item:hover {
+  background: var(--surface-hover);
+}
+
+.pg-member-item.on {
+  border-color: var(--accent);
+  background: var(--accent-wash);
+}
+
+.pg-member-item > span {
+  font-size: var(--fs-12);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-member-item small {
+  color: var(--ink-4);
+  font-size: var(--fs-11);
+}
