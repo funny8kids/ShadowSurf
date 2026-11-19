@@ -413,6 +413,25 @@ export function AgentPanel({
                 onChange={(e) => setDraft((d) => ({ ...d, maxSteps: Number(e.target.value) || 1 }))}
               />
             </div>
+            <div>
+              <label className="set-lbl">{t('agent.settings.humanize')}</label>
+              <select
+                className="set-input"
+                value={draft.humanizeInput ?? 'light'}
+                onChange={(e) =>
+                  setDraft((d) => ({
+                    ...d,
+                    humanizeInput: e.target.value as Settings['humanizeInput']
+                  }))
+                }
+              >
+                <option value="off">{t('agent.humanize.off')}</option>
+                <option value="light">{t('agent.humanize.light')}</option>
+                <option value="normal">{t('agent.humanize.normal')}</option>
+                <option value="slow">{t('agent.humanize.slow')}</option>
+              </select>
+              <p className="set-hint">{t('agent.settings.humanizeHint')}</p>
+            </div>
           </div>
 
           {testResult ? (

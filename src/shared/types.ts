@@ -478,6 +478,14 @@ export interface Settings {
   panelWidth: number
   /** 主题模式。解析成 light/dark 由主进程做，渲染层只收结果 */
   theme: ThemeMode
+  /**
+   * 拟人输入档位。
+   *
+   * 关 = 一次性 setter（最快，但击键节奏是机器特征）；轻/中/慢 = 逐字符随机
+   * 间隔 + 思考停顿。默认 'light'，在不明显拖慢任务的前提下抹掉「0ms 填满
+   * 整段文字」这个最明显的自动化信号。
+   */
+  humanizeInput: 'off' | 'light' | 'normal' | 'slow'
 }
 
 export interface TestResult {

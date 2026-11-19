@@ -17,12 +17,13 @@
  */
 import type { Action, ActionResult, PageSnapshot } from '@shared/protocol'
 import { actionSemantic, findElement } from '@shared/protocol'
-import type { MaskStateRecord } from '@shared/types'
+import type { MaskStateRecord, Settings } from '@shared/types'
 import type { CdpBridge } from '@main/core/cdp'
 import { runInAgentWorld } from '@main/agent/snapshot'
 import { assessRisk } from '@main/agent/risk'
 import { consumeTicket, digestAction } from '@main/agent/consent'
 import { decideMaskGate } from '@main/core/mask-gate'
+import { withHumanRhythm } from './human-rhythm'
 
 /**
  * 伪装状态查询函数，由组合根注入（`index.ts`）。
@@ -132,6 +133,11 @@ export type Approval = {
    * 纯 Node 里加载，真去写审计库会让探针污染用户数据，也跑不起来。
    */
   onGate?: (event: GateEvent) => void
+  /**
+   * 拟人输入档位，由调用方从可信的 Settings 传入。
+   * 不传 = off（最保守，不假装真人）；前台三条路径都会显式传。
+   */
+  humanizeInput?: Settings['humanizeInput']
 }
 
 export interface GateEvent {
@@ -249,6 +255,9 @@ function toActionResult(raw: unknown): ActionResult {
   }
   if ('data' in raw) {
     result.data = raw.data
+  }
+  if (raw.humanized === true) {
+    result.humanized = true
   }
   return result
 }
@@ -394,8 +403,12 @@ export async function executeAction(
     return { ok: false, message: '只允许 http/https 地址', failure: 'exec' }
   }
 
+  // 拟人节奏在主进程注入，页面侧只执行、不决定 —— 见 withHumanRhythm 的说明。
+  // 放在所有闸门之后：被拒绝的动作不该产生任何击键，节奏参数也就不该出现。
+  const finalAction = withHumanRhythm(action, approval.humanizeInput ?? 'off')
+
   // 序列化两次：外层是 JS 字符串字面量，页面侧再 JSON.parse 还原动作
-  const literal = JSON.stringify(JSON.stringify(action))
+  const literal = JSON.stringify(JSON.stringify(finalAction))
   const expression =
     '(function(){var a=JSON.parse(' +
     literal +

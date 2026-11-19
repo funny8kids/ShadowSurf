@@ -127,7 +127,8 @@ export const DEFAULT_SETTINGS: Settings = {
   maxSteps: 12,
   autoRun: true,
   panelWidth: 380,
-  theme: 'system'
+  theme: 'system',
+  humanizeInput: 'light'
 }
 
 /* ────────────────────────────── 环境标识色 ────────────────────────────── */

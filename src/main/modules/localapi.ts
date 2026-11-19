@@ -772,6 +772,7 @@ async function handleProfiles(
       result = await executeAction(cdp, action, snap, {
         ...(ticket !== undefined ? { ticket } : {}),
         origin: 'api',
+        humanizeInput: getStores().settings.get().humanizeInput,
         // 伪装闸门查的是这个环境的**标签页** wc。这条路径没有 sender，但「哪个窗口」
         // 是确定的（`requireTab(id)` 取到的就是本次要操作的那个标签页）。
         maskWebContentsId: tab.wc.id,

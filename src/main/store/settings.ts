@@ -105,6 +105,13 @@ function asThemeMode(v: unknown): ThemeMode {
   return v === 'light' || v === 'dark' || v === 'system' ? v : DEFAULT_SETTINGS.theme
 }
 
+/** 拟人输入档位：老盘没有这个字段时回落到默认（轻量拟人），而不是完全关闭 */
+function asHumanizeInput(v: unknown): Settings['humanizeInput'] {
+  return v === 'off' || v === 'light' || v === 'normal' || v === 'slow'
+    ? v
+    : DEFAULT_SETTINGS.humanizeInput
+}
+
 /**
  * 数值区间钳制。
  *
@@ -179,6 +186,7 @@ function migrateSettings(data: unknown): StoredSettings {
     autoRun: asBoolean(rec.autoRun, DEFAULT_SETTINGS.autoRun),
     panelWidth: asNumber(rec.panelWidth, DEFAULT_SETTINGS.panelWidth),
     theme: asThemeMode(rec.theme),
+    humanizeInput: asHumanizeInput(rec.humanizeInput),
     // 注意：这一项是**白名单里唯一不可再生的东西**（见上面 auditHead 的注释）。
     // 丢掉它不会报错，只会让尾部删除检测静默失效 —— 所以这里宁可判成 null 并让
     // 校验报「未锚定」，也不要猜一个值出来。
@@ -263,6 +271,7 @@ export class SettingsStore {
       autoRun: stored.autoRun,
       panelWidth: stored.panelWidth,
       theme: stored.theme,
+      humanizeInput: stored.humanizeInput,
       apiKey
     }
   }
@@ -292,6 +301,7 @@ export class SettingsStore {
       autoRun: patch.autoRun ?? current.autoRun,
       panelWidth: clampNumber(patch.panelWidth ?? current.panelWidth, 0, 2000),
       theme: patch.theme ?? current.theme,
+      humanizeInput: asHumanizeInput(patch.humanizeInput ?? current.humanizeInput),
       auditHead: current.auditHead
     }
     // 传了打码值 = 用户没动 Key，保持原密文不动（避免每存一次设置就重写一次密钥）

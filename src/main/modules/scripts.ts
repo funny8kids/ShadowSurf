@@ -488,6 +488,7 @@ export async function runScript(
         result = await executeAction(cdp, action, snapshot, {
           ...(ticket !== undefined ? { ticket } : {}),
           origin: 'script',
+          humanizeInput: ctx.stores.settings.get().humanizeInput,
           note,
           // 伪装闸门查的是这条回放所操作的**标签页** wc。senderId（若有）是发起回放的
           // 控制台渲染进程，两者编号空间不同，拿它去查永远查不到状态。

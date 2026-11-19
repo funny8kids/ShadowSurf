@@ -376,39 +376,92 @@ export const PAGE_AGENT_SOURCE = `
     return { ok: true, message: '已点击 ' + action.id + '「' + nameOf(el) + '」' };
   }
 
+  /**
+   * 写入一个字符（或整段）。
+   *
+   * React/Vue 受控输入走原型链 setter：直接 el.value = x 会被框架的 value 追踪
+   * 忽略，界面上看着没变、提交时拿到了旧值。
+   */
+  function writeValue(el, value, append) {
+    var tag = el.tagName;
+    if (el.isContentEditable) {
+      el.textContent = append ? (el.textContent || '') + value : value;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      return;
+    }
+    if (tag === 'SELECT') {
+      el.value = value;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return;
+    }
+    var proto = tag === 'TEXTAREA'
+      ? window.HTMLTextAreaElement.prototype
+      : window.HTMLInputElement.prototype;
+    var desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    var next = append ? (el.value || '') + value : value;
+    if (desc && desc.set) { desc.set.call(el, next); } else { el.value = next; }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function sleep(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
   function doType(action) {
     var el = findEl(action.id);
     if (!el) { return notFound(action); }
     var text = action.text === null || action.text === undefined ? '' : String(action.text);
     reveal(el);
-
     var tag = el.tagName;
-    if (el.isContentEditable) {
+
+    var h = action.human;
+    var humanized = h &&
+      typeof h.minMs === 'number' && typeof h.maxMs === 'number' &&
+      typeof h.jitterMs === 'number' && typeof h.pauseBeforeFocusMs === 'number';
+
+    // SELECT 不支持逐字符：它的 value 是离散选项，逐字写会产生一堆不存在的中间值。
+    if (!humanized || tag === 'SELECT') {
       el.focus();
-      el.textContent = text;
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-    } else if (tag === 'SELECT') {
-      el.focus();
-      el.value = text;
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-    } else {
-      // React/Vue 受控输入：必须走原型链 setter，直接赋值会被框架的 value 追踪忽略
-      var proto = tag === 'TEXTAREA'
-        ? window.HTMLTextAreaElement.prototype
-        : window.HTMLInputElement.prototype;
-      var desc = Object.getOwnPropertyDescriptor(proto, 'value');
-      el.focus();
-      if (desc && desc.set) { desc.set.call(el, text); } else { el.value = text; }
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
+      writeValue(el, text, false);
+      if (action.submit) { submitForm(el); }
+      return {
+        ok: true,
+        message: '已在 ' + action.id + ' 输入「' + clip(text, 40) + '」' + (action.submit ? ' 并提交' : '')
+      };
     }
 
-    if (action.submit) { submitForm(el); }
-    return {
-      ok: true,
-      message: '已在 ' + action.id + ' 输入「' + clip(text, 40) + '」' + (action.submit ? ' 并提交' : '')
-    };
+    // 拟人路径：聚焦 → 短停顿 → 逐字符随机间隔 → 每 10 字一次思考停顿。
+    // 返回 Promise，主进程 Runtime.evaluate 开了 awaitPromise，会等整段打完。
+    var minMs = Math.max(0, h.minMs);
+    var maxMs = Math.max(minMs, h.maxMs);
+    var jitter = Math.max(0, h.jitterMs);
+    var focusPause = Math.max(0, h.pauseBeforeFocusMs);
+
+    return (async function () {
+      el.focus();
+      if (focusPause > 0) { await sleep(focusPause); }
+
+      // contenteditable 每个字符都要从当前 textContent 续写，不能整段覆盖
+      var editable = !!el.isContentEditable;
+      if (editable) { el.textContent = ''; }
+      else if (tag !== 'SELECT') { writeValue(el, '', false); }
+
+      for (var i = 0; i < text.length; i++) {
+        writeValue(el, text.charAt(i), true);
+        var delay = minMs + Math.random() * (maxMs - minMs);
+        if ((i + 1) % 10 === 0 && jitter > 0) { delay += jitter; }
+        if (delay > 0) { await sleep(delay); }
+      }
+
+      if (action.submit) { submitForm(el); }
+      return {
+        ok: true,
+        humanized: true,
+        typedMs: text.length,
+        message: '已拟人输入 ' + text.length + ' 字符到 ' + action.id + (action.submit ? ' 并提交' : '')
+      };
+    })();
   }
 
   function doPress(action) {

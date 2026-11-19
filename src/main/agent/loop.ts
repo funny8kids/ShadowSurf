@@ -262,6 +262,7 @@ export async function runAgent(
           // 把不一致暴露出来而不是悄悄放行。
           ...(ticket !== undefined ? { ticket } : {}),
           origin: 'agent',
+          humanizeInput: deps.settings.humanizeInput,
           intent: req.intent,
           note: thought,
           ...(deps.senderId !== undefined ? { senderId: deps.senderId } : {}),

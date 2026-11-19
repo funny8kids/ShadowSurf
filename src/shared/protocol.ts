@@ -120,6 +120,21 @@ export interface Action {
   key?: string
   /** type 后是否回车提交 */
   submit?: boolean
+  /**
+   * 拟人输入节奏（仅 type 动作使用）。
+   *
+   * 由主进程按用户设置**注入**，不是模型/渲染层能指定的 —— 让页面自己声明
+   * 「我要伪装成真人」等于把反检测开关交给最不可信的那一层。
+   *
+   * 逐字符间隔在 [minMs, maxMs] 随机；jitterMs 是每 10 个字符插入一次的额外
+   * 停顿（模拟看键盘）；pauseBeforeFocusMs 是聚焦输入框到开始打字间的停顿。
+   */
+  human?: {
+    minMs: number
+    maxMs: number
+    jitterMs: number
+    pauseBeforeFocusMs: number
+  }
   direction?: 'up' | 'down' | 'top' | 'bottom'
   amount?: number
   /** navigate 的目标地址，只允许 http/https */
@@ -320,6 +335,8 @@ export interface ActionResult {
   navigated?: boolean
   /** extract 的产出 */
   data?: unknown
+  /** 这次输入是否走了拟人节奏（审计 / 自检可读） */
+  humanized?: boolean
 }
 
 /* ────────────────────────────── 运行期事件 ────────────────────────────── */
