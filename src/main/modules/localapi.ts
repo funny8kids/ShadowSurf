@@ -714,6 +714,8 @@ async function handleProfiles(
     // 现在 L2 只能由主进程弹系统原生窗口取得凭证，意味着**机器前必须有人**。
 
     const tab = requireTab(id)
+    // 同 agent.run：外部接管标签页时点亮网页视图，避免影子轨一直停在占位图。
+    context?.wm.revealTab(id)
     const cdp = bridgeFor(tab.wc)
     await cdp.attach()
     // 外部调用方手里没有当轮快照，但编号校验是防幻觉的唯一闸门，不能因为走 API 就绕过：

@@ -500,7 +500,9 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                 <Field label={t('fp.field.group')}>
                   <input
                     className="val"
-                    value={draft.group}
+                    /* 存储值是 '默认'；英文界面显示 Default。只有用户真的改了输入框
+                       才会写回新分组，原样保存不会把 '默认' 改写成 'Default'。 */
+                    value={draft.group === '默认' ? t('profiles.group.default') : draft.group}
                     placeholder={t('fp.group.placeholder')}
                     onChange={(e) => patch({ group: e.target.value })}
                   />

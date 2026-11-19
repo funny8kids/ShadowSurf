@@ -6,6 +6,7 @@ export const zh: Dict = {
   'data.title': '浏览数据',
   'data.subtitle': 'Cookie 与历史按环境独立存放，下载记录为全局视图，清空只影响当前所选环境。',
   'data.scope.global': '全局',
+  'data.scope.isolated': '仅当前环境',
   'data.scope.noProfile': '未选择环境',
   'data.scope.noProfileShort': '未选择',
   'data.selectProfile': '选择环境',
@@ -394,6 +395,7 @@ export const en: Dict = {
   'data.subtitle':
     'Cookies and history are stored per profile; downloads are a global view. Clearing only affects the selected profile.',
   'data.scope.global': 'Global',
+  'data.scope.isolated': 'This profile only',
   'data.scope.noProfile': 'No profile selected',
   'data.scope.noProfileShort': 'Not selected',
   'data.selectProfile': 'Select a profile',

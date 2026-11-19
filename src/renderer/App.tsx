@@ -212,12 +212,32 @@ function Shell() {
    * 定时任务启动环境、地理校准改时区、闸门豁免自动收回都发生在主进程，
    * 不经过本窗口的任何本地 setProfiles。没有这条订阅时，界面会一直停在
    * 上一次自行刷新的快照上。载荷是主进程写的完整列表，直接替换；
-   * 本地新增路径（create / bulk）改成「按 id upsert」，避免与这条推送重复。 */
+   * 本地新增路径（create / bulk）改成「按 id upsert」，避免与这条推送重复。
+   *
+   * 用 rAF 合并连续推送：主进程每次写环境都会广播完整列表，批量建 50 个
+   * 环境就是 50 次广播 —— 不合并的话渲染层会重建 50 次大列表，期间滚动/
+   * 动画全部卡住（审计里首次打开抽屉出现 888ms 长帧就是残留的批量更新）。
+   * 一帧只应用最后一个快照，语义不变：快照本来就是全量、幂等的。 */
   useEffect(() => {
     if (!hasBridge()) return
-    return bridge().profiles.onState((list) => {
-      if (aliveRef.current) setProfiles(list)
+    let pending: Profile[] | null = null
+    let raf = 0
+    const flush = (): void => {
+      raf = 0
+      if (pending !== null && aliveRef.current) {
+        const next = pending
+        pending = null
+        setProfiles(next)
+      }
+    }
+    const off = bridge().profiles.onState((list) => {
+      pending = list
+      if (raf === 0) raf = requestAnimationFrame(flush)
     })
+    return () => {
+      off()
+      if (raf !== 0) cancelAnimationFrame(raf)
+    }
   }, [])
 
   /* ── 主题 ──
@@ -391,20 +411,28 @@ function Shell() {
 
   /** 批量新建：商业指纹浏览器普遍提供 bulk create。
       主进程无批量接口，但创建是低频操作，N 次 IPC 可接受；
-      失败逐个计数而不是整批中断（一个名字冲突不该让其余 9 个都没创建）。 */
+      失败逐个计数而不是整批中断（一个名字冲突不该让其余 9 个都没创建）。
+
+      本地状态只在循环结束后合并一次：每个 IPC 同时会触发主进程的全量广播，
+      逐个 setProfiles 会让 50 个环境重建 50 次列表 —— 用户在批量新建期间的
+      滚动和动画会被这些重建拖住。 */
   const createProfiles = useCallback(
     async (count: number): Promise<void> => {
       const n = Math.max(1, Math.min(50, Math.floor(count)))
       let ok = 0
       let failed = 0
+      const createdList: Profile[] = []
       for (let i = 0; i < n; i++) {
         try {
-          const created = await bridge().profiles.create({})
-          setProfiles((prev) => [created, ...prev.filter((p) => p.id !== created.id)])
+          createdList.push(await bridge().profiles.create({}))
           ok += 1
         } catch {
           failed += 1
         }
+      }
+      if (createdList.length > 0) {
+        const ids = new Set(createdList.map((p) => p.id))
+        setProfiles((prev) => [...createdList, ...prev.filter((p) => !ids.has(p.id))])
       }
       if (failed === 0) toast.push(t('profiles.bulk.created', { n: ok }), 'ok')
       else toast.push(t('profiles.bulk.createdPartial', { ok, failed }), 'err')
@@ -523,9 +551,9 @@ function Shell() {
     })
 
     const themeLabel: Record<ThemeMode, string> = {
-      system: '跟随系统',
-      light: '亮色',
-      dark: '暗色'
+      system: t('theme.system'),
+      light: t('theme.light'),
+      dark: t('theme.dark')
     }
     const nextTheme: ThemeMode =
       settings.theme === 'system' ? 'light' : settings.theme === 'light' ? 'dark' : 'system'
@@ -542,28 +570,28 @@ function Shell() {
       nav('team', t('nav.members'), t('palette.teamHint'), 'users', ['team', 'member', 'chengyuan', 'tuandui']),
       {
         id: 'action.new-profile',
-        label: '新建环境',
-        hint: '创建一个新环境并打开指纹抽屉',
+        label: t('palette.newEnv'),
+        hint: t('palette.newEnvHint'),
         icon: 'plus',
-        group: '操作',
+        group: t('palette.group.action'),
         keywords: ['new', 'create', 'xinjian'],
         run: () => void createProfile()
       },
       {
         id: 'action.toggle-theme',
-        label: '切换主题',
-        hint: `当前：${themeLabel[settings.theme]}`,
+        label: t('palette.toggleTheme'),
+        hint: t('palette.themeNow', { theme: themeLabel[settings.theme] }),
         icon: settings.theme === 'dark' ? 'moon' : settings.theme === 'light' ? 'sun' : 'auto',
-        group: '操作',
+        group: t('palette.group.action'),
         keywords: ['theme', 'dark', 'light', 'zhuti'],
         run: () => void changeTheme(nextTheme)
       },
       {
         id: 'action.self-check',
-        label: '运行自检',
-        hint: '前往审计页运行指纹自检',
+        label: t('palette.selfCheck'),
+        hint: t('palette.selfCheckHint'),
         icon: 'shield',
-        group: '操作',
+        group: t('palette.group.action'),
         keywords: ['selfcheck', 'check', 'zijian'],
         run: () => navigate('audit')
       }
@@ -725,6 +753,8 @@ function Shell() {
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
         commands={commands}
+        placeholder={t('palette.placeholder')}
+        emptyText={t('palette.empty')}
       />
     </div>
   )

@@ -228,6 +228,16 @@ export const ProfileCard = memo(function ProfileCard({
           <i />
           {statusLabel}
         </span>
+        {/* 分组在卡片上必须看得见：色条只能表达「有颜色」，说不出组名。
+            没有分组就不画，避免每张卡都多一个「未分组」标签。 */}
+        {profile.group ? (
+          <span
+            className="env-group"
+            title={profile.group === '默认' ? t('profiles.group.default') : profile.group}
+          >
+            {profile.group === '默认' ? t('profiles.group.default') : profile.group}
+          </span>
+        ) : null}
         <div className="env-actions" onClick={(e) => e.stopPropagation()}>
           {running ? (
             <Button size="sm" variant="ghost" onClick={() => onOpen(profile.id)}>

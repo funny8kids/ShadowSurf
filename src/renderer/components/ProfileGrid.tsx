@@ -13,6 +13,7 @@ import { bridge, errorMessage } from '@renderer/lib/api'
 import {
   formatClock,
   formatDate,
+  formatRelative,
   isToday,
   platformLabel,
   profileNo,
@@ -54,6 +55,12 @@ function loadSort(): SortKey {
  */
 const ALL_GROUP = '全部'
 const UNGROUPED = '未分组'
+/**
+ * 主进程建环境时把 group 默认写成字面量「默认」。它是**数据**，不是文案，
+ * 英文界面下直接渲染会漏出一句中文。展示层统一过这个映射；存储值不动，
+ * 否则既有环境的分组会在升级后全部变成「未分组」。
+ */
+const DEFAULT_GROUP_STORED = '默认'
 
 /** 列表视图的状态文案键；色调仍由 `profileStatusText` 给出，不在这里另判。 */
 const PROFILE_STATUS_KEY: Record<ProfileStatus, string> = {
@@ -140,6 +147,15 @@ export function ProfileGrid({
   onBatch
 }: ProfileGridProps) {
   const { t } = useI18n()
+  /** 分组名的展示文案：存储值 '默认' → 当前语言；空串 → 未分组 */
+  const groupText = useCallback(
+    (group: string): string => {
+      if (!group) return t('profiles.ungrouped')
+      if (group === DEFAULT_GROUP_STORED) return t('profiles.group.default')
+      return group
+    },
+    [t]
+  )
   const toast = useToast()
   const [modal, setModal] = useState<{ kind: 'move' | 'proxy'; value: string } | null>(null)
   // 批量新建弹窗：count 用字符串存，允许用户清空重填（中间态）
@@ -386,12 +402,21 @@ export function ProfileGrid({
         <div>
           <h2>{t('profiles.title')}</h2>
           <p>
-            <b>{profiles.length}</b> {t('profiles.subtitle.isolated')} ·{' '}
-            <b>{stats.running}</b> {t('profiles.subtitle.running')} ·{' '}
-            {stats.errors > 0 ? (
-              <b>{t('profiles.subtitle.needsAttention', { n: stats.errors })}</b>
+            {trashView ? (
+              <>
+                <b>{trashItems.length}</b> {t('profiles.trash.subtitle')} ·{' '}
+                {t('profiles.trash.irreversible')}
+              </>
             ) : (
-              t('profiles.subtitle.allReady')
+              <>
+                <b>{profiles.length}</b> {t('profiles.subtitle.isolated')} ·{' '}
+                <b>{stats.running}</b> {t('profiles.subtitle.running')} ·{' '}
+                {stats.errors > 0 ? (
+                  <b>{t('profiles.subtitle.needsAttention', { n: stats.errors })}</b>
+                ) : (
+                  t('profiles.subtitle.allReady')
+                )}
+              </>
             )}
           </p>
         </div>
@@ -417,6 +442,9 @@ export function ProfileGrid({
         </div>
       </div>
 
+      {/* 回收站里不显示「今日任务 / 成功率」这些在跑数据：
+          它们统计的是正常环境，摆在回收站上方会让人以为回收站也有 14 个环境。 */}
+      {trashView ? null : (
       <div className="stats">
         <div className="stat">
           <div className="k">
@@ -469,6 +497,7 @@ export function ProfileGrid({
           <div className="d">{t('profiles.stat.rateDesc', { n: stats.settled })}</div>
         </div>
       </div>
+      )}
 
       <div className="toolbar">
         {trashView ? (
@@ -492,8 +521,11 @@ export function ProfileGrid({
                 type="button"
                 className={`tab${group === name ? ' on' : ''}`}
                 onClick={() => onGroup(name)}
+                title={name}
               >
-                {name === UNGROUPED ? t('profiles.ungrouped') : name}{' '}
+                <span className="tab-name">
+                  {groupText(name)}
+                </span>{' '}
                 <span className="n">{count}</span>
               </button>
             ))}
@@ -539,7 +571,7 @@ export function ProfileGrid({
           type="button"
           className="filter-btn"
           aria-pressed={trashView}
-          title={t('profiles.trash.toggle')}
+          title={trashView ? t('profiles.trash.back') : t('profiles.trash.toggle')}
           onClick={toggleTrashView}
           style={
             trashView
@@ -547,8 +579,8 @@ export function ProfileGrid({
               : undefined
           }
         >
-          <Icon name="trash" size={12} strokeWidth={2.2} />
-          {t('profiles.trash.toggle')}
+          <Icon name={trashView ? 'chevronLeft' : 'trash'} size={12} strokeWidth={2.2} />
+          {trashView ? t('profiles.trash.back') : t('profiles.trash.toggle')}
         </button>
       </div>
 
@@ -598,13 +630,19 @@ export function ProfileGrid({
               <p>{t('profiles.trash.empty')}</p>
             </div>
           ) : (
-            <table className="pl-table">
+            <table className="pl-table pl-table-trash">
+              <colgroup>
+                <col style={{ width: '42%' }} />
+                <col style={{ width: '180px' }} />
+                <col style={{ width: '190px' }} />
+                <col style={{ width: '190px' }} />
+              </colgroup>
               <thead>
                 <tr>
                   <th>{t('profiles.table.name')}</th>
                   <th>{t('profiles.table.group')}</th>
                   <th>{t('profiles.trash.deletedAt')}</th>
-                  <th>{t('common.actions')}</th>
+                  <th className="pl-cell-actions">{t('common.actions')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -616,9 +654,9 @@ export function ProfileGrid({
                         <span className="pl-title">{p.name}</span>
                       </div>
                     </td>
-                    <td>{p.group || t('profiles.ungrouped')}</td>
+                    <td className="pl-group">{groupText(p.group)}</td>
                     <td>{deletedAtText(p.deletedAt)}</td>
-                    <td>
+                    <td className="pl-cell-actions">
                       <div className="pl-actions">
                         <Button
                           size="sm"
@@ -696,6 +734,15 @@ export function ProfileGrid({
           </div>
         ) : viewMode === 'list' ? (
           <table className="pl-table">
+            <colgroup>
+              <col style={{ width: '30%' }} />
+              <col style={{ width: '104px' }} />
+              <col style={{ width: '144px' }} />
+              <col style={{ width: '148px' }} />
+              <col style={{ width: '150px' }} />
+              <col style={{ width: '116px' }} />
+              <col style={{ width: '148px' }} />
+            </colgroup>
             <thead>
               <tr>
                 <th>{t('profiles.table.name')}</th>
@@ -703,7 +750,8 @@ export function ProfileGrid({
                 <th>{t('profiles.table.group')}</th>
                 <th>{t('common.status')}</th>
                 <th>{t('profiles.table.proxy')}</th>
-                <th>{t('common.actions')}</th>
+                <th>{t('profiles.table.lastUsed')}</th>
+                <th className="pl-cell-actions">{t('common.actions')}</th>
               </tr>
             </thead>
             <tbody>
@@ -719,6 +767,16 @@ export function ProfileGrid({
                     key={p.id}
                     className={selected.has(p.id) ? 'pl-sel' : ''}
                     onClick={() => onOpen(p.id)}
+                    tabIndex={0}
+                    aria-selected={selected.has(p.id)}
+                    onKeyDown={(e) => {
+                      // 整行可聚焦：列表视图是表格，键盘用户不该只能 Tab 到
+                      // 复选框和两个按钮。Enter / Space 与卡片保持同一语义。
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        onOpen(p.id)
+                      }
+                    }}
                   >
                     <td>
                       <div className="pl-name">
@@ -738,10 +796,25 @@ export function ProfileGrid({
                         <span className="pl-title" title={p.lastError ?? undefined}>
                           {p.name}
                         </span>
+                        <button
+                          type="button"
+                          className={`pl-fav${p.favorite ? ' on' : ''}`}
+                          aria-label={
+                            p.favorite ? t('profiles.favorite.remove') : t('profiles.favorite.add')
+                          }
+                          aria-pressed={Boolean(p.favorite)}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onToggleFavorite(p.id)
+                          }}
+                          onKeyDown={(e) => e.stopPropagation()}
+                        >
+                          <span aria-hidden="true">{p.favorite ? '★' : '☆'}</span>
+                        </button>
                       </div>
                     </td>
                     <td>{platformLabel(p.platform)}</td>
-                    <td>{p.group || t('profiles.ungrouped')}</td>
+                    <td className="pl-group">{groupText(p.group)}</td>
                     <td>
                       <div className="pl-status">
                         <span className={`dot-s ${status.tone}`} />
@@ -765,7 +838,8 @@ export function ProfileGrid({
                     <td className="pl-proxy">
                       {p.proxy ? proxyAddress(p) : t('profiles.direct')}
                     </td>
-                    <td>
+                    <td className="pl-last">{formatRelative(p.lastUsedAt)}</td>
+                    <td className="pl-cell-actions">
                       <div className="pl-actions" onClick={(e) => e.stopPropagation()}>
                         <Button size="sm" variant="ghost" onClick={() => onConfig(p.id)}>
                           {t('profiles.configure')}

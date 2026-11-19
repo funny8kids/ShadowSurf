@@ -125,6 +125,13 @@ await app.evaluate(({ BrowserWindow }) => {
   if (win) win.setBounds({ x: 0, y: 0, width: 1920, height: 1080 })
 })
 await sleep(8000)
+// 只留浏览器窗口：控制台窗口叠在上面会把整屏截图搞脏
+await app.evaluate(({ BrowserWindow }) => {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.webContents.getURL().includes('role=browser')) win.hide()
+  }
+})
+await sleep(700)
 
 const png = await app.evaluate(async ({ desktopCapturer }) => {
   const sources = await desktopCapturer.getSources({

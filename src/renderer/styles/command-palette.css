@@ -1,6 +1,6 @@
 /* 命令面板样式。
    颜色、间距、时长、层级、字号一律走 tokens.css 的新刻度。
-   进场走 --ease-enter（减速）/ --dur-2（100ms），
+   进场走 --ease-enter（减速）/ --dur-3（150ms），
    退场走 --ease-exit（加速）/ --dur-3（150ms）。 */
 
 .cp-mask {
@@ -12,7 +12,7 @@
   justify-content: center;
   padding-top: 12vh;
   background: var(--scrim-ghost);
-  animation: cp-mask-in var(--dur-2) var(--ease-enter);
+  animation: cp-mask-in var(--dur-3) var(--ease-enter);
 }
 
 @keyframes cp-mask-in {
@@ -32,7 +32,11 @@
   border: 1px solid var(--line);
   border-radius: 12px;
   box-shadow: var(--sh-3);
-  animation: cp-dialog-in var(--dur-2) var(--ease-enter);
+  animation: cp-dialog-in var(--dur-3) var(--ease-enter);
+  /* 面板只在打开时挂载（CommandPalette 在 !open 时返回 null），
+     所以这层提升只发生在真正需要它的那几百毫秒里：
+     进场动画不再因为「先排版再合成」而掉帧。 */
+  will-change: transform, opacity;
 }
 
 /* 关闭时由调用方在翻转 open 前给根节点加 .cp-closing，播放 150ms 加速退场。

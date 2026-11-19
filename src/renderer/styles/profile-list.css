@@ -35,8 +35,19 @@
   display: block;
 }
 
+/* `.grid.pl-wrap` 必须比 app.css 的 `.grid` 更具体。
+ *
+ * `.grid` 在 app.css 里定义成 display:grid，而 app.css 在 main.tsx 里晚于本文件
+ * 导入 —— 只写 `.pl-wrap { display:block }` 会被 `.grid` 覆盖，表格于是变成
+ * 网格里的一列：列表视图只占左侧 1/3，长分组名被挤成一字一行。这是实际发生过的
+ * 回归（UI 审计截图 02/09）。两个类一起写，层级不依赖导入顺序。 */
+.grid.pl-wrap {
+  display: block;
+}
+
 .pl-table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   background: var(--surface);
   border: 1px solid var(--line);
@@ -52,6 +63,22 @@
   padding: var(--sp-8) var(--sp-12);
   border-bottom: 1px solid var(--line-2);
   vertical-align: middle;
+  /* 固定表格 + 单行截断：长分组名 / 长代理地址不再把行撑成三行。
+     列宽由 colgroup 指定（见 ProfileGrid），这里只负责「放不下就省略」。 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 操作列不能被省略号吃掉按钮 */
+.pl-table td.pl-cell-actions,
+.pl-table th.pl-cell-actions {
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.pl-table tbody td {
+  height: 52px;
 }
 
 .pl-table thead th {
@@ -72,6 +99,13 @@
   transition: background var(--dur-2) var(--ease-easy);
 }
 
+/* 行本身可聚焦（键盘用户不该只能停在复选框上）。用内嵌描边，
+   避免 outline 把整张表的边框撑开导致横向跳动。 */
+.pl-table tbody tr:focus-visible {
+  outline: 2px solid var(--focus-ring-color);
+  outline-offset: -2px;
+}
+
 .pl-table tbody tr:hover {
   background: var(--surface-hover);
 }
@@ -88,11 +122,13 @@
   display: flex;
   align-items: center;
   gap: var(--sp-8);
+  min-width: 0;
 }
 
 .pl-no {
   color: var(--ink-4);
   font-variant-numeric: tabular-nums;
+  flex: none;
 }
 
 .pl-title {
@@ -101,7 +137,40 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 22ch;
+  min-width: 0;
+}
+
+/* 列表里的收藏星：和卡片同一枚 ★/☆，但更小、不抢标题 */
+.pl-fav {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-2xs);
+  color: var(--ink-4);
+  font-size: 13px;
+  line-height: 1;
+  transition: color var(--dur-2) var(--ease-easy),
+    background var(--dur-2) var(--ease-easy);
+}
+
+.pl-fav:hover {
+  background: var(--wash-lift);
+  color: var(--ink-2);
+}
+
+.pl-fav.on {
+  color: var(--amber);
+}
+
+.pl-group {
+  color: var(--ink-2);
+}
+
+.pl-last {
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
 }
 
 .pl-status {
@@ -121,6 +190,7 @@
   display: flex;
   gap: var(--sp-4);
   white-space: nowrap;
+  justify-content: flex-end;
 }
 
 /* ── 读失败态（环境 / 任务共用） ──

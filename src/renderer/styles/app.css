@@ -112,6 +112,9 @@
   font-weight: 500;
   width: 100%;
   text-align: left;
+  /* 英文导航项比中文长（Command palette / Extensions）：
+     不换行，让快捷键徽章留在同一行；溢出时由 count 的 flex 收缩兜底。 */
+  white-space: nowrap;
   transition: background var(--dur-2) var(--ease-easy),
     color var(--dur-2) var(--ease-easy),
     box-shadow var(--dur-2) var(--ease-easy);
@@ -305,9 +308,11 @@
   gap: var(--sp-12);
   padding: 0 var(--sp-24);
   border-bottom: 1px solid var(--line);
-  /* 半透明顶栏叠在带光晕的画布上，毛玻璃一下，层次和侧栏区分开 */
+  /* 顶栏本身是不透明底色（--surface-2），毛玻璃效果在视觉上为零，
+     但滚动时浏览器仍要为它反复重采样下方内容 —— 实测这是长列表滚动的
+     主要开销之一。不透明背景 + backdrop-filter 是纯浪费，直接去掉；
+     需要层次感时由边框和阴影承担。 */
   background: var(--surface-2);
-  backdrop-filter: saturate(140%) blur(12px);
   position: relative;
   z-index: var(--z-sticky);
   transition: background-color var(--dur-3) var(--ease-easy);
@@ -820,10 +825,23 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  max-width: 220px;
   transition: background var(--dur-2) var(--ease-easy),
     color var(--dur-2) var(--ease-easy),
     box-shadow var(--dur-2) var(--ease-easy);
   border: 1px solid transparent;
+}
+
+/* 分组名可能很长（用户自填）：只让名字截断，计数徽章保持可见 */
+.tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.tab .n {
+  flex: none;
 }
 
 .tab:hover {
@@ -1325,6 +1343,37 @@
   flex: none;
 }
 
+/* 分组标签占用「自动左边距」：有它时操作按钮靠右但不抢位；
+   没有分组时仍由 .env-actions 的 auto 把按钮推到最右。 */
+.env-group {
+  margin-left: auto;
+  /* 允许收缩：英文状态文案（Shadow idle）比中文长，group 固定宽度会把
+     状态挤成两行，卡片底栏高度跟着变，一整排卡片就错位了。 */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 118px;
+  height: 18px;
+  padding: 0 var(--sp-6);
+  border-radius: var(--r-2xs);
+  background: var(--surface-3);
+  color: var(--ink-3);
+  font-size: 10px;
+  line-height: 18px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 状态文案永远单行：换行 = 卡片底栏变高 = 同排卡片底部不齐 */
+.env-foot .status {
+  white-space: nowrap;
+  flex: none;
+}
+
+.env-group + .env-actions {
+  margin-left: var(--sp-6);
+}
+
 .env:hover .env-actions,
 .env.sel .env-actions,
 .env:focus-within .env-actions {
@@ -1589,7 +1638,10 @@
   opacity: 0;
   pointer-events: none;
   transition: opacity var(--dur-5) var(--ease-easy);
-  backdrop-filter: blur(1.5px);
+  /* 这里原本有一层 1.5px 的 backdrop-filter。视觉上几乎看不出来，但抽屉
+     每次打开都要把整页（几十张卡片）重新采样一遍 —— UI 审计里抽屉打开
+     只有 39fps，主要开销就在这里。遮罩的 --scrim-soft 本身已经足够把
+     背景压下去，去掉模糊不改变观感，只改变帧时间。 */
 }
 
 .mask.on {
@@ -3693,6 +3745,15 @@
   grid-template-columns: 330px 1fr;
   gap: 14px;
   align-items: start;
+}
+
+/* 空态 / 读失败态不该被关在 330px 的左栏里。
+   任务页是「左列表 + 右回放」的两栏布局，但两栏都没有内容时，把空态
+   塞进左栏会在右侧留下 2/3 的空白 —— 看起来像页面没加载完。
+   :has() 只在列表里确实是空态 / 读失败时才改列数，正常任务列表不受影响。 */
+.task-wrap:has(.task-list > .empty),
+.task-wrap:has(.task-list > .load-error) {
+  grid-template-columns: 1fr;
 }
 
 .task-list {

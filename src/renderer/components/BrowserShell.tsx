@@ -28,8 +28,20 @@ import {
   tzOffsetLabel
 } from '@renderer/lib/format'
 
-/** 人轨占内容区宽度的比例，影子轨拿剩下的 43% */
-const HUMAN_SPLIT = 0.57
+/**
+ * 影子轨宽度百分比（100 - 人轨）。可拖拽调整，clamp 到 [30, 70]，
+ * 避免拖到任一侧完全消失。默认 43（与 CSS 原值一致）。
+ *
+ * 这个值会随 report() 上报给主进程，主进程按它摆网页视图 —— 占位设计与
+ * 真实页面必须用同一个比例，否则拖完手柄两边就对不上了。
+ */
+const DEFAULT_SHADOW_WIDTH = 43
+/**
+ * 单栏最小宽度（px）。**必须与主进程 windows.ts 的 MIN_PANE 一致**：
+ * 主进程摆放网页视图时按它兜底，渲染层拖动手柄时按它夹紧，两边用同一个数，
+ * 占位设计与真实页面才永远对齐。
+ */
+const MIN_PANE_PX = 320
 const PROGRESS_CELLS = 20
 const GROUP_STORAGE_PREFIX = 'ss:tab-groups:'
 const LAYOUT_STORAGE_KEY = 'ss:tab-layout'
@@ -111,7 +123,7 @@ export function BrowserShell({
   const [tabLayout, setTabLayout] = useState<'horizontal' | 'vertical'>(readLayout)
   // 影子轨宽度百分比（100 - 人轨）。可拖拽调整，clamp 到 [30, 70]，
   // 避免拖到任一侧完全消失。默认 43（与 CSS 原值一致）。
-  const [shadowWidth, setShadowWidth] = useState(43)
+  const [shadowWidth, setShadowWidth] = useState(DEFAULT_SHADOW_WIDTH)
   const [search, setSearch] = useState('')
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const stageRef = useRef<HTMLDivElement | null>(null)
@@ -156,7 +168,13 @@ export function BrowserShell({
   const shadowTabs = tabs.filter((tab) => tab.track === 'shadow')
   const active = tabs.find((t) => t.id === state?.activeTabId) ?? null
   const shadowTab = shadowTabs[0] ?? null
-  const shadowPending = !shadowTab || shadowTab.loading
+  /* 「还没有内容」也算待命：影子轨起点是 about:blank，Agent 第一次导航之前
+     那里什么都没有。骨架卡就是给这段真空准备的（见 .shadow-pane.stripe）。 */
+  const shadowPending = !shadowTab || shadowTab.loading || shadowTab.url === 'about:blank'
+  /* 人轨同理：页面还没导航（或正在加载）时，主进程会把网页视图收起来，
+     这块区域画的是占位设计，文案要跟着状态走。 */
+  const humanBlank =
+    !active || active.track !== 'human' || active.url === 'about:blank' || active.loading
 
   useEffect(() => {
     setUrlDraft(active?.url ?? '')
@@ -183,9 +201,12 @@ export function BrowserShell({
       width: Math.round(rect.width),
       height: Math.round(rect.height),
       panelWidth: Math.round(panelWidth),
-      split: HUMAN_SPLIT
+      // 分屏比例必须上报真实值：用户拖动手柄后，主进程要按同一个比例摆
+      // 网页视图，否则占位设计与真实页面会错开（页面压在错误的区域里）。
+      // 这个值是**人轨**占比，影子轨 = 1 - split。
+      split: 1 - shadowWidth / 100
     })
-  }, [])
+  }, [shadowWidth])
 
   useEffect(() => {
     const targets: HTMLDivElement[] = []
@@ -213,10 +234,10 @@ export function BrowserShell({
         width: 0,
         height: 0,
         panelWidth: 0,
-        split: HUMAN_SPLIT
+        split: 1 - shadowWidth / 100
       })
     }
-  }, [report, panelOpen, tabLayout])
+  }, [report, panelOpen, tabLayout, shadowWidth])
 
   const fp = profile?.fingerprint
   const progress = useMemo(() => {
@@ -261,16 +282,34 @@ export function BrowserShell({
 
   /* 分屏拖拽：拖动 handle 调整影子轨宽度。
      为什么用 window 级监听：拖拽期间鼠标可能移出 handle 本身，必须在 window 上
-     跟踪 move/up 才能稳定。拖拽时禁用文本选择，避免选中页面文字。 */
+     跟踪 move/up 才能稳定。拖拽时禁用文本选择，避免选中页面文字。
+
+     ── 百分比必须相对 `.stage` 算 ──
+     `.shadow-pane` 的宽度百分比是相对 `.stage`（网页区，不含 AI 面板）的，
+     而 `.bw-body` 还包含右侧面板。拿 body 算比例，拖出来的宽度和实际渲染
+     的宽度对不上 —— 拖到 70% 时真实影子轨只有 body 的 70%，不是 stage 的。
+
+     ── 下限必须和主进程一致 ──
+     主进程摆放视图时给每一栏留 MIN_PANE_PX 的最小宽度（否则窄栏没法用）。
+     渲染层如果允许拖到比它更窄，两边就会各说各话：占位设计与真实页面错开，
+     页面被压在错误的区域里（看起来就是「界面格式有问题」）。
+     这里用同一个常量做像素级 clamp，两边的结论必然一致。 */
   function onSplitMouseDown(e: ReactMouseEvent): void {
     e.preventDefault()
-    const body = bwBodyRef.current
-    if (!body) return
-    const rect = body.getBoundingClientRect()
+    const stage = stageRef.current
+    if (!stage) return
+    const rect = stage.getBoundingClientRect()
+    if (rect.width <= 0) return
+    // 两栏都不能窄于 MIN_PANE_PX；同时保留 [30,70] 的手感范围
+    const minShadowPct = Math.max(30, (MIN_PANE_PX / rect.width) * 100)
+    const maxShadowPct = Math.min(70, ((rect.width - MIN_PANE_PX) / rect.width) * 100)
+    const lo = Math.min(minShadowPct, maxShadowPct)
+    const hi = Math.max(minShadowPct, maxShadowPct)
     const onMove = (ev: MouseEvent): void => {
       const pct = ((ev.clientX - rect.left) / rect.width) * 100
-      // 影子轨 = 右侧部分，clamp 到 [30,70] 避免任一侧消失
-      setShadowWidth(Math.min(70, Math.max(30, Math.round((100 - pct) * 10) / 10)))
+      // 影子轨 = 右侧部分
+      const shadowPct = Math.min(hi, Math.max(lo, Math.round((100 - pct) * 10) / 10))
+      setShadowWidth(shadowPct)
     }
     const onUp = (): void => {
       window.removeEventListener('mousemove', onMove)
@@ -675,10 +714,10 @@ export function BrowserShell({
           <div className="stage-placeholder">
             <Icon name="globe" size={22} strokeWidth={1.5} />
             <div className="ph-title">
-              {state ? t('browser.stage.readyTitle') : t('browser.stage.waitTitle')}
+              {humanBlank ? t('browser.stage.waitTitle') : t('browser.stage.readyTitle')}
             </div>
             <div className="ph-sub">
-              {state ? t('browser.stage.readyDesc') : t('browser.stage.waitDesc')}
+              {humanBlank ? t('browser.stage.waitDesc') : t('browser.stage.readyDesc')}
             </div>
           </div>
 

@@ -154,6 +154,20 @@ export interface TabHandle {
   wc: Electron.WebContents
   view: Electron.WebContentsView
   tab: BrowserTab
+  /**
+   * 这个视图是否已经有「真实内容」。
+   *
+   * ── 为什么需要这个标记 ──
+   * WebContentsView 是独立合成层，永远盖在渲染层之上。所以视图一旦显示，
+   * 渲染层画在它下面的占位设计（人轨的「等待页面」、影子轨的「影子 Space ·
+   * 独立会话」徽标与骨架卡）就再也看不见了 —— 只剩一块没有内容的空白矩形，
+   * 看起来像布局坏了（用户实机截图里影子轨就是一整块灰）。
+   *
+   * 规则：视图只在导航到过真实地址（非 about:blank）之后才显示；
+   * 在那之前保持隐藏，让占位设计露出来。Agent 一开始动手（第一次导航）
+   * 就会把它点亮，用户看到的是真实页面而不是空洞。
+   */
+  ready: boolean
 }
 
 /**
@@ -207,11 +221,13 @@ export interface ContentInsets {
    */
   visible?: boolean
   /**
-   * 人轨 / 影子轨的宽度占比（0–1）。
+   * 人轨 / 影子轨的宽度占比（0–1，**人轨占比**）。
    *
-   * **暂未实现**：布局仍用固定的 `SHADOW_RATIO`（影子轨 43%），这个字段只被
-   * 存下来不生效。保留它是为了不切断渲染层已经在上报的契约 —— 字段丢了，
-   * 将来接入时两侧要同时改；留在结构里则只改布局一处。
+   * 渲染层可以拖动分屏 handle 调整两轨比例，所以这个值是变的；主进程必须
+   * 按它摆放网页视图，否则会出现「拖动手柄动了、真实页面边界没动」——
+   * 占位设计与实际页面错开，页面被压在错误的区域里（看起来像布局坏了）。
+   *
+   * 缺省时用固定的 `SHADOW_RATIO`（影子轨 43%），与老版本渲染层一致。
    */
   split?: number
 }
@@ -479,8 +495,20 @@ export class WindowManager {
       // 影子轨天生由 Agent 驱动，人轨要等 Agent 主动接管才算绑定
       agentBound: track === 'shadow'
     }
-    const handle: TabHandle = { windowId, tabId, profileId: profile.id, wc, view, tab }
+    const handle: TabHandle = { windowId, tabId, profileId: profile.id, wc, view, tab, ready: false }
     rec.tabs.set(tabId, handle)
+
+    /* 视图点亮时机：第一次导航到真实地址时。
+     *
+     * 在这之前视图保持隐藏 —— 见 TabHandle.ready 的说明（视图一旦显示就会盖住
+     * 渲染层的占位设计）。这里监听的是「开始导航」而不是「加载完成」：
+     * 用户应该看到页面在加载，而不是先看到一块空白再突然换掉。 */
+    wc.on('did-start-navigation', (_event, url) => {
+      if (handle.ready) return
+      if (url === 'about:blank' || url === '') return
+      handle.ready = true
+      this.layout(rec)
+    })
 
     this.wire(rec, handle)
 
@@ -586,6 +614,22 @@ export class WindowManager {
     return null
   }
 
+  /**
+   * 点亮某个标签页的网页视图。
+   *
+   * 影子轨的起点是 about:blank，光靠「导航到真实地址」这条规则可能一直不触发
+   * （Agent 先做快照、执行脚本时并没有导航）。那样用户看到的还是占位图，
+   * 会以为「影子没在工作」。所以外部（Agent / 本地 API）接管一个标签页时，
+   * 显式把它点亮。
+   */
+  revealTab(profileId: string, tabId?: string): void {
+    const handle = this.getTab(profileId, tabId)
+    if (!handle || handle.ready) return
+    handle.ready = true
+    const rec = this.windows.get(handle.windowId)
+    if (rec) this.layout(rec)
+  }
+
   listWindows(): WindowState[] {
     return [...this.windows.values()].map((rec) => this.snapshot(rec))
   }
@@ -628,9 +672,9 @@ export class WindowManager {
   /**
    * 布局算法：
    * 内容区 = 窗口内容尺寸减去渲染层上报的四边留白。
-   * 双轨时影子轨取内容区宽度的 46%，人轨吃掉剩下的（再扣 1px 分隔），
-   * 1px 缝隙直接露出窗口背景色，省掉一个只为画线的 WebContentsView 进程。
-   * 内容区窄到两栏都不可用时退回单轨，展示当前活跃页。
+   * 双轨时影子轨按渲染层上报的分屏比例摆放（没上报时默认 43%），人轨吃掉
+   * 剩下的（再扣 1px 分隔），1px 缝隙直接露出窗口背景色，省掉一个只为画线的
+   * WebContentsView 进程。内容区窄到两栏都不可用时退回单轨，展示当前活跃页。
    */
   private layout(rec: WindowRecord): void {
     if (rec.win.isDestroyed()) return
@@ -659,8 +703,16 @@ export class WindowManager {
       !!human && !!shadow && human !== shadow && area.width >= MIN_PANE * 2 + DIVIDER
 
     if (canSplit && human && shadow) {
+      /* 影子轨占比：优先用渲染层上报的分屏比例（用户拖过手柄），
+         没有上报时回落到固定值。
+         `insets.split` 是**人轨**占比，所以影子轨 = 1 - split。 */
+      const humanRatio =
+        typeof rec.insets.split === 'number' && Number.isFinite(rec.insets.split)
+          ? Math.min(0.7, Math.max(0.3, rec.insets.split))
+          : 1 - SHADOW_RATIO
+      const shadowRatio = 1 - humanRatio
       const shadowWidth = Math.min(
-        Math.max(MIN_PANE, Math.round(area.width * SHADOW_RATIO)),
+        Math.max(MIN_PANE, Math.round(area.width * shadowRatio)),
         area.width - MIN_PANE - DIVIDER
       )
       const humanWidth = area.width - shadowWidth - DIVIDER
@@ -688,6 +740,12 @@ export class WindowManager {
 
   private place(handle: TabHandle, bounds: Electron.Rectangle): void {
     if (bounds.width <= 0 || bounds.height <= 0) {
+      handle.view.setVisible(false)
+      return
+    }
+    // 还没有真实内容的视图保持隐藏：让渲染层的占位设计（等待页面 / 影子 Space）
+    // 露出来，而不是给用户一块没有内容的空白矩形。
+    if (!handle.ready) {
       handle.view.setVisible(false)
       return
     }

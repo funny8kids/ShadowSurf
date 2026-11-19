@@ -499,7 +499,7 @@ export function DataPanel({ profiles }: PanelProps) {
             {tab === 'downloads'
               ? t('data.scope.global')
               : activeProfile
-                ? activeProfile.name
+                ? t('data.scope.isolated')
                 : t('data.scope.noProfile')}
           </span>
           {tab === 'downloads' ? null : (

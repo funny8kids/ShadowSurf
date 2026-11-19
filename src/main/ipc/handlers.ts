@@ -357,6 +357,10 @@ export function registerHandlers(ctx: HandlerContext): void {
     const tab = ctx.wm.getTab(req.profileId, req.tabId)
     if (!tab) throw new Error('没有找到可操作的标签页，请先打开该环境')
 
+    // 点亮网页视图：影子轨起点是 about:blank，Agent 先做快照 / 执行脚本时未必
+    // 发生导航，不点亮的话用户看到的还是占位图，会以为影子没在工作。
+    ctx.wm.revealTab(req.profileId, req.tabId)
+
     const controller = new AbortController()
     const run: ActiveRun = { controller }
     // 锁必须在这里同步落下。原来写在 await cdp.attach() 之后，

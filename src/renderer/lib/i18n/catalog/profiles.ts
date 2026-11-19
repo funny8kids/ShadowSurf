@@ -20,7 +20,10 @@ export const zh: Dict = {
   'profiles.view.list': '列表视图',
 
   'profiles.trash.toggle': '回收站',
+  'profiles.trash.back': '返回环境',
   'profiles.trash.title': '回收站',
+  'profiles.trash.subtitle': '个已删除环境',
+  'profiles.trash.irreversible': '恢复不丢登录态，彻底删除会清空分区',
   'profiles.trash.empty': '回收站是空的。删除的环境会先移到这里，可以随时恢复。',
   'profiles.trash.deletedAt': '删除时间',
   'profiles.trash.restore': '恢复',
@@ -48,6 +51,7 @@ export const zh: Dict = {
   'profiles.deselectAll': '取消全选',
   'profiles.new': '新建',
   'profiles.ungrouped': '未分组',
+  'profiles.group.default': '默认',
 
   'profiles.bridgeWarn':
     '主进程尚未就绪（window.ss 未注入），当前列表为空。启动 Electron 后会自动拉取环境。',
@@ -71,6 +75,7 @@ export const zh: Dict = {
   'profiles.table.platform': '平台',
   'profiles.table.group': '分组',
   'profiles.table.proxy': '代理',
+  'profiles.table.lastUsed': '最近使用',
 
   'profiles.select': '选择环境',
   'profiles.deselect': '取消选择',
@@ -148,7 +153,10 @@ export const en: Dict = {
   'profiles.view.list': 'List view',
 
   'profiles.trash.toggle': 'Trash',
+  'profiles.trash.back': 'Back to profiles',
   'profiles.trash.title': 'Trash',
+  'profiles.trash.subtitle': 'deleted profiles',
+  'profiles.trash.irreversible': 'Restore keeps cookies; permanent delete wipes the partition',
   'profiles.trash.empty':
     'Trash is empty. Deleted profiles land here first and can be restored anytime.',
   'profiles.trash.deletedAt': 'Deleted at',
@@ -177,6 +185,7 @@ export const en: Dict = {
   'profiles.deselectAll': 'Deselect all',
   'profiles.new': 'New',
   'profiles.ungrouped': 'Ungrouped',
+  'profiles.group.default': 'Default',
 
   'profiles.bridgeWarn':
     'Main process is not ready (window.ss not injected), so the list is empty. Profiles load automatically once Electron starts.',
@@ -201,6 +210,7 @@ export const en: Dict = {
   'profiles.table.platform': 'Platform',
   'profiles.table.group': 'Group',
   'profiles.table.proxy': 'Proxy',
+  'profiles.table.lastUsed': 'Last used',
 
   'profiles.select': 'Select profile',
   'profiles.deselect': 'Deselect',
