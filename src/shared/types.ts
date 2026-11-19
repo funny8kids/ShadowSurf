@@ -610,7 +610,13 @@ export interface FingerprintTemplate {
   description?: string
   os: OSKind
   fingerprint: FingerprintConfig
-  builtin: boolean
+  /**
+   * 旧版本的「内置模板」标记。
+   *
+   * 模板库现在只有用户自建模板，不再生成预置项；这个字段仅用于读取老盘时
+   * 识别并清理遗留记录，新写入的模板不会再带它。
+   */
+  builtin?: boolean
   createdAt: number
 }
 

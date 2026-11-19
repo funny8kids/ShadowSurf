@@ -107,10 +107,10 @@ export const zh: Dict = {
   'template.title': '指纹模板与迁移',
   'template.subtitle':
     '把一套指纹参数存成模板反复使用，或打包成迁移包搬到另一台机器。应用模板等于克隆同一身份，需要新身份请回环境页重掷指纹。',
-  'template.counts': '内置 {builtin} · 自定义 {custom}',
+  'template.count': '{n} 个模板',
 
   'template.library': '模板库',
-  'template.library.hint': '内置模板只读，自定义模板可随时删除',
+  'template.library.hint': '模板来自你保存的真实环境，可随时删除或重建',
   'template.loading': '正在读取模板…',
   'template.error.title': '读不到模板列表，这不等于「没有任何模板」',
   'template.error.reason': '上一次读取失败：{message}',
@@ -119,13 +119,11 @@ export const zh: Dict = {
   'template.error.noBridge': '主进程尚未就绪，无法读取模板',
   'template.empty':
     '还没有任何模板。先在下方向「从环境保存为模板」里挑一个环境，它的 UA、时区、分辨率、字体清单会被整份存下来。',
-  'template.builtin': '内置',
   'template.selectProfile': '选择环境…',
   'template.apply.aria': '把 {name} 应用到环境',
   'template.applying': '应用中',
   'template.apply': '应用',
   'template.delete.title': '删除模板',
-  'template.delete.builtinDisabled': '内置模板不可删除',
   'template.delete.aria': '删除模板 {name}',
   'template.delete.confirm':
     '确定删除模板「{name}」？已经应用到环境的指纹不会回滚，只是这份快照以后不能再用了。',
@@ -443,10 +441,10 @@ export const en: Dict = {
   'template.title': 'Fingerprint templates & migration',
   'template.subtitle':
     'Save a set of fingerprint settings as a reusable template, or pack it into a migration package for another machine. Applying a template clones the same identity; to get a new identity, reroll the fingerprint on the Profiles page.',
-  'template.counts': 'Built-in {builtin} · Custom {custom}',
+  'template.count': '{n} templates',
 
   'template.library': 'Template library',
-  'template.library.hint': 'Built-in templates are read-only; custom templates can be deleted anytime',
+  'template.library.hint': 'Templates come from your own saved profiles — delete or rebuild them anytime',
   'template.loading': 'Loading templates…',
   'template.error.title': 'Could not read the template list — this does not mean there are no templates',
   'template.error.reason': 'Last read failed: {message}',
@@ -455,13 +453,11 @@ export const en: Dict = {
   'template.error.noBridge': 'The main process is not ready; cannot read templates',
   'template.empty':
     'No templates yet. Pick a profile under "Save from profile" below — its UA, timezone, resolution and font list will be saved in full.',
-  'template.builtin': 'Built-in',
   'template.selectProfile': 'Select a profile…',
   'template.apply.aria': 'Apply {name} to a profile',
   'template.applying': 'Applying',
   'template.apply': 'Apply',
   'template.delete.title': 'Delete template',
-  'template.delete.builtinDisabled': 'Built-in templates cannot be deleted',
   'template.delete.aria': 'Delete template {name}',
   'template.delete.confirm':
     'Delete template "{name}"? Fingerprints already applied to profiles will not roll back; this snapshot simply cannot be reused.',

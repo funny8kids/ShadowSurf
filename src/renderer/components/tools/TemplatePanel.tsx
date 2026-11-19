@@ -178,16 +178,9 @@ export function TemplatePanel({ profiles }: PanelProps) {
   }, [profiles])
 
   const sorted = useMemo(
-    () =>
-      [...templates].sort((a, b) => {
-        // 内置模板永远排前面：它们是「基准」，自定义模板是自己的实验记录
-        if (a.builtin !== b.builtin) return a.builtin ? -1 : 1
-        return b.createdAt - a.createdAt
-      }),
+    () => [...templates].sort((a, b) => b.createdAt - a.createdAt),
     [templates]
   )
-
-  const customCount = templates.filter((t) => !t.builtin).length
 
   async function refreshProfiles(): Promise<void> {
     if (!hasBridge()) return
@@ -377,10 +370,7 @@ export function TemplatePanel({ profiles }: PanelProps) {
           <p>{t('template.subtitle')}</p>
         </div>
         <div className="tpl-count">
-          {t('template.counts', {
-            builtin: templates.length - customCount,
-            custom: customCount
-          })}
+          {t('template.count', { n: templates.length })}
         </div>
       </header>
 
@@ -416,9 +406,6 @@ export function TemplatePanel({ profiles }: PanelProps) {
                   <article className="tpl-card" key={template.id}>
                     <div className="tpl-card-top">
                       <span className="tpl-os">{OS_LABEL[template.os]}</span>
-                      {template.builtin ? (
-                        <span className="tpl-badge">{t('template.builtin')}</span>
-                      ) : null}
                     </div>
 
                     <h4 className="tpl-name">{template.name}</h4>
@@ -462,13 +449,9 @@ export function TemplatePanel({ profiles }: PanelProps) {
                       <button
                         type="button"
                         className="tpl-del"
-                        title={
-                          template.builtin
-                            ? t('template.delete.builtinDisabled')
-                            : t('template.delete.title')
-                        }
+                        title={t('template.delete.title')}
                         aria-label={t('template.delete.aria', { name: template.name })}
-                        disabled={template.builtin || busy === `remove:${template.id}`}
+                        disabled={busy === `remove:${template.id}`}
                         onClick={() => setPendingDelete(template)}
                       >
                         <Icon name="trash" size={13} />

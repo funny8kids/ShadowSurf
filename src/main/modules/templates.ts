@@ -2,17 +2,23 @@
  * 指纹模板与迁移包模块。
  *
  * 职责：
- * - 首次启动时用内置平台预设生成三张只读模板（Windows / macOS / Linux）
- * - 把某个环境的整套指纹参数存成可复用模板
+ * - 把某个环境的整套指纹参数存成可复用模板（用户自建，不预置任何模板）
  * - 模板应用到其他环境（只换指纹，保留环境名、代理、标签）
  * - 迁移包导出/导入（跨机器搬环境，不含任何明文密钥）
+ *
+ * ── 为什么不再预置「内置模板」──
+ * 商业指纹浏览器的模板库是用户从真实环境保存出来的配置快照，不是写死的三张
+ * 平台模板。预置模板的问题不只是「和竞品不一样」：它把「某个平台的指纹应该
+ * 长什么样」变成了产品断言，而真实浏览器的指纹随版本、设备不断变化——写死的
+ * 基准很快就会过时，用户还以为那是权威配置。现在模板库从空开始，每一份都来自
+ * 用户自己的环境，可删、可改、可解释。
  *
  * 归属：template-agent
  */
 
 import { CH } from '@shared/ipc'
 import type { MigrationAdoptReport, MigrationImportResult } from '@shared/ipc'
-import { OS_TEMPLATES, applySurfaceDefaults, resolveFingerprint } from '@shared/presets'
+import { applySurfaceDefaults } from '@shared/presets'
 import type {
   BundleSealHeader,
   FingerprintConfig,
@@ -38,61 +44,30 @@ const PROXY_PROTOCOLS: readonly ProxyProtocol[] = ['http', 'https', 'socks5', 's
 const CANVAS_MODES = ['noise', 'off', 'block'] as const
 const WEBRTC_MODES = ['proxy', 'disabled', 'real'] as const
 
-/* ────────────────────────────── 内置模板 ────────────────────────────── */
+/* ────────────────────────────── 模板读取 ────────────────────────────── */
 
 /**
- * 内置模板的说明文案按平台写死，而不是从预设里读：
- * 预设文件只描述「参数是什么」，用户看到的「为什么长这样」属于产品文案，
- * 放在这里改动不会牵连指纹引擎。
+ * 模板列表：只返回用户保存的模板，不生成任何预置项。
+ *
+ * 老版本曾在首次调用时写入三张 builtin 模板；这里做一次性清理，
+ * 把那些「产品断言」从用户数据里删掉，避免升级后还留着一份谁都删不掉的旧基准。
+ * 清理只在存在 builtin 标记时写盘，正常情况零写操作。
  */
-const BUILTIN_DESC: Record<OSKind, string> = {
-  windows: '内置预设：Windows 11 桌面，UA、字体白名单与 WebGL 渲染器对齐真实机器',
-  macos: '内置预设：macOS Sequoia，含 Apple Metal 渲染器与 Retina 分辨率',
-  linux: '内置预设：Ubuntu GNOME，集成显卡特征，默认不开启 WebGPU'
-}
-
-/**
- * 已确认写过内置模板就不再重复检查。
- * 模板列表在正常使用中永远非空（内置模板不可删除），但首次调用可能并发进来两次，
- * 用一个进程内标记挡住第二次，避免同一套内置模板被写两遍。
- */
-let builtinsReady = false
-
-function buildBuiltin(os: OSKind, createdAt: number): FingerprintTemplate {
-  const preset = OS_TEMPLATES[os]
-  // 固定 seed 而不是随机：内置模板必须每次重建都得到同一套参数，
-  // 否则用户清空数据后，同一张卡片上的分辨率、核数会莫名其妙地变。
-  const fingerprint = resolveFingerprint(os, `builtin:${os}`, {
-    // resolveFingerprint 会用 seed 给 Windows 随机挑分辨率和核数，
-    // 内置模板要的是「预设里写的那一套」，所以显式覆盖回去。
-    screen: { ...preset.screen },
-    hardware: { ...preset.hardware }
-  })
-
-  return {
-    id: CollectionStore.newId('tpl'),
-    name: preset.label,
-    description: BUILTIN_DESC[os],
-    os,
-    fingerprint,
-    builtin: true,
-    createdAt
-  }
-}
-
-function ensureBuiltinTemplates(ctx: ModuleContext): FingerprintTemplate[] {
+function listTemplates(ctx: ModuleContext): FingerprintTemplate[] {
   const store = ctx.stores.templates
-  const existing = store.list()
-  if (builtinsReady || existing.length > 0) {
-    builtinsReady = true
-    return existing
+  const all = store.list()
+  const legacy = all.filter((t) => t.builtin === true)
+  if (legacy.length > 0) {
+    for (const t of legacy) store.remove(t.id)
+    appendAudit(
+      ctx.stores,
+      '模板·清理内置',
+      String(legacy.length) + ' 张',
+      '移除旧版本预置的平台模板；模板库现在只保留用户自建模板'
+    )
+    return store.list()
   }
-
-  const now = Date.now()
-  // 三个平台的 createdAt 依次递增，列表按时间排序时顺序稳定
-  OS_KINDS.map((os, index) => buildBuiltin(os, now + index)).forEach((tpl) => store.add(tpl))
-  builtinsReady = true
-  return store.list()
+  return all
 }
 
 /* ────────────────────────────── 模板读写 ────────────────────────────── */
@@ -116,7 +91,6 @@ function saveTemplate(
     os: profile.fingerprint.os,
     // 深拷贝：模板是快照，之后改环境的指纹不该让模板跟着漂移
     fingerprint: structuredClone(profile.fingerprint),
-    builtin: false,
     createdAt: Date.now()
   }
   return ctx.stores.templates.add(template)
@@ -149,9 +123,6 @@ function applyTemplate(ctx: ModuleContext, templateId: string, profileId: string
 function removeTemplate(ctx: ModuleContext, id: string): void {
   const template = ctx.stores.templates.get(id)
   if (template === null) throw new Error(`模板不存在：${id}`)
-  if (template.builtin) {
-    throw new Error('内置模板不可删除：它是按平台生成指纹的基准，只能删除自己保存的模板')
-  }
   ctx.stores.templates.remove(id)
 }
 
@@ -840,7 +811,7 @@ function asIdList(value: unknown): string[] {
 /* ────────────────────────────── 注册 ────────────────────────────── */
 
 export function registerTemplateModule(ctx: ModuleContext): void {
-  ctx.handle(CH.templates.list, () => ensureBuiltinTemplates(ctx))
+  ctx.handle(CH.templates.list, () => listTemplates(ctx))
 
   ctx.handle(CH.templates.save, (_event, fromProfileId, name, description) =>
     saveTemplate(ctx, asId(fromProfileId, 'fromProfileId'), asId(name, 'name'), asText(description))
