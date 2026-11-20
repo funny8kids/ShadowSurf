@@ -37,7 +37,7 @@ import { join } from 'node:path'
 import { app, clipboard, ipcMain } from 'electron'
 import type { IpcMainInvokeEvent } from 'electron'
 import { CH } from '@shared/ipc'
-import type { ConsistencyReport, LocalApiState, Profile, ProxyRecord } from '@shared/types'
+import type { ConsistencyReport, CreateProfileInput, LocalApiState, Profile, ProxyRecord } from '@shared/types'
 import type { Action, ActionType } from '@shared/protocol'
 import { describeAction } from '@shared/protocol'
 import { dataDir, getStores } from '@main/store'
@@ -49,7 +49,7 @@ import { captureSnapshot } from '@main/agent/snapshot'
 import { ApprovalRequiredError, AuditUnavailableError, MaskIncompleteError, executeAction } from '@main/agent/actions'
 import { assessRisk } from '@main/agent/risk'
 import { requestConsent } from '@main/agent/consent'
-import { auditGate, verifyAudit } from '@main/modules/audit'
+import { appendAudit, auditGate, verifyAudit } from '@main/modules/audit'
 import type { ModuleContext } from './context'
 
 /* ────────────────────────────── 常量 ────────────────────────────── */
@@ -651,11 +651,48 @@ async function handleProfiles(
   res: ServerResponse
 ): Promise<void> {
   if (seg.length === 1) {
-    if (method !== 'GET') {
-      throw new ApiError(404, 'E_NOT_FOUND', `没有这个端点：${method} /profiles`)
+    if (method === 'GET') {
+      sendJson(res, 200, { ok: true, data: getStores().profiles.list() })
+      return
     }
-    sendJson(res, 200, { ok: true, data: getStores().profiles.list() })
-    return
+    if (method === 'POST') {
+      // 创建环境。字段校验复用 ProfileStore.create，不在这里另写一套。
+      const body = (await readJsonBody(req)) as Record<string, unknown> | null
+      if (body === null || typeof body !== 'object') {
+        throw new ApiError(400, 'E_BAD_INPUT', '请求体必须是 JSON 对象')
+      }
+      const created = getStores().profiles.create(body as CreateProfileInput)
+      appendAudit(getStores(), '环境·API 创建', created.name, '', 'api')
+      sendJson(res, 201, { ok: true, data: created })
+      return
+    }
+    throw new ApiError(404, 'E_NOT_FOUND', `没有这个端点：${method} /profiles`)
+  }
+
+  if (seg.length === 2) {
+    const profileId = decodeSegment(seg[1])
+    requireProfile(profileId)
+    if (method === 'PATCH') {
+      const body = (await readJsonBody(req)) as Record<string, unknown> | null
+      if (body === null || typeof body !== 'object') {
+        throw new ApiError(400, 'E_BAD_INPUT', '请求体必须是 JSON 对象')
+      }
+      // 复用 ProfileStore.update 的白名单与校验，不接受任意字段写入。
+      const updated = getStores().profiles.update(profileId, body as Partial<Profile>)
+      appendAudit(getStores(), '环境·API 修改', updated.name, '', 'api', profileId)
+      sendJson(res, 200, { ok: true, data: updated })
+      return
+    }
+    if (method === 'DELETE') {
+      const profile = requireProfile(profileId)
+      // 软删除：与界面 remove 同一条语义，分区保留到回收站彻底删除
+      await context?.runtime.stop(profileId)
+      getStores().profiles.softRemove(profileId)
+      appendAudit(getStores(), '环境·API 移入回收站', profile.name, '', 'api', profileId)
+      sendJson(res, 200, { ok: true, data: { id: profileId, deleted: true } })
+      return
+    }
+    throw new ApiError(404, 'E_NOT_FOUND', `没有这个端点：${method} /${seg.join('/')}`)
   }
 
   if (seg.length !== 3) {

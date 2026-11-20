@@ -31,6 +31,8 @@ export interface ChainEntry {
   action: string
   target?: string
   detail?: string
+  /** 关联环境（新增字段；老记录没有，按空串参与哈希） */
+  profileId?: string
   prev: string
   hash: string
 }
@@ -73,10 +75,13 @@ export function digest(
   actor: string,
   action: string,
   target: string,
-  detail: string
+  detail: string,
+  profileId = ''
 ): string {
   return createHash('sha256')
-    .update([prev, seq, at, actor, action, target, detail].join('|'))
+    // profileId 进哈希：否则「谁改了哪个环境」这条事实可以被抹掉而不破坏链。
+    // 老记录没有这个字段，按空串参与，公式与写入时一致。
+    .update([prev, seq, at, actor, action, target, detail, profileId].join('|'))
     .digest('hex')
 }
 
@@ -171,7 +176,7 @@ export function verifyChain(entries: ChainEntry[], head: ChainHead | null): Chai
       }
     }
 
-    const recomputed = digest(e.prev, e.seq, e.at, e.actor, e.action, e.target ?? '', e.detail ?? '')
+    const recomputed = digest(e.prev, e.seq, e.at, e.actor, e.action, e.target ?? '', e.detail ?? '', e.profileId ?? '')
     if (recomputed !== e.hash) {
       return {
         consistent: false,

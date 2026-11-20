@@ -163,8 +163,11 @@ function exportBundle(ctx: ModuleContext, profileIds: string[], rawPassword: unk
           protocol: proxy.type,
           host: proxy.host,
           port: proxy.port,
-          username: proxy.username,
-          // 迁移包可能在聊天工具里传来传去，密码一律留空，由导入方自行补齐
+          // 用户名与密码一样从导出包里去掉：包会在聊天工具里传来传去，
+          // 这两项一起构成目标站的登录凭据。导入方按 host:port 自行补齐。
+          // 去重键仍用明文 username 计算（只在内存里，不进包），
+          // 这样同一地址不同账号的代理不会被错误合并。
+          username: '',
           password: ''
         })
       }

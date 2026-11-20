@@ -176,7 +176,8 @@ export function appendAudit(
   action: string,
   target?: string,
   detail?: string,
-  actor = 'local'
+  actor = 'local',
+  profileId?: string
 ): AuditEntry {
   // 链尾从内存缓存取，不再每条都 stores.audit.list()（读全量 3MB）。
   // 首次调用才读一次盘，之后跟着本进程的追加走；flush 失败时缓存失效重读。
@@ -210,10 +211,11 @@ export function appendAudit(
     at,
     actor,
     action,
+    ...(profileId ? { profileId } : {}),
     target: safeTarget,
     detail: safeDetail,
     prev,
-    hash: digest(prev, seq, at, actor, action, safeTarget ?? '', safeDetail ?? '')
+    hash: digest(prev, seq, at, actor, action, safeTarget ?? '', safeDetail ?? '', profileId ?? '')
   }
   // 批量缓冲：链尾先更新（同一批里后一条的 prev 指向前一条），落盘由
   // flushAudit 合并成一次（见文件顶部「审计：批量落盘」）。
