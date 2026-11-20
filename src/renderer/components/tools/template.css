@@ -651,3 +651,20 @@
     padding: 18px 16px 26px;
   }
 }
+
+/* 导入预览：只显示明文外壳信息，不解密、不写盘 */
+.tpl-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-8);
+  margin: var(--sp-8) 0;
+  padding: var(--sp-10) var(--sp-12);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  font-size: var(--fs-12);
+  color: var(--ink-2);
+}
+.tpl-preview b { color: var(--ink); }
+.tpl-preview em { color: var(--amber); font-style: normal; }

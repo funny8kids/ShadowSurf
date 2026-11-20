@@ -154,6 +154,11 @@ export function TemplatePanel({ profiles }: PanelProps) {
 
   const [exportIds, setExportIds] = useState<string[]>([])
   const [importText, setImportText] = useState('')
+  const [importPreview, setImportPreview] = useState<{
+    version: number
+    entries: number
+    proxies: number
+  } | null>(null)
 
   // 口令。导出要两次（打错一个字符 = 这个包永远打不开，且不可逆 ——
   // 包里只有密文，没有任何地方能找回口令）。导入只要一次。
@@ -288,6 +293,30 @@ export function TemplatePanel({ profiles }: PanelProps) {
    * 必须的：v1 包不含身份，静默导入会让用户以为搬过来的还是同一台设备，
    * 而站点看到的是一个全新指纹 —— 这类错误事后无法从界面上看出来。
    */
+  /**
+   * 导入前预览（dry-run）：只解析 JSON 的**明文外壳**，不解密、不写盘。
+   *
+   * 为什么要它：导入按钮会把整包写进库，用户点下去之前唯一能看的是一大段
+   * JSON 文本。商业产品的导入向导都会先说「这会导入 N 个环境，其中 M 个会
+   * 丢身份」。这里用同一份包给出这些数字，措辞不替用户做决定。
+   */
+  function previewImport(): void {
+    const raw = importText.trim()
+    if (!raw) {
+      toast.push(t('template.err.needPayload'), 'info')
+      return
+    }
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>
+      const version = typeof parsed.version === 'number' ? parsed.version : 1
+      const entries = Array.isArray(parsed.entries) ? parsed.entries.length : 0
+      const proxies = Array.isArray(parsed.proxies) ? parsed.proxies.length : 0
+      setImportPreview({ version, entries, proxies })
+    } catch {
+      toast.push(t('template.preview.invalid'), 'err')
+    }
+  }
+
   async function runImport(text: string, accept = false): Promise<void> {
     const payload = text.trim()
     if (!payload) {
@@ -631,10 +660,33 @@ export function TemplatePanel({ profiles }: PanelProps) {
                 value={importText}
                 spellCheck={false}
                 placeholder={t('template.import.jsonPlaceholder')}
-                onChange={(e) => setImportText(e.target.value)}
+                onChange={(e) => {
+                  setImportText(e.target.value)
+                  setImportPreview(null)
+                }}
               />
 
+              {importPreview !== null ? (
+                <div className="tpl-preview" role="status">
+                  <b>{t('template.preview.title')}</b>
+                  <span>{t('template.preview.version', { n: importPreview.version })}</span>
+                  <span>{t('template.preview.entries', { n: importPreview.entries })}</span>
+                  <span>{t('template.preview.proxies', { n: importPreview.proxies })}</span>
+                  {importPreview.version === 1 ? (
+                    <em>{t('template.preview.legacy')}</em>
+                  ) : null}
+                </div>
+              ) : null}
+
               <div className="tpl-actions">
+                <Button
+                  variant="ghost"
+                  icon="eye"
+                  disabled={busy === 'import'}
+                  onClick={previewImport}
+                >
+                  {t('template.preview.button')}
+                </Button>
                 <Button
                   variant="primary"
                   icon="swap"

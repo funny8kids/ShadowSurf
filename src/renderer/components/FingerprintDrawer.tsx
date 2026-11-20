@@ -11,6 +11,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type {
   ExtensionRecord,
   FingerprintConfig,
+  FingerprintPermissionState,
   InjectionIssue,
   Profile,
   ProxyGroup,
@@ -984,8 +985,7 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                   </select>
                 </Field>
 
-                <Field
-                  label={t('fp.field.webrtc')}
+                <Field label={t('fp.field.webrtc')}
                   hint={
                     fp.webrtc === 'disabled'
                       ? t('fp.webrtc.hint.disabled')
@@ -1030,6 +1030,200 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                     readOnly
                   />
                 </Field>
+
+                {/*
+                  ── 高级面：以前只存了值、UI 改不了 ──
+                  商业指纹浏览器把这些逐项暴露；这里补上 9 个面的可编辑控件。
+                  全部写在 fingerprint 上、走 patchFp，保存时与其他字段一起校验。
+                */}
+                <div className="fs-subhead">{t('fp.section.advanced')}</div>
+
+                <Field label={t('fp.field.maxTouchPoints')}>
+                  <input
+                    className="val"
+                    type="number"
+                    min={0}
+                    max={10}
+                    value={fp.maxTouchPoints ?? 0}
+                    onChange={(e) =>
+                      patchFp({ maxTouchPoints: Math.max(0, Number(e.target.value) || 0) })
+                    }
+                  />
+                </Field>
+
+                <Field label={t('fp.field.connection')}>
+                  <div className="fp-inline-3">
+                    <select
+                      className="val"
+                      value={fp.connection?.effectiveType ?? '4g'}
+                      onChange={(e) =>
+                        patchFp({
+                          connection: {
+                            effectiveType: e.target.value as NonNullable<FingerprintConfig['connection']>['effectiveType'],
+                            downlink: fp.connection?.downlink ?? 10,
+                            rtt: fp.connection?.rtt ?? 50,
+                            saveData: fp.connection?.saveData ?? false
+                          }
+                        })
+                      }
+                    >
+                      {(['4g', '3g', '2g', 'slow-2g'] as const).map((v) => (
+                        <option value={v} key={v}>{v}</option>
+                      ))}
+                    </select>
+                    <input
+                      className="val"
+                      type="number"
+                      min={0}
+                      step={0.1}
+                      title={t('fp.field.downlink')}
+                      value={fp.connection?.downlink ?? 10}
+                      onChange={(e) =>
+                        patchFp({
+                          connection: {
+                            effectiveType: fp.connection?.effectiveType ?? '4g',
+                            downlink: Number(e.target.value) || 0,
+                            rtt: fp.connection?.rtt ?? 50,
+                            saveData: fp.connection?.saveData ?? false
+                          }
+                        })
+                      }
+                    />
+                    <input
+                      className="val"
+                      type="number"
+                      min={0}
+                      title={t('fp.field.rtt')}
+                      value={fp.connection?.rtt ?? 50}
+                      onChange={(e) =>
+                        patchFp({
+                          connection: {
+                            effectiveType: fp.connection?.effectiveType ?? '4g',
+                            downlink: fp.connection?.downlink ?? 10,
+                            rtt: Number(e.target.value) || 0,
+                            saveData: fp.connection?.saveData ?? false
+                          }
+                        })
+                      }
+                    />
+                  </div>
+                </Field>
+
+                <Field label={t('fp.field.battery')}>
+                  <div className="fp-inline-2">
+                    <input
+                      className="val"
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={1}
+                      title={t('fp.field.batteryLevel')}
+                      value={Math.round((fp.battery?.level ?? 1) * 100)}
+                      onChange={(e) =>
+                        patchFp({
+                          battery: {
+                            charging: fp.battery?.charging ?? true,
+                            level: Math.min(1, Math.max(0, (Number(e.target.value) || 0) / 100)),
+                            chargingTime: fp.battery?.chargingTime ?? 0,
+                            dischargingTime: fp.battery?.dischargingTime ?? Infinity
+                          }
+                        })
+                      }
+                    />
+                    <Toggle
+                      checked={fp.battery?.charging ?? true}
+                      onChange={(v) =>
+                        patchFp({
+                          battery: {
+                            charging: v,
+                            level: fp.battery?.level ?? 1,
+                            chargingTime: fp.battery?.chargingTime ?? 0,
+                            dischargingTime: fp.battery?.dischargingTime ?? Infinity
+                          }
+                        })
+                      }
+                      label={t('fp.field.batteryCharging')}
+                    />
+                  </div>
+                </Field>
+
+                <Field label={t('fp.field.mediaDevices')}>
+                  <div className="fp-inline-3">
+                    {([
+                      ['audioInput', t('fp.field.audioInput')],
+                      ['audioOutput', t('fp.field.audioOutput')],
+                      ['videoInput', t('fp.field.videoInput')]
+                    ] as const).map(([kind, label]) => (
+                      <input
+                        key={kind}
+                        className="val"
+                        type="number"
+                        min={0}
+                        max={8}
+                        title={label}
+                        value={fp.mediaDevices?.[kind] ?? 0}
+                        onChange={(e) =>
+                          patchFp({
+                            mediaDevices: {
+                              audioInput: fp.mediaDevices?.audioInput ?? 0,
+                              audioOutput: fp.mediaDevices?.audioOutput ?? 0,
+                              videoInput: fp.mediaDevices?.videoInput ?? 0,
+                              [kind]: Math.max(0, Number(e.target.value) || 0)
+                            }
+                          })
+                        }
+                      />
+                    ))}
+                  </div>
+                </Field>
+
+                <Field label={t('fp.field.permissions')} hint={t('fp.permissionsHint')}>
+                  <div className="fp-inline-2">
+                    {(['geolocation', 'camera', 'microphone', 'notifications'] as const).map((k) => (
+                      <select
+                        key={k}
+                        className="val"
+                        value={fp.permissions?.[k] ?? 'prompt'}
+                        title={k}
+                        onChange={(e) =>
+                          patchFp({
+                            permissions: {
+                              ...(fp.permissions ?? {}),
+                              [k]: e.target.value as FingerprintPermissionState
+                            }
+                          })
+                        }
+                      >
+                        <option value="granted">granted</option>
+                        <option value="prompt">prompt</option>
+                        <option value="denied">denied</option>
+                      </select>
+                    ))}
+                  </div>
+                </Field>
+
+                <Field label={t('fp.field.plugins')}>
+                  <select
+                    className="val"
+                    value={fp.plugins ?? 'chrome-pdf'}
+                    onChange={(e) => patchFp({ plugins: e.target.value as FingerprintConfig['plugins'] })}
+                  >
+                    <option value="chrome-pdf">{t('fp.plugins.pdf')}</option>
+                    <option value="none">{t('fp.plugins.none')}</option>
+                  </select>
+                </Field>
+
+                <div className="fp-inline-2">
+                  <Toggle checked={fp.mediaCapabilities ?? true} onChange={(v) => patchFp({ mediaCapabilities: v })} label={t('fp.field.mediaCapabilities')} />
+                  <Toggle checked={fp.storageEstimate ?? true} onChange={(v) => patchFp({ storageEstimate: v })} label={t('fp.field.storageEstimate')} />
+                </div>
+                <div className="fp-inline-2">
+                  <Toggle checked={fp.webgpu ?? true} onChange={(v) => patchFp({ webgpu: v })} label={t('fp.field.webgpu')} />
+                  <Toggle checked={fp.clientRectsNoise ?? true} onChange={(v) => patchFp({ clientRectsNoise: v })} label={t('fp.field.clientRectsNoise')} />
+                </div>
+                <div className="fp-inline-2">
+                  <Toggle checked={fp.uaHighEntropy ?? true} onChange={(v) => patchFp({ uaHighEntropy: v })} label={t('fp.field.uaHighEntropy')} />
+                </div>
               </div>
 
               <div className={`consist${scoreTone ? ` ${scoreTone}` : ''}`}>

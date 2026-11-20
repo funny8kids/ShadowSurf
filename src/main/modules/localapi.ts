@@ -592,6 +592,37 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       }
     }
 
+    /* ── 整机备份 / 还原 ──
+     *
+     * 迁移包只带环境身份，不带 Cookie / 脚本 / 团队 / 审计。这里的备份是
+     * **整个数据目录**的 tar 快照，由 safeStorage 的密钥派生一个 AES key 加密，
+     * 只有同一台机器（同一个 DPAPI 身份）能解开 —— 换机请用迁移包。
+     *
+     * 还原是不可逆操作：必须先停掉所有环境，且要求确认 token 与环境名同源。
+     */
+    if (seg[0] === 'backup' && seg.length === 1) {
+      if (method !== 'POST') throw new ApiError(404, 'E_NOT_FOUND', '备份请用 POST')
+      const { createBackup } = await import('@main/store/backup')
+      const path = await createBackup(dataDir())
+      appendAudit(getStores(), '数据·备份', '本机工作区', path, 'api')
+      sendJson(res, 200, { ok: true, data: { path } })
+      return
+    }
+    if (seg[0] === 'restore' && seg.length === 1) {
+      if (method !== 'POST') throw new ApiError(404, 'E_NOT_FOUND', '还原请用 POST')
+      const body = (await readJsonBody(req)) as Record<string, unknown> | null
+      const path = typeof body?.path === 'string' ? body.path : ''
+      const confirm = typeof body?.confirm === 'string' ? body.confirm : ''
+      if (path === '' || confirm !== 'RESTORE') {
+        throw new ApiError(400, 'E_BAD_INPUT', '还原必须提供 path 且 confirm 为 RESTORE')
+      }
+      const { restoreBackup } = await import('@main/store/backup')
+      await restoreBackup(path, dataDir(), context?.runtime)
+      appendAudit(getStores(), '数据·还原', '本机工作区', path, 'api')
+      sendJson(res, 200, { ok: true, data: { restored: true } })
+      return
+    }
+
     if (seg[0] === 'templates' && seg.length === 1) {
       getOnly()
       sendJson(res, 200, { ok: true, data: listCollection(getStores().templates, '指纹模板') })
