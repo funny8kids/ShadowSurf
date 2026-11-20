@@ -46,10 +46,6 @@ const CRUMB: Record<NavKey, { titleKey: string; subKey: string }> = {
 /** 只有这两页有列表搜索框；其余页的 query 无人消费，显示出来就是死控件 */
 const SEARCHABLE: ReadonlySet<NavKey> = new Set<NavKey>(['workbench', 'tasks'])
 
-/** 平台正确的修饰键文案：Windows/Linux 显示 Ctrl，macOS 显示 ⌘ */
-const MOD_LABEL =
-  typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'
-
 export function TopBar({ view, query, onQuery, onNew, onBell, runningCount }: TopBarProps) {
   const { t } = useI18n()
   const inputRef = useRef<HTMLInputElement | null>(null)
@@ -57,8 +53,24 @@ export function TopBar({ view, query, onQuery, onNew, onBell, runningCount }: To
   const showSearch = SEARCHABLE.has(view)
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+    const onKey = (e: KeyboardEvent): void => {
+      // 搜索框聚焦用 **/**（单键），不用 Ctrl+K。
+      //
+      // 为什么：Ctrl+K 已经归命令面板（Linear / VS Code / Raycast 的通用惯例，
+      // 而且它是全局唯一入口，比「在两个页面里聚焦搜索框」更有价值）。
+      // 原来两处都监听 Ctrl+K：TopBar 聚焦搜索框、App 打开命令面板，
+      // 后者紧接着又把焦点抢走 —— 结果是**搜索框永远无法用键盘获得焦点**，
+      // 而顶栏偏偏还标着 `<kbd>Ctrl K</kbd>` 提示用户去按它。
+      //
+      // 单键「/」是搜索框的通用唤出键（GitHub / Linear / Notion 都用它），
+      // 但不能在输入框里触发（否则用户打斜杠就被抢焦点）。
+      const target = e.target as HTMLElement | null
+      const typing =
+        target !== null &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable)
+      if (e.key === '/' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault()
         inputRef.current?.focus()
         inputRef.current?.select()
@@ -91,7 +103,7 @@ export function TopBar({ view, query, onQuery, onNew, onBell, runningCount }: To
             placeholder={view === 'tasks' ? t('topbar.searchTask') : t('topbar.searchEnv')}
             aria-label={t('topbar.search')}
           />
-          <kbd>{MOD_LABEL}K</kbd>
+          <kbd>/</kbd>
         </div>
       ) : null}
 

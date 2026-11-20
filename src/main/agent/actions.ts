@@ -282,7 +282,10 @@ export async function executeAction(
   // 拿不到元素名，于是「点『立即支付』」在它那条路径上扫到的语义是空的 ——
   // 闸门看起来接了、其实对这路径完全不设防。谁调用都得有元素名，那就别指望调用方。
   const target = findElement(snapshot, action.id)
-  const verdict = assessRisk(action, approval.intent ?? '', actionSemantic(action, snapshot, approval.note))
+  const verdict = assessRisk(action, approval.intent ?? '', actionSemantic(action, snapshot, approval.note), {
+    // 页面正文摘要：用于「泛化确认词 + 支付语境」这类上下文判定
+    pageText: snapshot.text
+  })
 
   // ── 伪装闸门（在消费凭证之前）──
   //

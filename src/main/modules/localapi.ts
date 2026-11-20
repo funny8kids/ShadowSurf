@@ -725,7 +725,7 @@ async function handleProfiles(
     // 先自己判一次等级：只有知道「这是不是 L2」才谈得上要不要弹确认。
     // 语义来源必须与执行器一致 —— 都从快照取元素可读名，不吃调用方输入。
     const target = action.id ? snap.elements.find((el) => el.id === action.id) : undefined
-    const verdict = assessRisk(action, '', target?.name ?? '')
+    const verdict = assessRisk(action, '', target?.name ?? '', { pageText: snap.text })
 
     let ticket: string | undefined
     if (verdict.level === 'L2') {

@@ -52,9 +52,12 @@ const CJK_NOUN_TAIL =
  * 西里尔只收 `ы|ов|ев`，**刻意不收 `и`**：`оплатить`（支付，动词）的尾部也是 `и`
  * 开头，收了它会把「Оплатить」这个最该拦的按钮抑制掉。`ы` 不是任何动词词尾，
  * 所以 `Способы оплаты`（支付方式）能被安全抑制。
+ *
+ * 注意 `i` 标志：没有它，「Purchase History」判 L2 而「Purchase history」判 L1
+ * —— 同一个词因为大小写不同给出两种结论，这在英文界面上是肉眼可见的不一致。
  */
 const LATIN_NOUN_TAIL =
-  /^\s*(?:(?:method|methods|history|number|details?|settings?|options?|info|limit|cards?|accounts?|address|page|summary|list|status|records?|success|successful|completed?|done|failed|result)\b|s\b|es\b)/
+  /^\s*(?:(?:method|methods|history|number|details?|settings?|options?|info|limit|cards?|accounts?|address|page|summary|list|status|records?|success|successful|completed?|done|failed|result)\b|s\b|es\b)/i
 
 const CYRILLIC_NOUN_TAIL = /^\s*(?:ы|ов|ев)/
 
@@ -120,6 +123,7 @@ const VOCAB: Record<RiskRule['category'], string[]> = {
     '!确认支付', '!立即支付', '!马上支付', '!去支付',
     'pay\\b', 'payment', 'checkout', 'purchase', 'transfer',
     '!buy\\s*now', '!buy\\s+it\\s+now',
+    '!pay\\s*now', '!complete\\s+payment', '!process\\s+payment',
     '!place\\s*order', '!confirm\\s*pay', '!continue\\s*with\\s*paypal',
     '!pay\\s*with\\s*paypal', '!paypal\\s*checkout',
     // 日
@@ -144,6 +148,16 @@ const VOCAB: Record<RiskRule['category'], string[]> = {
     '下单', '结算', '购买', '抢购',
     '!提交订单', '!确认订单', '!立即购买',
     'order\\s*now', 'submit\\s*order', 'checkout',
+    // 英文下单动作短语。原先只有 `!place\\s*order`，于是「Place your order」
+    // 这类最常见的下单按钮（中间插一个限定词）直接漏判 L1 —— 无人值守时
+    // 是不弹确认直接扣款。限定词一律可选：宁可多问一次。
+    '!place\\s+(?:your\\s+|the\\s+|my\\s+|a\\s+)?order',
+    '!confirm\\s+(?:your\\s+|the\\s+|my\\s+|a\\s+)?order',
+    '!submit\\s+(?:your\\s+|the\\s+|my\\s+|a\\s+)?order',
+    '!complete\\s+(?:your\\s+|the\\s+|my\\s+|a\\s+)?order',
+    '!process\\s+order',
+    // 裸 Buy 也要拦：商品页的「Buy」就是下单按钮，而中文「立即购买」本来就被拦。
+    '!buy\\b',
     '注文', '購入手続き',
     '주문',
     'заказ', 'оформить',
@@ -175,6 +189,9 @@ const VOCAB: Record<RiskRule['category'], string[]> = {
     // 补进来之后「清除筛选」仍走豁免，因为豁免判定在规则命中之后、返回之前。
     '删除', '清空', '移除', '销毁', '格式化', '退订', '取消订单', '清除',
     'delete', 'remove', 'destroy', 'unsubscribe', 'clear\\s*all',
+    // 取消订单 / 退款：中文「取消订单」本来就在表里，英文缺失造成了中英不一致。
+    '!cancel\\s+(?:my\\s+|the\\s+|a\\s+)?order',
+    '!refund', '!cancel\\s+refund',
     '削除', '消去', '破棄',
     '삭제', '지우기', '비우기',
     'удал', 'очист',
@@ -270,6 +287,45 @@ const REVERSIBLE_CLEAR =
   /(清空|清除|重置|移除|取消|关闭)\s*(筛选|过滤|条件|搜索|筛选器|过滤条件|筛选条件|搜索条件)|(clear|reset)\s+(filter|filters|search)/i
 
 /**
+ * 英文侧同样要能识别「可逆的清除」。
+ *
+ * 中文「移除筛选」被豁免，英文「Remove filter」却命中 delete 规则弹确认 ——
+ * 同一件事两种语言两种待遇，用户切到英文界面就突然被噪音淹没。
+ */
+const REVERSIBLE_CLEAR_EN =
+  /(?:clear|reset|remove|delete)\s+(?:the\s+)?(?:filter|filters|search|searches|query)/i
+
+/**
+ * 泛化确认词：字面上不含任何不可逆语义，但在支付页上它就是扣款按钮。
+ *
+ * 「确定」「确认」「OK」「Continue」「Submit」这些词在任何普通页面上都不该弹确认
+ * （弹了就是噪音，噪音化的闸门等于没有闸门）；但在收银台页上，同一个「确认」
+ * 背后就是一次扣款。**单看按钮文案区分不出来，必须看页面语境。**
+ */
+const GENERIC_CONFIRM =
+  /^(?:确定|确认|好|好的|是的|行|继续|下一步|提交|完成|接受|ok|okay|yes|yeah|confirm|continue|next|submit|complete|accept|proceed|go|done|buy)$/i
+
+/**
+ * 支付 / 下单语境词。
+ *
+ * 收紧到「确实在收钱」的词：普通页面（博客、后台、文档）几乎不会出现这些词，
+ * 而支付页一定会出现。所以「泛化确认词 + 支付语境」的组合误判面很小。
+ */
+const PAYMENT_CONTEXT =
+  /(?:支付|付款|下单|订单|结算|收银|结账|购物车|金额|银行卡|信用卡|有效期|安全码|立即购买|确认订单)|\b(?:pay(?:ment|now)?|checkout|purchase|order|cart|subtotal|billing|cvv|expiry)\b/i
+
+/**
+ * 判定上下文。
+ *
+ * 只有页面正文摘要，没有别的：判定必须能在一屏文字里完成，
+ * 拿不到整页 DOM 也不该判不出 L2。
+ */
+export interface RiskContext {
+  /** 页面正文摘要（快照里的 text） */
+  pageText?: string
+}
+
+/**
  * 意图里出现这些词，说明用户只想看/取，不想要副作用 → L2 降 L1
  */
 const READ_ONLY_HINTS = [
@@ -343,18 +399,87 @@ function hitReadOnlyIntent(intent: string): string | undefined {
   return write ? undefined : hit
 }
 
-/** 把动作里所有可能承载语义的字段拆成数组，**不 join** */
-function fieldsOf(action: Action, extra: string): string[] {
+/**
+ * 一个字段 + 它的来源。
+ *
+ * `source` 决定「哪些类别的规则可以看它」：
+ * - `content`：流经页面的**内容**（type 的 text、navigate 的 url、extract 的 query）。
+ *   在这些字段里出现「支付」「删除」只说明用户/模型在谈论这些词，
+ *   不说明这个动作会执行它们。所以只有**结果不可逆**的类别（pay / order /
+ *   account）才允许从内容里判定；delete / send / publish 不看内容——
+ *   否则「在搜索框里打『删除旧邮件』」会被判成删除（实测原实现就是这样）。
+ * - `element`：被操作的元素名 / 按键名，永远参与判定。
+ */
+interface FieldSpec {
+  value: string
+  source: 'content' | 'element'
+}
+
+/** 允许从「内容字段」判定的不可逆类别 */
+const CONTENT_CATEGORIES: ReadonlySet<RiskRule['category']> = new Set(['pay', 'order', 'account'])
+
+/**
+ * navigate 只取路径，丢掉查询串与 hash。
+ *
+ * `https://x.com/search?q=delete` 是一次 GET，不是删除；
+ * 而 `https://x.com/checkout` 的路径本身就说明这是收银台 —— 保留。
+ */
+function pathOfUrl(url: string): string {
+  const q = url.search(/[?#]/)
+  return q >= 0 ? url.slice(0, q) : url
+}
+
+/**
+ * 把动作里所有可能承载语义的字段拆成数组，**不 join**。
+ *
+ * ── 为什么内容字段不能对所有类别生效 ──
+ * 原实现让 `action.text` / `action.url` 无条件参与语义扫描，于是**任何按
+ * 关键词检索的任务都会弹确认框**：在搜索框里输入「删除旧邮件」判 L2、
+ * 打开 `/search?q=delete` 判 L2。闸门一旦噪音化，用户就会学会无脑点
+ * 「允许执行」—— 那比没有闸门更危险。
+ *
+ * 但**不能一刀切把内容字段全删掉**：在搜索框里输入「确认支付」确实值得警惕
+ * （可能是支付页的表单填写），tests/risk.test.ts 也有这条断言。
+ * 所以按类别区分：pay / order / account 可以从内容判定，其余不行。
+ */
+function fieldsOf(action: Action, extra: string): FieldSpec[] {
+  const out: FieldSpec[] = []
+
+  if (action.type === 'type') {
+    if (typeof action.text === 'string' && action.text.length > 0) {
+      out.push({ value: action.text, source: 'content' })
+    }
+  } else if (action.type === 'navigate') {
+    if (typeof action.url === 'string' && action.url.length > 0) {
+      out.push({ value: pathOfUrl(action.url), source: 'content' })
+    }
+  } else {
+    // click / press / scroll / extract：动作参数是「页面内容」而不是「被点元素」
+    for (const v of [action.text, action.url, action.query, action.summary]) {
+      if (typeof v === 'string' && v.length > 0) out.push({ value: v, source: 'content' })
+    }
+    if (typeof action.url === 'string' && action.url.length > 0) {
+      // navigate 之外的 url 也按路径判定（避免查询串里的词误伤）
+      out.push({ value: pathOfUrl(action.url), source: 'content' })
+    }
+  }
+
+  // 按键名与元素名是「这次动作的宾语」，永远参与判定。
   // click 的元素名不在 Action 里（模型只给编号），所以调用方必须把目标元素的
   // 可读名传进来 —— 否则点「立即支付」时这里扫到的是空串，永远判不出 L2。
-  return [action.text, action.url, action.query, action.summary, action.key, extra].filter(
-    (v): v is string => typeof v === 'string' && v.length > 0
-  )
+  if (typeof action.key === 'string' && action.key.length > 0) {
+    out.push({ value: action.key, source: 'element' })
+  }
+  if (extra.length > 0) out.push({ value: extra, source: 'element' })
+
+  return out
 }
 
 /** 只用于那些**需要跨字段看**的判定（例如「清空筛选并支付」） */
 function haystackOf(action: Action, extra: string): string {
-  return fieldsOf(action, extra).join(' ')
+  return fieldsOf(action, extra)
+    .map((f) => f.value)
+    .join(' ')
 }
 
 /**
@@ -430,7 +555,12 @@ function clipOut(s: string, cap: number): string {
  * @param intent 用户的原始任务意图（用于判断是否只是采集/查看）
  * @param extra 目标元素的可读名与模型自述，click 这类只有编号的动作必须靠它提供语义
  */
-export function assessRisk(action: Action, intent: string, extra = ''): RiskVerdict {
+export function assessRisk(
+  action: Action,
+  intent: string,
+  extra = '',
+  context?: RiskContext
+): RiskVerdict {
   // 只读动作没有副作用，先短路，避免 extract 的 query 里出现「价格统计」之类误伤
   if (action.type === 'extract' || action.type === 'done') {
     return {
@@ -440,10 +570,15 @@ export function assessRisk(action: Action, intent: string, extra = ''): RiskVerd
   }
 
   const hay = haystackOf(action, extra)
-  const fields = fieldsOf(action, extra)
   /** 命中过词表但被抑制掉的词根，用于区分「没命中」与「命中后被抑制」 */
   const suppressed: string[] = []
   for (const rule of RULES) {
+    // 内容字段只对「结果不可逆」的类别可见（pay / order / account）。
+    // 理由见 `fieldsOf`：在搜索框里打「删除旧邮件」不是删除，
+    // 打开 `/search?q=delete` 也不是 —— 但「确认支付」确实该拦。
+    const fields = fieldsOf(action, extra)
+      .filter((f) => f.source === 'element' || CONTENT_CATEGORIES.has(rule.category))
+      .map((f) => f.value)
     // **逐字段**扫描，不跨字段拼接。
     //
     // 为什么必须逐字段：抑制规则要看词根**前后文**，而拼接之后左窗会跨进上一个
@@ -494,7 +629,7 @@ export function assessRisk(action: Action, intent: string, extra = ''): RiskVerd
     // 「清空筛选」这类只豁免 delete 这一条，不能整体短路 ——
     // 否则「清空筛选并支付」会在 delete 处直接返回 L1，把扣款放过去。
     // 跳过 delete 后仍会继续走 publish / send / submit，都没命中才落到 L1。
-    if (rule.category === 'delete' && REVERSIBLE_CLEAR.test(hay)) {
+    if (rule.category === 'delete' && (REVERSIBLE_CLEAR.test(hay) || REVERSIBLE_CLEAR_EN.test(hay))) {
       suppressed.push(clipOut(m[0], MATCHED_CAP))
       continue
     }
@@ -512,6 +647,31 @@ export function assessRisk(action: Action, intent: string, extra = ''): RiskVerd
       }
     }
     return { level: 'L2', reason: clipOut(rule.reason, REASON_CAP), matched }
+  }
+
+  // ── 上下文升级：泛化确认词 + 支付语境 = 极可能是扣款按钮 ──
+  //
+  // 词表查不到「确定」「OK」这类词，因为它们本身不含不可逆语义；
+  // 但收银台页上的「确认」背后就是一次扣款。**单看按钮文案区分不出来，
+  // 必须看页面语境** —— 这也是商业产品的做法（上下文相关的破坏性动作识别）。
+  //
+  // 放在词表之后：词表已经命中并判 L2 的走不到这里；词表命中但被抑制的
+  // （例如「Payment History」被判成名词）仍会走到这里并被语境救回来。
+  if (
+    action.type === 'click' &&
+    extra.trim() !== '' &&
+    GENERIC_CONFIRM.test(extra.trim()) &&
+    context?.pageText !== undefined &&
+    PAYMENT_CONTEXT.test(context.pageText)
+  ) {
+    return {
+      level: 'L2',
+      reason: clipOut(
+        '泛化确认词出现在支付 / 下单语境中，可能是扣款按钮，确认后才会执行',
+        REASON_CAP
+      ),
+      matched: clipOut(extra, MATCHED_CAP)
+    }
   }
 
   // 没有不可逆语义，按动作类型兜底。

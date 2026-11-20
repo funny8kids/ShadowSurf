@@ -146,16 +146,18 @@ export function Sidebar({
         <div className="brand-ver">0.1</div>
       </div>
 
-      <div className="nav-group">{primary.map(renderItem)}</div>
+      <div className="nav-scroll">
+        <div className="nav-group">{primary.map(renderItem)}</div>
 
-      <div className="nav-group">
-        <div className="nav-label">{t('nav.group.tools')}</div>
-        {tools.map(renderItem)}
-      </div>
+        <div className="nav-group">
+          <div className="nav-label">{t('nav.group.tools')}</div>
+          {tools.map(renderItem)}
+        </div>
 
-      <div className="nav-group">
-        <div className="nav-label">{t('nav.group.team')}</div>
-        {team.map(renderItem)}
+        <div className="nav-group">
+          <div className="nav-label">{t('nav.group.team')}</div>
+          {team.map(renderItem)}
+        </div>
       </div>
 
       <div className="side-foot">

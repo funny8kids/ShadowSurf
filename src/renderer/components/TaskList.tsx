@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
 import type { Profile, TaskRecord } from '@shared/types'
-import { Button, Icon, cx, useToast } from './ui'
+import { Button, Icon, Skeleton, cx, useToast } from './ui'
 import { bridge, errorMessage } from '@renderer/lib/api'
 import { useI18n } from '@renderer/lib/i18n'
 import {
@@ -297,11 +297,20 @@ export function TaskList({
             </Button>
           </div>
         ) : loading ? (
-          <div className="empty">
-            <div className="mark">
-              <Icon name="tasks" size={20} strokeWidth={2} />
-            </div>
-            <h3>{t('tasks.loading')}</h3>
+          /* 加载态用**骨架**，不与空态共用容器。
+           *
+           * 原来加载态与空态都是 `.empty`（同样的虚线卡片、同样的圆角、
+           * 同样的背景），只有标题文案不同。按 DESIGN.md「不可判读状态」的
+           * 判据——「遮住文字，只看容器和颜色，三者是否已经不同」——
+           * 答案是否：用户在加载完成前会以为「没有任务」，于是不会点重试。
+           * 环境页用的是骨架卡（ProfileGrid 的 .env-skel），这里跟着对齐。 */
+          <div className="task-skel-list" aria-busy="true" aria-label={t('tasks.loading')}>
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div className="task-skel" key={i} aria-hidden="true">
+                <Skeleton width="52%" height="13px" radius="var(--r-sm)" />
+                <Skeleton width="76%" height="10px" radius="var(--r-sm)" />
+              </div>
+            ))}
           </div>
         ) : filtered.length === 0 ? (
           <div className="empty">

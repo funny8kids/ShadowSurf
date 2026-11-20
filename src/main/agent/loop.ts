@@ -195,7 +195,9 @@ export async function runAgent(
       //
       // 送给执行器的 `note` 只放**模型自述**，元素名由执行器自己取
       // （本地 HTTP API 手里只有 action.id，拿不到元素名，靠调用方传就漏了那条路径）。
-      const verdict = assessRisk(action, req.intent, actionSemantic(action, snapshot, thought))
+      const verdict = assessRisk(action, req.intent, actionSemantic(action, snapshot, thought), {
+        pageText: snapshot.text
+      })
       // 凭证默认没有。它不是「我判定这是 L2」推出来的，而是 requestConsent
       // 真的返回了一张票 —— 也就是有人在系统窗口上点了「允许执行」。
       // 这里刻意不写成 `verdict.level === 'L2' ? 'user' : 'none'`：

@@ -114,7 +114,15 @@ export async function resolveForProfile(
     throw new Error(`代理组「${group.name}」无法选出出口`)
   }
 
-  for (let i = 0; i < ordered.length; i += 1) {
+  // 故障转移开关：关掉时**只试首选那一条**，不通就失败，绝不换人。
+  //
+  // 为什么这个开关必须真的生效：它是用户在「这条线路必须固定」时的唯一手段
+  // （例如同一账号要绑定同一个出口 IP）。界面有开关、文案写明语义，
+  // 代码却永远在故障转移 —— 那就是个骗人的开关。
+  const tryNext = group.failover
+  const limit = tryNext ? ordered.length : 1
+
+  for (let i = 0; i < limit; i += 1) {
     const candidate = ordered[i]
     const check =
       candidate.lastCheck && Date.now() - candidate.lastCheck.at < 5 * 60_000
@@ -143,9 +151,15 @@ export async function resolveForProfile(
     stores,
     '代理组·启动失败',
     `环境 ${profile.name}`,
-    `组「${group.name}」的 ${String(ordered.length)} 条出口全部不可用，未退回直连`
+    tryNext
+      ? `组「${group.name}」的 ${String(ordered.length)} 条出口全部不可用，未退回直连`
+      : `组「${group.name}」的首选出口不可用（故障转移已关闭），未退回直连`
   )
-  throw new Error(`代理组「${group.name}」没有可用出口，环境未启动（不会退回直连）`)
+  throw new Error(
+    tryNext
+      ? `代理组「${group.name}」没有可用出口，环境未启动（不会退回直连）`
+      : `代理组「${group.name}」的首选出口不可用（故障转移已关闭），环境未启动`
+  )
 }
 
 /* ────────────────────────────── 注册 ────────────────────────────── */

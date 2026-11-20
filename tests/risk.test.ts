@@ -102,9 +102,45 @@ test('提交表单在非只读意图下是 L2（自己就是个需要确认的�
   assert.equal(verdict.level, 'L2')
 })
 
-test('输入框里写「发送给张三」也要拦', () => {
+/**
+ * ── 输入框里的「内容」只能对不可逆类别生效 ──
+ *
+ * 原断言是「输入框里写『发送给张三』也要拦」。这条与真实场景冲突：
+ * 同一个字段既承载「用户要搜的关键词」，也承载「用户要填的表单值」，
+ * 而**闸门无法区分**。实测代价（risk.ts 的注释里也写了）：
+ * 在搜索框里打「删除旧邮件」→ L2、打开 `/search?q=delete` → L2 ——
+ * 任何按关键词检索的采集任务每搜一次就弹一次确认，用户会学会无脑点「允许」。
+ *
+ * 所以分界线改成**按类别**：
+ *   - pay / order / account：结果不可逆（扣款 / 提交订单 / 改账号），
+ *     从内容判定仍然成立 —— 在支付页填「确认支付」确实该拦；
+ *   - delete / send / publish：只从**被操作元素名**判定，
+ *     因为「提到」不等于「执行」。
+ */
+test('输入框里写「发送给张三」不再判 L2（提到 ≠ 执行，避免噪音化）', () => {
   const verdict = assessRisk({ type: 'type', id: 'e2', text: '发送给张三' }, '填个备注')
+  assert.equal(verdict.level, 'L1')
+})
+
+test('但输入框里写「确认支付」仍然拦（支付不可从内容豁免）', () => {
+  const verdict = assessRisk({ type: 'type', id: 'e2', text: '确认支付' }, '填个备注')
   assert.equal(verdict.level, 'L2')
+})
+
+test('搜索框里打「删除旧邮件」不该拦（原误判）', () => {
+  const verdict = assessRisk({ type: 'type', id: 'e2', text: '删除旧邮件' }, '搜索')
+  assert.equal(verdict.level, 'L1')
+})
+
+test('打开 /search?q=delete 不该拦（原误判），但 /checkout 仍要拦', () => {
+  assert.equal(
+    assessRisk({ type: 'navigate', url: 'https://x.com/search?q=delete' }, '去看看').level,
+    'L1'
+  )
+  assert.equal(
+    assessRisk({ type: 'navigate', url: 'https://example.com/checkout' }, '去看看').level,
+    'L2'
+  )
 })
 
 /* ──────────────── 对照集：闸门真正的分界线是「元素可读名」 ──────────────── */
@@ -666,4 +702,69 @@ test('截的是输出，不是输入（否则尾部危险词就成了旁路）',
   const tail = 'x'.repeat(4000) + ' 删除全部订单'
   const verdict = assessRisk({ type: 'click', id: 'e1' }, '', tail)
   assert.equal(verdict.level, 'L2', '尾部 4000 字之后的危险词仍必须命中')
+})
+
+/* ──────────────── 英文下单 / 支付按钮（本轮修复的漏判） ──────────────── */
+
+/**
+ * 这些是实测漏判过的样本（修复前全部判 L1 自动执行）：
+ * 中文「立即支付」一直被拦，但英文「Place your order」不拦 ——
+ * 对跨境用户来说，闸门等于不存在，无人值守时就是不弹确认直接扣款。
+ */
+test('英文下单按钮必须判 L2（漏判方向）', () => {
+  for (const label of [
+    'Place your order',
+    'Place order',
+    'Place my order',
+    'Confirm order',
+    'Confirm your order',
+    'Submit order',
+    'Submit your order',
+    'Complete your order',
+    'Process order',
+    'Buy',
+    'Buy now'
+  ]) {
+    const verdict = assessRisk({ type: 'click', id: 'e1' }, '', label)
+    assert.equal(verdict.level, 'L2', `${label} 应判 L2（实测原实现判 L1）`)
+  }
+})
+
+test('英文支付 / 取消订单 / 退款按钮必须判 L2（中英一致）', () => {
+  for (const label of ['Pay now', 'Complete payment', 'Process payment', 'Cancel order', 'Refund']) {
+    const verdict = assessRisk({ type: 'click', id: 'e1' }, '', label)
+    assert.equal(verdict.level, 'L2', `${label} 应判 L2`)
+  }
+})
+
+test('英文「购买记录」类名词不判 L2（抑制方向，且大小写必须一致）', () => {
+  // 修复前「Purchase History」判 L2 而「Purchase history」判 L1 ——
+  // LATIN_NOUN_TAIL 缺 /i，同一个词两种结论。
+  for (const label of ['Purchase History', 'Purchase history', 'Payment methods', 'Order list']) {
+    const verdict = assessRisk({ type: 'click', id: 'e1' }, '', label)
+    assert.equal(verdict.level, 'L1', `${label} 是名词短语，不该弹确认`)
+  }
+})
+
+/* ──────────────── 泛化确认词 + 页面语境（本轮新增） ──────────────── */
+
+test('支付页上的「确认 / OK」必须判 L2（上下文升级）', () => {
+  const checkout = { pageText: '订单确认 应付金额 ¥99 立即支付 收银台' }
+  for (const label of ['确认', '确定', 'OK', '继续', '提交', 'Continue', 'Submit', 'Pay']) {
+    const verdict = assessRisk({ type: 'click', id: 'e1' }, '', label, checkout)
+    assert.equal(verdict.level, 'L2', `支付页的「${label}」应判 L2`)
+  }
+})
+
+test('普通页面上的「确定 / 确认」不弹确认（噪音方向）', () => {
+  const plain = { pageText: '筛选条件 已选 3 项 设置 帮助' }
+  for (const label of ['确定', '确认', 'OK', '继续', 'Cancel']) {
+    const verdict = assessRisk({ type: 'click', id: 'e1' }, '', label, plain)
+    assert.equal(verdict.level, 'L1', `普通页的「${label}」不该弹确认`)
+  }
+})
+
+test('没有页面语境时，泛化确认词一律不升级（缺上下文 = 不猜）', () => {
+  const verdict = assessRisk({ type: 'click', id: 'e1' }, '', '确认')
+  assert.equal(verdict.level, 'L1')
 })

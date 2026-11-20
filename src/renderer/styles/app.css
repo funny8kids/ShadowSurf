@@ -33,6 +33,23 @@
     box-shadow var(--dur-3) var(--ease-easy);
 }
 
+/* 导航区自己滚动，品牌与底栏（主题 / 密度 / 语言 / 设置）固定。
+ *
+ * 为什么不让整个侧栏滚：侧栏的材质渐变画在 `.side::before` 上，而绝对定位的
+ * 伪元素在滚动容器里会跟着内容一起滚走 —— 滚一下背景就没了。
+ *
+ * 为什么必须能滚：13 个导航项 + 三组开关 + 底栏，在 700px 高的窗口里放不下。
+ * 之前没有滚动容器，底部（账户信息、命令面板入口）被直接裁掉且滚不到 ——
+ * 「把窗口拉小」是最常见的用户动作，不能让导航凭空消失。 */
+.nav-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* 细滚动条跟随主题，避免默认滚动条在浅色底上过于刺眼 */
+  scrollbar-width: thin;
+}
+
 /* 侧栏材质叠加层：半透明渐变，位于实色背景之上、内容之下，不拦截点击 */
 .side::before {
   content: '';
@@ -3772,6 +3789,25 @@
     box-shadow var(--dur-3) var(--ease-easy);
   text-align: left;
   width: 100%;
+}
+
+/* 任务列表的加载骨架：与真实任务卡同形（同样的边框 / 圆角 / 内边距），
+   只把内容换成扫光条。这样「正在加载」看起来像「任务正在长出来」，
+   而不是「这里没有任务」。 */
+.task-skel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.task-skel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
 }
 
 .task:hover {

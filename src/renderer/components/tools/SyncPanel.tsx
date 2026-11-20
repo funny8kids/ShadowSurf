@@ -21,31 +21,41 @@ interface Props {
 export function SyncPanel({ profiles }: Props) {
   const { t } = useI18n()
   const toast = useToast()
-  const [scripts, setScripts] = useState<AutomationScript[]>([])
+  /**
+   * 脚本列表的读取状态：三态必须可分。
+   *
+   * 原先这里把读取失败吞成空数组，于是「读不到」与「真的没有脚本」
+   * 在界面上完全同脸（都是下拉框里一个「—」）。磁盘被占用、权限被改、
+   * 主进程还没起来 —— 用户看到的是「我没有脚本」，于是去重建数据，
+   * 而真实情况是旧数据还在但读不出来。DESIGN.md 早就把这条列为必须分开的
+   * 三态，这里是新面板把它重新引了回来。
+   */
+  const [scripts, setScripts] = useState<AutomationScript[] | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [scriptId, setScriptId] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [result, setResult] = useState<ScriptBatchResult | null>(null)
   const [running, setRunning] = useState(false)
 
   useEffect(() => {
-    let alive = true
-    void (async () => {
-      try {
-        const list = await bridge().scripts.list()
-        if (!alive) return
-        setScripts(list)
-        setScriptId((prev) => prev || list[0]?.id || '')
-      } catch {
-        if (alive) setScripts([])
-      }
-    })()
-    return () => {
-      alive = false
+    void reloadScripts()
+  }, [])
+
+  /** 读取脚本列表；失败时把错误原文带出来，不吞成空列表 */
+  const reloadScripts = useCallback(async (): Promise<void> => {
+    try {
+      const list = await bridge().scripts.list()
+      setScripts(list)
+      setLoadError(null)
+      setScriptId((prev) => prev || list[0]?.id || '')
+    } catch (err) {
+      setScripts(null)
+      setLoadError(errorMessage(err))
     }
   }, [])
 
   const activeScript = useMemo(
-    () => scripts.find((s) => s.id === scriptId) ?? null,
+    () => (scripts ?? []).find((s) => s.id === scriptId) ?? null,
     [scripts, scriptId]
   )
 
@@ -116,14 +126,31 @@ export function SyncPanel({ profiles }: Props) {
           <h3>{t('sync.title')} · 1</h3>
           <div className="sync-field">
             <label>{t('script.library')}</label>
-            <select value={scriptId} onChange={(e) => setScriptId(e.target.value)}>
-              {scripts.length === 0 ? <option value="">—</option> : null}
-              {scripts.map((s) => (
-                <option value={s.id} key={s.id}>
-                  {s.name}（{s.steps.length} 步）
-                </option>
-              ))}
-            </select>
+            {loadError !== null ? (
+              /* 读失败：琥珀块 + 原文 + 重试。与「还没有脚本」的空态一眼可分。 */
+              <div className="load-error">
+                <div className="le-mark">
+                  <Icon name="alert" size={20} strokeWidth={2.2} />
+                </div>
+                <h3>{t('common.readFailed')}</h3>
+                <p className="le-reason">{loadError}</p>
+                <p className="le-hint">{t('common.readFailedHint')}</p>
+                <Button variant="ghost" icon="reload" onClick={() => void reloadScripts()}>
+                  {t('common.retryRead')}
+                </Button>
+              </div>
+            ) : scripts === null ? (
+              <span className="sync-dim">{t('common.loading')}</span>
+            ) : (
+              <select value={scriptId} onChange={(e) => setScriptId(e.target.value)}>
+                {scripts.length === 0 ? <option value="">—</option> : null}
+                {scripts.map((s) => (
+                  <option value={s.id} key={s.id}>
+                    {s.name}（{s.steps.length} 步）
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
           {activeScript ? (
             <p className="sync-hint">{activeScript.description || activeScript.name}</p>

@@ -302,7 +302,20 @@ if (gotLock) {
       }
     })
 
-    const runtime = new ProfileRuntime(wm)
+    const runtime = new ProfileRuntime(wm, (profileId, status, error) => {
+      // 把运行状态真正写回 Profile.status。
+      // 以前这个字段从没被写过，于是卡片上的「失败」红标恒为 false、
+      // 控制台的「运行中 N / 需要关注 N」恒为 0 —— 两处都是死代码。
+      try {
+        stores.profiles.update(profileId, {
+          status,
+          ...(status === 'error' ? { lastError: error ?? '启动失败' } : {})
+        })
+      } catch (err) {
+        // 状态写不进去不能让启动失败：它是展示用的派生信息。
+        console.error('[boot] 环境状态写入失败 profile=' + profileId, err)
+      }
+    })
     registerHandlers({ wm, runtime })
 
     // 门禁的伪装读数入口。注入而不是让 `actions.ts` 直接 import `windows.ts`：

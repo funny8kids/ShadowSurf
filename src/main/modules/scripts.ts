@@ -451,7 +451,9 @@ export async function runScript(
       const note = [step.note ?? '', step.selector ?? '']
         .filter((v) => v.length > 0)
         .join(' ')
-      const verdict = assessRisk(action, '', actionSemantic(action, snapshot, note))
+      const verdict = assessRisk(action, '', actionSemantic(action, snapshot, note), {
+        pageText: snapshot.text
+      })
       // 每一处 L2 都单独问一次。不提供「整段放行」：脚本是录制产物，
       // 用户批准的是「这一步现在执行」，不是「这个文件以后随便跑」。
       let ticket: string | undefined
