@@ -107,6 +107,71 @@ export function sortActivity(entries: TeamActivity[]): TeamActivity[] {
 }
 
 /**
+ * 解析「当前操作者」。
+ *
+ * 规则（见 Settings.activeMemberId 的说明）：
+ * - 未配置 / 空 → **本机所有者**（`OWNER_SEED_ID`），全权限；
+ * - 配置了一个存在的成员 → 用它的角色判定；
+ * - 配置了不存在的 id（成员被删了）→ 抛错而不是静默放行。
+ *   静默放行会让「删掉某个成员」变成「权限凭空回到 owner」，那是权限放大。
+ *
+ * 返回 `null` 表示「本机所有者」——调用方据此跳过所有 ACL 检查。
+ */
+export function resolveActor(
+  state: TeamState,
+  activeMemberId: string | undefined
+): TeamMember | null {
+  if (!activeMemberId) return null
+  const member = state.members.find((m) => m.id === activeMemberId)
+  if (!member) throw new Error(`当前操作者不存在（${activeMemberId}），可能已被删除`)
+  if (member.disabled) throw new Error(`当前操作者已禁用（${activeMemberId}）`)
+  return member
+}
+
+/**
+ * 当前操作者能否「使用」该环境；本机所有者直接放行。
+ */
+export function actorCanUse(
+  state: TeamState,
+  activeMemberId: string | undefined,
+  profileId: string
+): boolean {
+  const actor = resolveActor(state, activeMemberId)
+  if (actor === null) return true
+  const share = state.shares.find((s) => s.profileId === profileId && s.memberId === actor.id) ?? null
+  return canUseProfile(actor.role, share, actor.id)
+}
+
+/**
+ * 当前操作者能否「管理」该环境；本机所有者直接放行。
+ */
+export function actorCanManage(
+  state: TeamState,
+  activeMemberId: string | undefined,
+  profileId: string
+): boolean {
+  const actor = resolveActor(state, activeMemberId)
+  if (actor === null) return true
+  const share = state.shares.find((s) => s.profileId === profileId && s.memberId === actor.id) ?? null
+  return canManageProfile(actor.role, share, actor.id)
+}
+
+/** 抛错版的便捷封装（handler 里用，错误文案带上操作者与环境） */
+export function assertActorCanManage(
+  state: TeamState,
+  activeMemberId: string | undefined,
+  profileId: string
+): void {
+  if (actorCanManage(state, activeMemberId, profileId)) return
+  const actor = resolveActor(state, activeMemberId)
+  const name = state.members.find((m) => m.id === profileId)
+  throw new Error(
+    `当前成员${actor ? `（${actor.name}）` : ''}无权管理环境${name ? `「${name.name}」` : ` ${profileId}`}；` +
+      '需要在成员页获得该环境的「管理」授权，或切换回所有者'
+  )
+}
+
+/**
  * 门禁断言（**为后续集成预留，当前尚未接入任何执行路径**）。
  *
  * 诚实说明：本应用目前是**单操作者**的 —— 所有操作都从本机所有者这一个身份发起，

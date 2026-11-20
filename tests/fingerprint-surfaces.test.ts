@@ -178,17 +178,22 @@ test('platformVersion 跟着系统走，不是写死的一个值', () => {
 /* ────────────────────────── WebGPU adapter.info ────────────────────────── */
 
 test('adapter.info 的 vendor 必须从 webgl.vendor 派生（两处不能各说各话）', () => {
-  const fp = resolveFingerprint('windows', SEED)
-  const info = resolveWebgpuAdapterInfo(fp)
-  assert.equal(info.vendor, 'nvidia')
-  assert.equal(info.architecture, '', '拿不到架构族时留空，不编')
-  assert.equal(info.device, '')
-  assert.equal(info.description, '')
-
-  const mac = resolveFingerprint('macos', SEED)
-  assert.equal(resolveWebgpuAdapterInfo(mac).vendor, 'apple')
-  const linux = resolveFingerprint('linux', SEED)
-  assert.equal(resolveWebgpuAdapterInfo(linux).vendor, 'intel')
+  // 同一 OS 现在按 seed 散落到多台「机器」（NVIDIA / Intel / AMD / SwiftShader），
+  // 所以不能断言固定厂商 —— 要断言的是「vendor 与抽中的档案一致」。
+  for (const os of ['windows', 'macos', 'linux'] as const) {
+    const fp = resolveFingerprint(os, SEED)
+    const info = resolveWebgpuAdapterInfo(fp)
+    const expect =
+      fp.webgl.vendor.includes('NVIDIA') ? 'nvidia'
+        : fp.webgl.vendor.includes('Apple') ? 'apple'
+        : fp.webgl.vendor.includes('Intel') ? 'intel'
+        : fp.webgl.vendor.includes('AMD') ? 'amd'
+        : 'google'
+    assert.equal(info.vendor, expect, `${os} 的 WebGPU vendor 必须跟着 webgl.vendor`)
+    assert.equal(info.architecture, '', '拿不到架构族时留空，不编')
+    assert.equal(info.device, '')
+    assert.equal(info.description, '')
+  }
 })
 
 /* ────────────────────────── 缺省值补齐（存储迁移） ────────────────────────── */

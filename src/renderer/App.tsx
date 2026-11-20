@@ -43,6 +43,7 @@ import { ProxyGroupsPanel } from '@renderer/components/tools/ProxyGroupsPanel'
 import { SyncPanel } from '@renderer/components/tools/SyncPanel'
 import { WebhooksPanel } from '@renderer/components/tools/WebhooksPanel'
 import { StoreHealthBanner } from '@renderer/components/StoreHealthBanner'
+import { OnboardingCard } from '@renderer/components/OnboardingCard'
 import { bridge, errorMessage, hasBridge, onMaskState, onWindowState } from './lib/api'
 import { parseProxy } from './lib/proxy-parse'
 import { applyDensity, applyTheme, onSystemThemeChange, resolveTheme } from './lib/theme'
@@ -504,11 +505,12 @@ function Shell() {
           await Promise.all(ids.map((id) => bridge().profiles.stop(id)))
           toast.push(`已停止 ${ids.length} 个环境`, 'ok')
         } else if (action === 'move' && value) {
-          await Promise.all(ids.map((id) => bridge().profiles.update(id, { group: value })))
-          toast.push(`已移到分组「${value}」`, 'ok')
+          // 走批量通道：一次 IPC + 一次落盘，而不是 N 次全量重写。
+          const n = await bridge().profiles.batchUpdate(ids, { group: value })
+          toast.push(`已移到分组「${value}」${n < ids.length ? `（${n}/${ids.length}）` : ''}`, 'ok')
         } else if (action === 'proxy' && value) {
           const proxy = parseProxy(value)
-          await Promise.all(ids.map((id) => bridge().profiles.update(id, { proxy })))
+          const n = await bridge().profiles.batchUpdate(ids, { proxy })
           toast.push(proxy ? `已切换代理 ${proxy.host}:${proxy.port}` : '已改为直连', 'ok')
         } else if (action === 'remove') {
           await Promise.all(ids.map((id) => bridge().profiles.remove(id)))
@@ -664,6 +666,21 @@ function Shell() {
           {/* 数据健康横幅：只在文件损坏 / 备份含明文 seed 时出现，正常状态不占位。
               挂在视图上方而不是某个面板里，因为数据坏了影响的是全部视图。 */}
           <StoreHealthBanner />
+        {/* 首次上手引导：只在「一个环境都没有」时出现（组件自己判断 + localStorage）。
+              放在视图区顶部而不是弹窗：新用户要能一边看引导一边点「新建环境」。 */}
+        {view === 'workbench' ? (
+          <OnboardingCard
+            profiles={profiles}
+            onCreate={() => void createProfile()}
+            onOpenSettings={() => {
+              setDrawerId(null)
+              toast.push('模型设置在浏览器窗口右侧的「模型设置」里打开', 'info')
+            }}
+            onOpenDocs={() => {
+              void bridge().system.openExternal('https://github.com/funny8kids/ShadowSurf#readme')
+            }}
+          />
+        ) : null}
         <div className="views scroll-thin">
           {/* 两个面板的「重试」都指向 loadConsole（整个快照重读），不是单路重读：
               四个读取是一份逻辑快照，部分重试会让面板间数据对不上。 */}

@@ -58,6 +58,8 @@ export const CH = {
     get: 'ss:profiles:get',
     create: 'ss:profiles:create',
     update: 'ss:profiles:update',
+    /** 批量更新：一次 IPC + 一次落盘 */
+    batchUpdate: 'ss:profiles:batch-update',
     remove: 'ss:profiles:remove',
     clone: 'ss:profiles:clone',
     launch: 'ss:profiles:launch',
@@ -311,6 +313,18 @@ export interface ProfilesAPI {
   get(id: string): Promise<Profile>
   create(input: CreateProfileInput): Promise<Profile>
   update(id: string, patch: Partial<Profile>): Promise<Profile>
+  /**
+   * 批量更新：一次 IPC + **一次落盘**，返回真正命中的条数。
+   *
+   * 为什么需要它：渲染层的批量改分组 / 批量换代理原来是
+   * `Promise.all(ids.map(id => update(id, ...)))` —— 每个 id 一次 IPC、
+   * 每次全量重写 profiles.json。1000 个环境就是 1000 次 2MB 写，
+     * 主进程被这些同步写阻塞，界面在这期间完全卡住。
+   *
+   * 语义与单条 `update` 完全一致（同一份 WRITABLE 白名单与校验），
+   * 只是把「N 次读-改-写」压成「1 次读-改-写」。
+   */
+  batchUpdate(ids: string[], patch: Partial<Profile>): Promise<number>
   remove(id: string): Promise<void>
   clone(id: string, opts: CloneOptions): Promise<Profile>
   launch(id: string): Promise<void>

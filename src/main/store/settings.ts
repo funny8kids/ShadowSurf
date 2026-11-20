@@ -187,6 +187,7 @@ function migrateSettings(data: unknown): StoredSettings {
     panelWidth: asNumber(rec.panelWidth, DEFAULT_SETTINGS.panelWidth),
     theme: asThemeMode(rec.theme),
     humanizeInput: asHumanizeInput(rec.humanizeInput),
+    activeMemberId: asNonEmptyTrimmed(rec.activeMemberId, DEFAULT_SETTINGS.activeMemberId ?? ''),
     // 注意：这一项是**白名单里唯一不可再生的东西**（见上面 auditHead 的注释）。
     // 丢掉它不会报错，只会让尾部删除检测静默失效 —— 所以这里宁可判成 null 并让
     // 校验报「未锚定」，也不要猜一个值出来。
@@ -302,6 +303,10 @@ export class SettingsStore {
       panelWidth: clampNumber(patch.panelWidth ?? current.panelWidth, 0, 2000),
       theme: patch.theme ?? current.theme,
       humanizeInput: asHumanizeInput(patch.humanizeInput ?? current.humanizeInput),
+      activeMemberId:
+        patch.activeMemberId !== undefined
+          ? asNonEmptyTrimmed(patch.activeMemberId, '')
+          : current.activeMemberId,
       auditHead: current.auditHead
     }
     // 传了打码值 = 用户没动 Key，保持原密文不动（避免每存一次设置就重写一次密钥）

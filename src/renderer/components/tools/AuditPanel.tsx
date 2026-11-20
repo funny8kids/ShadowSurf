@@ -49,7 +49,9 @@ const SEVERITY_KEY: Record<CheckSeverity, string> = {
 }
 
 /** 一次最多拉多少条。超出的更早记录不显示，但「验证完整性」统计的是全量。 */
-const LOG_LIMIT = 200
+// 面板显示/导出上限。原来是 200，CSV 一导就只有面板那一屏；
+// 主进程 listAudit 无硬上限，这里放宽到 2000（审计链本身上限 5000）。
+const LOG_LIMIT = 2000
 
 /**
  * 断链原因的界面表达。
@@ -227,6 +229,42 @@ function verifyBadge(
 export function AuditPanel({ profiles }: PanelProps) {
   const toast = useToast()
   const { t } = useI18n()
+
+  /**
+   * CSV 导出当前已加载的审计记录。
+   *
+   * 两条防线：
+   * 1. BOM 前缀（Excel 打开中文不乱码）；
+   * 2. 单元格以 `= + - @` 开头时前置单引号 —— 防 CSV 注入：
+   *    detail 里装着模型自述与页面文案，那正是攻击者能影响的内容。
+   */
+  const exportCsv = async (entries: AuditEntry[]): Promise<void> => {
+    if (entries.length === 0) {
+      toast.push(t('audit.export.empty'), 'info')
+      return
+    }
+    const cell = (v: unknown): string => {
+      const s = typeof v === 'string' ? v : String(v ?? '')
+      const safe = /^[=+\-@]/.test(s) ? `'${s}` : s
+      return `"${safe.replace(/"/g, '""')}"`
+    }
+    const lines = [
+      ['seq', 'at', 'actor', 'action', 'target', 'detail', 'hash'].join(','),
+      ...entries.map((e) =>
+        [e.seq, new Date(e.at).toISOString(), e.actor, e.action, e.target, e.detail, e.hash]
+          .map(cell)
+          .join(',')
+      )
+    ]
+    const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `shadowsurf-audit-${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+    toast.push(t('audit.export.done', { n: entries.length }), 'ok')
+  }
   const [profileId, setProfileId] = useState<string>(profiles[0]?.id ?? '')
   const [running, setRunning] = useState(false)
   const [report, setReport] = useState<ConsistencyReport | null>(null)
@@ -452,6 +490,14 @@ export function AuditPanel({ profiles }: PanelProps) {
             <span>{t('audit.log.subtitle')}</span>
           </div>
           <div className="au-pick">
+            <Button
+              variant="ghost"
+              icon="download"
+              title={t('audit.export.title')}
+              onClick={() => void exportCsv(log.kind === 'ready' ? log.entries : [])}
+            >
+              {t('audit.export.button')}
+            </Button>
             {badge ? (
               <span className={cx('au-verdict', badge.tone)} role="status">
                 {badge.text}

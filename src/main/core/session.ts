@@ -14,6 +14,7 @@ import type { Session } from 'electron'
 import * as fs from 'node:fs'
 import { join } from 'node:path'
 import type { Profile, ProxyConfig } from '@shared/types'
+import { decryptSecret } from '@main/store/secret-box'
 
 /**
  * 只依赖「会话需要的那部分」Profile。
@@ -86,12 +87,19 @@ function applyWebRtcPolicy(ses: Session, profile: SessionProfile): void {
   }
 }
 
-export async function applyProxy(ses: Session, proxy: ProxyConfig | null): Promise<void> {
-  if (!proxy) {
+export async function applyProxy(ses: Session, stored: ProxyConfig | null): Promise<void> {
+  if (!stored) {
     proxyBySession.delete(ses)
     await ses.setProxy({ mode: 'direct' })
     return
   }
+
+  // 盘上的代理密码是密文（safeStorage，见 store/secret-box.ts），
+  // 认证时必须用明文。其余字段不受影响。
+  const proxy: ProxyConfig =
+    typeof stored.password === 'string' && stored.password.length > 0
+      ? { ...stored, password: decryptSecret(stored.password) }
+      : stored
 
   // 先登记凭据再设代理：setProxy 生效后第一个 CONNECT 可能立刻挑战认证
   if (proxy.username) {

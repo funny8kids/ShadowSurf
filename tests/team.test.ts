@@ -181,3 +181,75 @@ test('assertCanManageProfile：viewer 管理遭拒，禁用成员遭拒', () => 
   assert.throws(() => assertCanManageProfile(s, 'v1', 'p1'), /无权管理/)
   assert.throws(() => assertCanManageProfile(s, 'd1', 'p1'), /已禁用/)
 })
+
+/* ──────────────── 操作者解析与执行路径 ACL（本轮新增） ──────────────── */
+
+import {
+  actorCanUse,
+  actorCanManage,
+  assertActorCanManage,
+  resolveActor
+} from '../src/main/modules/team-policy.ts'
+
+function teamState(members: TeamMember[], shares: TeamProfileShare[] = []): TeamState {
+  return { initialized: true, members, shares, activity: [] }
+}
+
+const OWNER = member('mem_owner', 'owner')
+const VIEWER = member('mem_viewer', 'viewer')
+const MEMBER = member('mem_member', 'member')
+
+test('未设置 activeMemberId = 本机所有者，全部放行（向后兼容）', () => {
+  const state = teamState([OWNER, VIEWER, MEMBER])
+  assert.equal(actorCanUse(state, undefined, 'prf_any'), true)
+  assert.equal(actorCanManage(state, undefined, 'prf_any'), true)
+  assert.equal(actorCanManage(state, '', 'prf_any'), true)
+  assert.equal(resolveActor(state, undefined), null)
+  assert.equal(resolveActor(state, ''), null)
+})
+
+test('viewer 未授权时不能用也不能管环境（原缺陷：照样能改删）', () => {
+  const state = teamState([OWNER, VIEWER])
+  assert.equal(actorCanUse(state, VIEWER.id, 'prf_1'), false)
+  assert.equal(actorCanManage(state, VIEWER.id, 'prf_1'), false)
+  assert.throws(() => assertActorCanManage(state, VIEWER.id, 'prf_1'), /无权管理环境/)
+})
+
+test('viewer 拿到 use share 后能用，但仍不能管', () => {
+  const share: TeamProfileShare = { id: 's1', profileId: 'prf_1', memberId: VIEWER.id, permission: 'use' }
+  const state = teamState([OWNER, VIEWER], [share])
+  assert.equal(actorCanUse(state, VIEWER.id, 'prf_1'), true)
+  assert.equal(actorCanManage(state, VIEWER.id, 'prf_1'), false, 'viewer 拿到 use 也不能管')
+})
+
+test('member 拿到 manage share 后能管；use 只能看', () => {
+  const useShare: TeamProfileShare = { id: 's2', profileId: 'prf_1', memberId: MEMBER.id, permission: 'use' }
+  const manageShare: TeamProfileShare = { id: 's3', profileId: 'prf_2', memberId: MEMBER.id, permission: 'manage' }
+  const state = teamState([OWNER, MEMBER], [useShare, manageShare])
+  assert.equal(actorCanManage(state, MEMBER.id, 'prf_1'), false)
+  assert.equal(actorCanManage(state, MEMBER.id, 'prf_2'), true)
+  assert.equal(actorCanUse(state, MEMBER.id, 'prf_2'), true, 'manage 蕴含 use')
+})
+
+test('share 属于别人时不算授权（防冒充）', () => {
+  const other: TeamProfileShare = { id: 's4', profileId: 'prf_1', memberId: VIEWER.id, permission: 'manage' }
+  const state = teamState([OWNER, MEMBER], [other])
+  assert.equal(actorCanManage(state, MEMBER.id, 'prf_1'), false)
+})
+
+test('成员被删除后 activeMemberId 指向它 → 抛错而不是静默放行', () => {
+  const state = teamState([OWNER, MEMBER])
+  assert.throws(() => resolveActor(state, 'mem_gone'), /当前操作者不存在/)
+})
+
+test('被禁用的当前操作者 → 抛错', () => {
+  const disabled = member('mem_d', 'member', true)
+  const state = teamState([OWNER, disabled])
+  assert.throws(() => resolveActor(state, disabled.id), /已禁用/)
+})
+
+test('owner 本人切换 activeMemberId → 仍然全权限（本机所有者天然放行）', () => {
+  const state = teamState([OWNER, VIEWER])
+  assert.equal(actorCanManage(state, OWNER.id, 'prf_9'), true)
+  assert.equal(actorCanUse(state, OWNER.id, 'prf_9'), true)
+})

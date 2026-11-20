@@ -128,7 +128,9 @@ export const DEFAULT_SETTINGS: Settings = {
   autoRun: true,
   panelWidth: 380,
   theme: 'system',
-  humanizeInput: 'light'
+  humanizeInput: 'light',
+  /** 空 = 本机所有者（全权限）；切换成员后 ACL 才生效 */
+  activeMemberId: ''
 }
 
 /* ────────────────────────────── 环境标识色 ────────────────────────────── */
@@ -146,10 +148,19 @@ export const PROFILE_COLORS = [
 
 /* ────────────────────────────── 指纹平台模板 ────────────────────────────── */
 
-/** 当前内置 Chromium 主版本，UA 与 UA-CH 都要与之对齐 */
-// 必须与 Electron 内置的 Chromium 一致：UA 说 141 而引擎是 156，
-// 任何做特性检测的站点都能一眼看穿（`CSS.supports` 之类的新 API 会露馅）
-export const CHROME_VERSION = '156.0.8078.75'
+/**
+ * UA 里的 Chrome 版本：**冻结成 major.0.0.0**。
+ *
+ * 真 Chrome 从 110 起把 UA 里的版本冻结到 `major.0.0.0`（UA 缩减计划），
+ * 完整构建号只出现在 UA-CH 的 `uaFullVersion` / `fullVersionList` 里。
+ * 之前这里写 `156.0.8078.75`，等于「UA 里出现完整版本」—— 那是 UA 冻结
+ * 规则的直接反例，Cloudflare / FingerprintBot 的 UA 一致性检查一眼命中。
+ *
+ * 完整版本号保留给 UA-CH（`uaFullVersion`），两边各就各位。
+ */
+export const CHROME_VERSION = '156.0.0.0'
+/** 完整构建号：只用于 UA-CH 的 fullVersionList / uaFullVersion */
+export const CHROME_FULL_VERSION = '156.0.8078.75'
 export const CHROME_MAJOR = '156'
 
 export interface OSFingerprintTemplate {
@@ -340,15 +351,21 @@ export function resolveUaBrands(fp: FingerprintConfig): {
   fullVersionList: UaBrand[]
 } {
   const major = fp.uaVersion.split('.')[0] || CHROME_MAJOR
+  // 顺序按**真 Chrome 的实际顺序**：GREASE 在最前，然后 Chromium，最后 Google Chrome。
+  //
+  // 原来写成 `Google Chrome → Chromium → Not_A Brand`：这个顺序在真实 Chrome 里
+  // 不存在。`Sec-CH-UA` 请求头与 JS 的 `brands` 都会被查，顺序本身就是指纹。
+  // 而且 GREASE 的 brand 名是**每次会话随机**的（防硬编码黑名单），这里用
+  // 固定的 `Not_A Brand` 是一种保守选择：至少位置对，名字不匹配也是已知的。
   const brands = [
-    { brand: 'Google Chrome', version: major },
+    { brand: 'Not_A Brand', version: '24' },
     { brand: 'Chromium', version: major },
-    { brand: 'Not_A Brand', version: '24' }
+    { brand: 'Google Chrome', version: major }
   ]
   const fullVersionList = [
-    { brand: 'Google Chrome', version: fp.uaVersion },
+    { brand: 'Not_A Brand', version: '24.0.0.0' },
     { brand: 'Chromium', version: fp.uaVersion },
-    { brand: 'Not_A Brand', version: '24.0.0.0' }
+    { brand: 'Google Chrome', version: fp.uaVersion }
   ]
   return { brands, fullVersionList }
 }
@@ -504,6 +521,136 @@ export function applySurfaceDefaults(fp: FingerprintConfig): ResolvedFingerprint
 }
 
 /** 从模板生成一套完整指纹（seed 参与微扰，保证同 seed 同结果） */
+/**
+ * 设备档案池。
+ *
+ * ── 为什么必须有 ──
+ * 原来同一个 OS 的所有环境共享**一套** UA / WebGL renderer / 字体表 / 时区：
+ * 1000 个 Windows 环境里，`WEBGL_debug_renderer_info` 全是
+ * `ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 ...)`，字体白名单逐字节相同，
+ * 时区全是 `America/Los_Angeles`。平台只要聚类一次就能把整个账号池归并成一台机器。
+ *
+ * 现在每个 OS 有多个**自洽**档案：GPU 型号决定 WebGL vendor/renderer，
+ * 语言包决定字体表多/少几个 CJK 字体，档案自带时区与对应坐标。
+ * 档案按 seed 抽取，所以同一环境永远同一台机器，不同环境散落在不同机器上。
+ *
+ * ── 自洽约束（每条都必须成立） ──
+ * 1. webgl.vendor 与 renderer 匹配（Apple ↔ ANGLE Metal、NVIDIA ↔ ANGLE D3D11 …）；
+ * 2. fonts 是该 OS 真实存在的字体集合，且与语言包一致；
+ * 3. timezone 与 geolocation 一致（由 TIMEZONE_GEO 派生，不手填坐标）。
+ */
+export interface DeviceProfile {
+  id: string
+  /** 网页 WebGL vendor 读数值 */
+  glVendor: string
+  /** 网页 WebGL renderer 读数值 */
+  glRenderer: string
+  /** 该档案的默认时区（与出口代理不一致时由 geo-match 覆盖） */
+  timezone: string
+  /** 该语言包下多/少的字体（并入 OS 基础字体表） */
+  extraFonts: string[]
+}
+
+const WINDOWS_DEVICE_PROFILES: DeviceProfile[] = [
+  {
+    id: 'nvidia-1660',
+    glVendor: 'Google Inc. (NVIDIA)',
+    glRenderer: 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Direct3D11 vs_5_0 ps_5_0, D3D11)',
+    timezone: 'America/Los_Angeles',
+    extraFonts: []
+  },
+  {
+    id: 'intel-uhd',
+    glVendor: 'Google Inc. (Intel)',
+    glRenderer: 'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)',
+    timezone: 'America/New_York',
+    extraFonts: []
+  },
+  {
+    id: 'amd-radeon',
+    glVendor: 'Google Inc. (AMD)',
+    glRenderer: 'ANGLE (AMD, AMD Radeon RX 6600 Direct3D11 vs_5_0 ps_5_0, D3D11)',
+    timezone: 'Europe/London',
+    extraFonts: []
+  },
+  {
+    id: 'warp-software',
+    glVendor: 'Google Inc. (Google)',
+    glRenderer: 'ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)',
+    timezone: 'Asia/Tokyo',
+    extraFonts: []
+  },
+  {
+    id: 'intel-uhd-cjk',
+    glVendor: 'Google Inc. (Intel)',
+    glRenderer: 'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)',
+    timezone: 'Asia/Shanghai',
+    // 中文语言包会多出这些字体（真实 Windows 中文系统）
+    extraFonts: ['Microsoft YaHei', 'SimHei', 'NSimSun', 'FangSong', 'KaiTi']
+  }
+]
+
+const MACOS_DEVICE_PROFILES: DeviceProfile[] = [
+  {
+    id: 'apple-m1',
+    glVendor: 'Google Inc. (Apple)',
+    glRenderer: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)',
+    timezone: 'America/Los_Angeles',
+    extraFonts: []
+  },
+  {
+    id: 'apple-m2',
+    glVendor: 'Google Inc. (Apple)',
+    glRenderer: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)',
+    timezone: 'America/New_York',
+    extraFonts: []
+  },
+  {
+    id: 'apple-m3pro',
+    glVendor: 'Google Inc. (Apple)',
+    glRenderer: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)',
+    timezone: 'Europe/London',
+    extraFonts: []
+  },
+  {
+    id: 'apple-intel',
+    glVendor: 'Google Inc. (Apple)',
+    glRenderer: 'ANGLE (Apple, ANGLE Metal Renderer: Intel(R) Iris Plus Graphics 640, Unspecified Version)',
+    timezone: 'Asia/Tokyo',
+    extraFonts: []
+  }
+]
+
+const LINUX_DEVICE_PROFILES: DeviceProfile[] = [
+  {
+    id: 'intel-mesa',
+    glVendor: 'Google Inc. (Intel)',
+    glRenderer: 'ANGLE (Intel, Mesa Intel(R) UHD Graphics 630 (CFL GT2), OpenGL 4.6)',
+    timezone: 'Europe/Berlin',
+    extraFonts: []
+  },
+  {
+    id: 'amd-mesa',
+    glVendor: 'Google Inc. (AMD)',
+    glRenderer: 'ANGLE (AMD, AMD Radeon RX 6600 (radeonsi, navi23, LLVM 15.0.6, DRM 3.57, 6.8.0), OpenGL 4.6)',
+    timezone: 'Europe/Berlin',
+    extraFonts: []
+  },
+  {
+    id: 'llvmpipe',
+    glVendor: 'Google Inc. (Google)',
+    glRenderer: 'ANGLE (Google, Vulkan 1.3.0 (llvmpipe (LLVM 15.0.6, 256 bits)), SwiftShader driver)',
+    timezone: 'Asia/Singapore',
+    extraFonts: []
+  }
+]
+
+export const DEVICE_PROFILES: Record<OSKind, DeviceProfile[]> = {
+  windows: WINDOWS_DEVICE_PROFILES,
+  macos: MACOS_DEVICE_PROFILES,
+  linux: LINUX_DEVICE_PROFILES
+}
+
 export function resolveFingerprint(
   os: OSKind,
   seed: string,
@@ -552,6 +699,27 @@ export function resolveFingerprint(
     base.screen = { width: pick[0], height: pick[1], dpr: pick[2], colorDepth: 24 }
     base.hardware = { cpuCores: [4, 6, 8, 12, 16][h % 5], memoryGB: [8, 16, 32][h % 3] }
   }
+
+  /* ── 设备档案：让同 OS 的环境散落在不同「机器」上 ──
+   *
+   * 抽选位段刻意与上面 screen / cores / memory 用的位段**错开**（>>> 5 / >>> 9）：
+   * 复用同一段会让「屏幕 + GPU」出现相关性（例如某分辨率总配某显卡），
+   * 相关性本身就是可聚类的信息。
+   *
+   * overrides 优先：模板应用（templates.apply）会连 fingerprint 一起传，
+   * 那是用户显式选的整套参数，不能被档案覆盖。
+   */
+  const profiles = DEVICE_PROFILES[os]
+  const dp = profiles[(h >>> 5) % profiles.length]
+  base.webgl = { vendor: dp.glVendor, renderer: dp.glRenderer }
+  base.timezone = dp.timezone
+  base.geolocation = TIMEZONE_GEO[dp.timezone] ?? base.geolocation
+  if (dp.extraFonts.length > 0) {
+    const merged = new Set(base.fonts)
+    for (const f of dp.extraFonts) merged.add(f)
+    base.fonts = [...merged].sort()
+  }
+
   // 先合并 overrides 再补齐：老盘上只有部分新增字段的 profile 传进来时，
   // 缺的那几项仍然是完整缺省，绝不能是 undefined。
   return applySurfaceDefaults({ ...base, ...overrides })

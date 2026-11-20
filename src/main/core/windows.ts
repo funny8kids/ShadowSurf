@@ -899,7 +899,7 @@ export class WindowManager {
       //
       // 原先这里置 `'ok'`，于是「一个属性都没装上的页面」状态也是 ok，
       // 门禁读到的是一次**从未测量过的成功**。现在置 `'unknown'`：
-      // 真正的 `'ok'` 只能由页面台账回读（`__ss_mask_failed__` = 0 条）来置，
+      // 真正的 `'ok'` 只能由页面台账回读（`Symbol.for("ss.mask")` = 0 条）来置，
       // 在那之前门禁按「未测量」处置 —— 拒绝 L2。
       //
       // 状态机保证它不会把已有的坏状态洗回 `unknown`（见 setMaskState）。
@@ -1310,12 +1310,38 @@ export class WindowManager {
     sessionId: string
   ): Promise<void> {
     await bridge.send('Page.enable', {}, sessionId).catch(() => undefined)
+
+    /* ── UA-CH 也要按 target 下发 ──
+     *
+     * CDP 的 `Network.setUserAgentOverride` 是**按 target** 生效的。
+     * 只发 `addScriptToEvaluateOnNewDocument`，跨站 iframe 里会得到：
+     *   navigator.userAgent          → 伪装值（JS 注入了）
+     *   navigator.userAgentData.*    → 宿主真值（没下发 override）
+     * 二者自相矛盾，一行可测。而且 worker 那边早就补了这一步（见
+     * injectWorkerTarget 的 setUserAgentOverride），iframe 漏了纯属遗漏。
+     *
+     * 失败不抛：OOPIF 上 Network 域未必可用；补不上时读数会矛盾，
+     * 由 verify:anticheat 的 OOPIF 字段表报出来。
+     */
+    await bridge
+      .send(
+        'Network.setUserAgentOverride',
+        {
+          userAgent: profile.fingerprint.userAgent,
+          acceptLanguage: profile.fingerprint.languages.join(','),
+          platform: platformOf(profile.fingerprint.os),
+          userAgentMetadata: uaMetadata(profile.fingerprint)
+        },
+        sessionId
+      )
+      .catch(() => undefined)
+
     const source = cachedInjectionScript(profile, 'iframe')
     await bridge.send('Page.addScriptToEvaluateOnNewDocument', { source }, sessionId)
   }
 
   /**
-   * 回读页面注入台账（`__ss_mask_failed__`）。
+   * 回读页面注入台账（`Symbol.for("ss.mask")`）。
    *
    * 为什么必须回读，而不是信「没报错」：
    * page 脚本里每一处 `defineProperty` 都包在 `catch` 里。失败时该属性保持宿主值，
@@ -1329,6 +1355,13 @@ export class WindowManager {
    *
    * 第三条是关键：读不到台账 = 无法证明伪装生效。把「读不到」判成 ok，
    * 就等于让「脚本根本没执行」和「脚本完美执行」得到同一个结论。
+   *
+   * ── 为什么改成 Symbol ──
+   * 原来台账挂在 `window.__ss_mask_failed__`：名字里带 `ss` / `mask` / `failed`，
+   * 任何「扫描可疑全局名」的启发式都直接命中 —— 那是我们自己留的、
+   * 最容易被找到的证据（`Object.getOwnPropertyNames(window)` 一行就能看到）。
+   * 换成 `Symbol.for("ss.mask")` 之后，符号不在 own property 名字里，
+   * 最常见的枚举式探测看不见它；页面侧想删也可以删（删了就是 degraded）。
    */
   private async checkPageMaskLedger(wc: Electron.WebContents, profile: StoredProfile): Promise<void> {
     let failed: Array<{ p: string; why: string }> | null
@@ -1339,7 +1372,7 @@ export class WindowManager {
         // 不用 `length` 再取一次，那会在两次往返之间留一个可被页面改写的窗口。
         expression: `(function () {
           try {
-            var a = window.__ss_mask_failed__;
+            var a = window[Symbol.for("ss.mask")];
             if (!Array.isArray(a)) { return null; }
             var out = [];
             for (var i = 0; i < a.length && i < 20; i++) {

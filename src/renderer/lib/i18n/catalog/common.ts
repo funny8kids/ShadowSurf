@@ -5,6 +5,18 @@
 import type { Dict } from '../index'
 
 export const zh: Dict = {
+  'onboard.title': '三步开始使用 ShadowSurf',
+  'onboard.subtitle': '每个环境都是一套独立的指纹、代理与 Cookie 空间；影子在里面干活，你在另一个环境里浏览。',
+  'onboard.dismiss': '跳过',
+  'onboard.step1.title': '新建第一个环境',
+  'onboard.step1.desc': '点「新建环境」会生成一套独立指纹并打开配置抽屉；核对指纹、挂上代理，然后保存。',
+  'onboard.step1.action': '新建环境',
+  'onboard.step2.title': '配置模型或代理',
+  'onboard.step2.desc': '在浏览器窗口右侧的「模型设置」里接入模型；代理在代理页批量导入后挂到环境。',
+  'onboard.step2.action': '打开设置',
+  'onboard.step3.title': '了解闸门与审计',
+  'onboard.step3.desc': '支付 / 下单 / 删除这类不可逆动作会弹系统确认窗，并写入哈希链审计 —— 读文档了解它的边界。',
+  'onboard.step3.action': '阅读文档',
   'common.ok': '确定',
   'common.cancel': '取消',
   'common.save': '保存',
@@ -41,6 +53,18 @@ export const zh: Dict = {
 }
 
 export const en: Dict = {
+  'onboard.title': 'Get started in three steps',
+  'onboard.subtitle': 'Each profile is its own fingerprint, proxy and cookie space: the agent works there while you browse elsewhere.',
+  'onboard.dismiss': 'Skip',
+  'onboard.step1.title': 'Create your first profile',
+  'onboard.step1.desc': 'New profile generates an independent fingerprint and opens the drawer; verify it, attach a proxy, then save.',
+  'onboard.step1.action': 'New profile',
+  'onboard.step2.title': 'Connect a model or proxy',
+  'onboard.step2.desc': 'Model settings live in the browser window panel; proxies are imported in the proxy page and attached to a profile.',
+  'onboard.step2.action': 'Open settings',
+  'onboard.step3.title': 'Understand the gate & audit log',
+  'onboard.step3.desc': 'Irreversible actions (pay / order / delete) require an OS confirmation and land in a hash-chained audit log.',
+  'onboard.step3.action': 'Read the docs',
   'common.ok': 'OK',
   'common.cancel': 'Cancel',
   'common.save': 'Save',

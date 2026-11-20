@@ -4549,3 +4549,105 @@
   content-visibility: auto;
   contain-intrinsic-size: auto 40px;
 }
+
+/* ────────────────────────────── 首次上手引导 ──────────────────────────────
+   只在「一个环境都没有」时出现（组件自己判断 + localStorage 记已读）。
+   放在视图区顶部，不弹窗、不阻断操作 —— 用户可以直接跳过。 */
+
+.onboard {
+  margin: var(--sp-16) var(--sp-24) 0;
+  padding: var(--sp-16) var(--sp-20);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface-card);
+  box-shadow: var(--sh-2);
+}
+
+.onboard-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-10);
+}
+
+.onboard-mark {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-md);
+  background: var(--accent-2);
+  color: var(--accent);
+  flex: none;
+}
+
+.onboard-title {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  flex: 1;
+  min-width: 0;
+}
+
+.onboard-title b {
+  font-size: var(--fs-15);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.onboard-title span {
+  font-size: var(--fs-12);
+  color: var(--ink-3);
+}
+
+.onboard-steps {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--sp-12);
+  margin-top: var(--sp-16);
+}
+
+.onboard-steps li {
+  display: flex;
+  gap: var(--sp-10);
+  padding: var(--sp-12);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.os-num {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-2xs);
+  background: var(--accent-2);
+  color: var(--accent);
+  font-size: var(--fs-11);
+  font-weight: 700;
+  flex: none;
+}
+
+.os-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.os-body b {
+  font-size: var(--fs-13);
+  font-weight: 600;
+}
+
+.os-body p {
+  font-size: var(--fs-12);
+  color: var(--ink-3);
+  line-height: 1.55;
+}
+
+.os-body .btn {
+  align-self: flex-start;
+  margin-top: var(--sp-2);
+}

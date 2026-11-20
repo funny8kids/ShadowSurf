@@ -21,6 +21,7 @@ import type { Socket } from 'node:net'
 import { lookup } from 'node:dns/promises'
 import { CH } from '@shared/ipc'
 import { CollectionStore } from '@main/store'
+import { decryptSecret, encryptSecret, sealIfPlain } from '@main/store/secret-box'
 import type { ModuleContext } from './context'
 import type {
   Profile,
@@ -79,11 +80,23 @@ function addressKey(host: string, port: number): string {
   return `${host.trim().toLowerCase()}:${port}`
 }
 
+/**
+ * 把记录里的密码还原成明文，供探测 / 下发 session 使用。
+ *
+ * 盘上存的是 `enc:<base64>`（safeStorage）或 `raw:<明文>`（降级），
+ * 老数据是裸明文 —— `decryptSecret` 三种都认。
+ */
+function reveal(record: ProxyRecord): ProxyRecord {
+  if (typeof record.password !== 'string' || record.password === '') return record
+  return { ...record, password: decryptSecret(record.password) }
+}
+
 function toProxyConfig(record: ProxyRecord): ProxyConfig {
   // Profile 侧字段名是 type，代理池侧叫 protocol；其余字段一致
-  const config: ProxyConfig = { type: record.protocol, host: record.host, port: record.port }
-  if (record.username) config.username = record.username
-  if (record.password) config.password = record.password
+  const plain = reveal(record)
+  const config: ProxyConfig = { type: plain.protocol, host: plain.host, port: plain.port }
+  if (plain.username) config.username = plain.username
+  if (plain.password) config.password = plain.password
   return config
 }
 
@@ -781,10 +794,12 @@ async function runCheck(ctx: ModuleContext, id: string): Promise<ProxyCheck> {
  *    不能让一个手改的记录悄悄落进 HTTP 探测。
  */
 export async function probeProxy(record: ProxyRecord): Promise<ProxyCheck> {
-  const protocol = String(record.protocol).toLowerCase()
+  // 盘上的密码是密文，探测必须用明文
+  const plain = reveal(record)
+  const protocol = String(plain.protocol).toLowerCase()
 
   if (protocol === 'socks5' || protocol === 'socks5h') {
-    return socks5Probe(record, protocol === 'socks5h')
+    return socks5Probe(plain, protocol === 'socks5h')
   }
   // 不做假成功：SOCKS4 的帧格式与 SOCKS5 不同（没有方法协商、没有域名地址类型），
   // 要支持就得再写一个客户端。这里明确告诉用户「不支持」，而不是拿 SOCKS5 去撞。
@@ -794,7 +809,7 @@ export async function probeProxy(record: ProxyRecord): Promise<ProxyCheck> {
   if (protocol === 'ssh') {
     return { ok: false, error: '暂不支持 ssh 探测', at: Date.now() }
   }
-  return probe(record)
+  return probe(plain)
 }
 
 /* ────────────────────────────── 写入前的校验 ────────────────────────────── */
@@ -822,13 +837,21 @@ function normalizeInput(input: ProxyInput): ProxyInput {
 /* ────────────────────────────── 注册 ────────────────────────────── */
 
 export function registerProxyModule(ctx: ModuleContext): void {
-  ctx.handle(CH.proxies.list, () => ctx.stores.proxies.list())
+  ctx.handle(CH.proxies.list, () =>
+    // 渲染层不该拿到密码明文；空串表示「这条代理没有密码」。
+    // 详情见 store/profiles.ts 的 toPublicProfile（那里对 profile.proxy 做同样处理）。
+    ctx.stores.proxies.list().map((r) =>
+      typeof r.password === 'string' && r.password.length > 0 ? { ...r, password: '' } : r
+    )
+  )
 
   ctx.handle(CH.proxies.create, (_event, raw) => {
     const input = normalizeInput(raw as ProxyInput)
     const record: ProxyRecord = {
       id: newProxyId(),
       ...input,
+      // 密码加密落盘（safeStorage；不可用时降级为 raw: 前缀，见 secret-box.ts）
+      ...(input.password ? { password: encryptSecret(input.password) } : {}),
       // 新建时一律是「未检测」：没连过就标绿会让人误以为可用
       lastCheck: null,
       createdAt: Date.now()
@@ -862,7 +885,12 @@ export function registerProxyModule(ctx: ModuleContext): void {
     }
     // 空字符串等于「清空这一项」：编辑时用户把用户名删掉，必须真的从记录里去掉
     if (typeof raw.username === 'string') next.username = raw.username || undefined
-    if (typeof raw.password === 'string') next.password = raw.password || undefined
+    if (typeof raw.password === 'string') {
+      // 界面上密码永远显示为空（见 CH.proxies.list 的打码），所以用户没改时
+      // 传回来的是空串 —— 那要保留原密码，不能清掉。
+      // 只有非空值才当「新密码」，并加密落盘。
+      next.password = raw.password === '' ? existing.password : encryptSecret(raw.password)
+    }
     if (typeof raw.region === 'string') next.region = raw.region.trim() || undefined
 
     // 地址、协议或凭证变了，旧检测结果就不再代表这条代理，直接清空
@@ -1000,7 +1028,12 @@ export function registerProxyModule(ctx: ModuleContext): void {
     const record = ctx.stores.proxies.get(proxyId)
     if (record === null) throw new Error('代理不存在：' + proxyId)
 
-    return ctx.stores.profiles.update(profileId, { proxy: toProxyConfig(record) })
+    // profile.proxy 也要加密落盘：它会被序列化进 profiles.json。
+    // 主进程 setProxy 时再 decryptSecret 还原（见 core/session.ts 的 applyProxy）。
+    const cfg = toProxyConfig(record)
+    return ctx.stores.profiles.update(profileId, {
+      proxy: cfg.password ? { ...cfg, password: encryptSecret(cfg.password) } : cfg
+    })
   })
 }
 

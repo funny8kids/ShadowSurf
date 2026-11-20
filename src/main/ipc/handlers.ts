@@ -15,7 +15,8 @@ import type {
   CreateProfileInput,
   Profile,
   Settings,
-  TaskRecord
+  TaskRecord,
+  TeamState
 } from '@shared/types'
 import type { AgentEvent, RunRequest } from '@shared/protocol'
 import { getStores, collectStoreHealth, dataDir, healthRefs } from '@main/store'
@@ -40,6 +41,7 @@ import { registerLocalApiModule } from '@main/modules/localapi'
 import { appendAudit, auditConsent, registerAuditModule } from '@main/modules/audit'
 import { registerDataModule } from '@main/modules/data'
 import { registerTeamModule } from '@main/modules/team'
+import { actorCanUse, assertActorCanManage } from '@main/modules/team-policy'
 import { registerTrashModule } from '@main/modules/trash'
 import { registerExtensionsModule } from '@main/modules/extensions'
 import { registerWarmupModule } from '@main/modules/warmup'
@@ -137,6 +139,23 @@ export function registerHandlers(ctx: HandlerContext): void {
 
   handle(CH.profiles.list, () => stores.profiles.list())
 
+  /**
+   * 团队 ACL 的读取器。
+   *
+   * 「当前操作者」来自 `Settings.activeMemberId`（空 = 本机所有者）。
+   * 只有显式切成 member / viewer 时才会真正约束 —— 这是本机多角色，
+   * 不是登录体系（没有密码 / 会话 / 云端）。
+   */
+  const teamState = (): TeamState => ({
+    // initialized 恒为 true：能走到 handler 说明 store 已就绪（ensureSeeded 在 team 模块内做过）
+    initialized: true,
+    members: stores.members.list(),
+    shares: stores.shares.list(),
+    activity: stores.activity.list()
+  })
+
+  const activeMemberId = (): string | undefined => stores.settings.get().activeMemberId
+
   handle(CH.profiles.get, (_e, id) => {
     const profile = stores.profiles.get(id as string)
     if (!profile) throw new Error(`环境不存在：${String(id)}`)
@@ -150,9 +169,38 @@ export function registerHandlers(ctx: HandlerContext): void {
   })
 
   handle(CH.profiles.update, (_e, id, patch) => {
+    // 改环境 = 管理动作：成员必须拿到该环境的 manage 授权
+    assertActorCanManage(teamState(), activeMemberId(), String(id))
     const profile = stores.profiles.update(id as string, patch as Partial<Profile>)
     pushProfiles()
     return profile
+  })
+
+  /**
+   * 批量更新。
+   *
+   * 渲染层的批量操作（改分组 / 换代理 / 打标签）原来靠 N 次 `update`，
+   * 每次全量重写 profiles.json —— 主进程被同步写阻塞，界面卡住。
+   * 这里走 `updateMany`（一次读-改-写），并只广播一次状态。
+   */
+  handle(CH.profiles.batchUpdate, (_event, rawIds, patch) => {
+    if (!Array.isArray(rawIds)) throw new Error('参数「ids」必须是字符串数组')
+    const ids = rawIds.map((v) => String(v))
+    if (ids.length === 0) return 0
+    const actor = activeMemberId()
+    for (const id of ids) {
+      assertActorCanManage(teamState(), actor, id)
+    }
+    const changed = stores.profiles.updateMany(ids, patch as Partial<Profile>)
+    pushProfiles()
+    appendAudit(
+      stores,
+      '环境·批量修改',
+      `${String(ids.length)} 个环境`,
+      `命中 ${String(changed)} 个`,
+      actor || 'owner'
+    )
+    return changed
   })
 
   /**
@@ -198,6 +246,8 @@ export function registerHandlers(ctx: HandlerContext): void {
   handle(CH.profiles.remove, async (_e, id) => {
     const profileId = id as string
     const name = stores.profiles.get(profileId)?.name ?? profileId
+    // 删除 = 管理动作
+    assertActorCanManage(teamState(), activeMemberId(), profileId)
 
     // 软删除：只停运行时 + 打 deletedAt，**不清分区**。
     // 清分区挪到「回收站 → 彻底删除」那一步（trash.purge），
@@ -207,7 +257,7 @@ export function registerHandlers(ctx: HandlerContext): void {
     pushProfiles()
 
     try {
-      appendAudit(stores, '环境·移入回收站', `环境 ${name}（${profileId}）`, '可在回收站恢复')
+      appendAudit(stores, '环境·移入回收站', `环境 ${name}（${profileId}）`, '可在回收站恢复', activeMemberId() || 'owner')
     } catch (err) {
       // 审计失败不阻断删除：记录状态已经落盘，回收站里能找回
       console.error('[profiles] 写入回收站审计失败', err)
@@ -242,18 +292,23 @@ export function registerHandlers(ctx: HandlerContext): void {
   })
 
   handle(CH.profiles.clone, (_e, id, opts) => {
+    assertActorCanManage(teamState(), activeMemberId(), String(id))
     const profile = stores.profiles.clone(id as string, opts as CloneOptions)
     pushProfiles()
     return profile
   })
 
   handle(CH.profiles.regenerate, (_e, id) => {
+    assertActorCanManage(teamState(), activeMemberId(), String(id))
     const profile = stores.profiles.regenerate(id as string)
     pushProfiles()
     return profile
   })
 
   handle(CH.profiles.launch, async (_e, id) => {
+    if (!actorCanUse(teamState(), activeMemberId(), String(id))) {
+      throw new Error('当前成员无权使用这个环境；需要在成员页获得「使用」授权')
+    }
     await ctx.runtime.launch(id as string)
     pushProfiles()
   })

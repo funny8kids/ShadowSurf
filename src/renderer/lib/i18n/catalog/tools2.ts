@@ -242,6 +242,10 @@ export const zh: Dict = {
   'audit.severity.fail': '失败',
 
   'audit.log.title': '审计日志',
+  'audit.export.button': '导出 CSV',
+  'audit.export.title': '导出当前审计记录为 CSV',
+  'audit.export.empty': '当前没有可导出的审计记录',
+  'audit.export.done': '已导出 {n} 条审计记录',
   'audit.log.subtitle': '按时间顺序追加，每条携带上一条的哈希',
   'audit.verify.running': '校验中…',
   'audit.verify.run': '验证完整性',
@@ -644,6 +648,10 @@ export const en: Dict = {
   'audit.severity.fail': 'Fail',
 
   'audit.log.title': 'Audit log',
+  'audit.export.button': 'Export CSV',
+  'audit.export.title': 'Export loaded audit entries as CSV',
+  'audit.export.empty': 'No audit entries to export',
+  'audit.export.done': 'Exported {n} audit entries',
   'audit.log.subtitle':
     'Appended in time order; each record carries the previous record\'s hash',
   'audit.verify.running': 'Verifying…',

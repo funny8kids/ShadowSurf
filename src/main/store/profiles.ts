@@ -86,9 +86,27 @@ export function seedHintOf(seed: string): string {
  * 「读 `profile.seed` 会编译失败」，不保证「没人把 StoredProfile 直接 return」
  * （结构化类型对多字段宽容），所以收口靠这个函数 + 结构断言。
  */
+/**
+ * 对外形态。
+ *
+ * 两件事必须做：
+ * 1. 剔掉 `seed`（完整种子永不出主进程）；
+ * 2. **代理密码打码**。原来只做了第 1 件，于是 `profiles.list()` 会把
+ *    `proxy.password` 明文递给渲染层 —— 一个 XSS 或一个浏览器窗口的
+ *    console 就能读走所有代理账号的密码。密码的读者只有主进程的探测链路。
+ *
+ * 打码用固定占位符而不是空串：空串会让界面显示「已配置代理」但没有密码，
+ * 用户以为密码丢了；占位符让「这里有一个密码，只是不给你看」。
+ */
+export const MASKED_SECRET = '••••••'
+
 export function toPublicProfile(p: StoredProfile): Profile {
   const { seed, ...rest } = p
-  return { ...rest, seedHint: seedHintOf(seed) }
+  const proxy =
+    rest.proxy !== null && typeof rest.proxy.password === 'string' && rest.proxy.password.length > 0
+      ? { ...rest.proxy, password: MASKED_SECRET }
+      : rest.proxy
+  return { ...rest, proxy, seedHint: seedHintOf(seed) }
 }
 
 function deepCopy(p: StoredProfile): StoredProfile {

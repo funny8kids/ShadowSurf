@@ -57,6 +57,8 @@ const api: ShadowSurfAPI = {
     get: (id) => invoke(CH.profiles.get, id),
     create: (input) => invoke(CH.profiles.create, input),
     update: (id, patch) => invoke(CH.profiles.update, id, patch),
+    // 批量：一次 IPC + 一次落盘（见 shared/ipc.ts 的 batchUpdate 注释）
+    batchUpdate: (ids, patch) => invoke(CH.profiles.batchUpdate, ids, patch),
     remove: (id) => invoke(CH.profiles.remove, id),
     clone: (id, opts) => invoke(CH.profiles.clone, id, opts),
     launch: (id) => invoke(CH.profiles.launch, id),
