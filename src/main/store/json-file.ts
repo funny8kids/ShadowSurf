@@ -456,6 +456,22 @@ export interface StoreRead<T> {
   corruption: CorruptInfo | null
 }
 
+/**
+ * 所有 JsonStore 实例的登记簿。
+ *
+ * 为什么需要它：整机还原会把整个数据目录**换掉**（旧目录改名保留，新目录写入备份内容）。
+ * 换完之后每个 store 的内存缓存里装的还是**旧目录**的内容，而缓存判据只有 mtime ——
+ * 旧文件和新文件的 mtime 完全可能落在同一毫秒（FAT32 / SMB 挂载的 mtime 精度只有 1~2 秒），
+ * 于是 store 会继续吐旧数据，看起来像「还原没生效」。
+ *
+ * 所以「目录被整体替换」必须显式作废缓存。这不是优化，是正确性。
+ */
+interface InvalidationTarget {
+  invalidate(): void
+}
+
+const ALL_STORES = new Set<InvalidationTarget>()
+
 export class JsonStore<T> {
   private readonly file: string
   private readonly fallback: () => T
@@ -486,6 +502,28 @@ export class JsonStore<T> {
     this.serialize = options.serialize
     this.verify = options.verify
     this.explainSchemaMismatch = options.explainSchemaMismatch
+    ALL_STORES.add(this)
+  }
+
+  /**
+   * 作废本 store 的内存缓存：下一次读强制回盘。
+   *
+   * 整机还原后必须调用 —— 缓存里是旧目录的内容，而路径不变，
+   * 光靠 mtime 判断不出来（新旧文件 mtime 可能同毫秒）。
+   *
+   * 损坏 latch 一并清掉：还原后的文件是**新文件**，旧的「已判定损坏」结论对它无效，
+   * 让它重新被判定一次（而不是继续沿用旧结论把好文件当坏文件降级）。
+   */
+  invalidate(): void {
+    this.cache = null
+    this.cachedMtime = 0
+    this.corrupt = null
+    this.corruptMtime = 0
+  }
+
+  /** 作废所有 store 的内存缓存。数据目录被整体替换后调用一次。 */
+  static invalidateAll(): void {
+    for (const store of ALL_STORES) store.invalidate()
   }
 
   /** 目标版本。**每次现算**：能力可能变（见 `JsonStoreOptions.schema`） */

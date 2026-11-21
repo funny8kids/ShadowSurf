@@ -33,6 +33,8 @@ import type {
   WebhookTestResult,
   AuditEntry,
   AuditVerifyResult,
+  AuditFlushStatus,
+  BackupFile,
   ConsistencyReport,
   CookieItem,
   DownloadItem,
@@ -187,7 +189,15 @@ export const CH = {
   },
   audit: {
     list: 'ss:audit:list',
-    verify: 'ss:audit:verify'
+    verify: 'ss:audit:verify',
+    /**
+     * 落盘状态（有没有记录还卡在内存里）。
+     *
+     * 审计是批量落盘的，所以正常情况下存在 200ms 的窗口；
+     * 落盘失败时窗口会一直开着。不把这件事说出来，
+     * 用户会以为「刚才那次操作已经记下来了」。
+     */
+    status: 'ss:audit:status'
   },
   injection: {
     /**
@@ -233,7 +243,20 @@ export const CH = {
     downloads: 'ss:data:downloads',
     clearDownloads: 'ss:data:clearDownloads',
     history: 'ss:data:history',
-    clearHistory: 'ss:data:clearHistory'
+    clearHistory: 'ss:data:clearHistory',
+    /**
+     * 整机备份：把整个数据目录加密成一个文件。
+     *
+     * 单独一组而不是塞进 `localApi`：那是给外部程序用的 REST 通道，
+     * 而备份/还原是**用户自己**在界面上按的操作。
+     * 之前它只有 localApi 入口、界面上一个按钮都没有 ——
+     * 等于桌面端用户永远用不上一个已经实现的功能。
+     */
+    backup: 'ss:data:backup',
+    /** 列出备份目录里的备份文件 */
+    backupList: 'ss:data:backup-list',
+    /** 整机还原（不可逆：会把当前数据目录整体换掉） */
+    restore: 'ss:data:restore'
   },
   localApi: {
     state: 'ss:localApi:state',
@@ -566,6 +589,8 @@ export interface ScriptRunOptions {
 export interface AuditAPI {
   list(limit?: number): Promise<AuditEntry[]>
   verify(): Promise<AuditVerifyResult>
+  /** 有多少条记录还没落盘 / 上一次落盘失败的原因 */
+  status(): Promise<AuditFlushStatus>
 }
 
 export interface SelfCheckAPI {
@@ -653,6 +678,24 @@ export interface DataAPI {
   history(profileId: string): Promise<HistoryItem[]>
   clearHistory(profileId: string): Promise<void>
   onDownload(cb: (item: DownloadItem) => void): () => void
+  /**
+   * 整机备份。返回备份文件的绝对路径。
+   *
+   * 备份用 `safeStorage` 派生的密钥加密，**只有同一台机器、
+   * 同一个系统账户**能还原 —— 换机器请用迁移包（口令封装）。
+   */
+  backup(): Promise<{ path: string }>
+  /** 列出备份目录里的备份文件（按时间倒序） */
+  backupList(): Promise<BackupFile[]>
+  /**
+   * 整机还原。
+   *
+   * 不可逆：当前数据目录会被整体改名保留成 `.bak-<ts>`，新目录写入备份内容。
+   * 保留的那份**不会自动删** —— 用户确认没问题后自己清理。
+   *
+   * 返回的 `keeperPath` 是旧数据的所在位置，必须让用户知道在哪。
+   */
+  restore(path: string): Promise<{ keeperPath: string; fileCount: number }>
 }
 
 export interface LocalApiAPI {

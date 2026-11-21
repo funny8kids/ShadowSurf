@@ -28,6 +28,7 @@ import { CollectionStore, GATE_ACTION_PREFIX, type Stores } from '@main/store'
 // 整体替换掉（把它换成替身的环境里会解析失败）。这两个文件零依赖，直接引真实实现。
 import { StoreCorruptError } from '../store/json-file'
 import { evictInPlace } from '../store/evict'
+import { currentGeneration } from '../store/db'
 import { bridgeFor } from '@main/core/cdp'
 import { judgeMask } from '@main/core/mask-gate'
 import type { GateEvent } from '@main/agent/actions'
@@ -84,6 +85,18 @@ let pending: AuditEntry[] = []
 let flushTimer: ReturnType<typeof setTimeout> | null = null
 /** 链尾（含未落盘的部分）。null = 还没读过盘 */
 let tail: AuditTail | null = null
+/**
+ * 链尾所属的代际。
+ *
+ * 链尾是**从文件算出来的派生状态**，没有 mtime 那种自动失效机制：
+ * 整机还原把审计文件整个换掉之后，缓存里的链尾还停在旧链的最后一条，
+ * 新记录接着旧 seq 写下去 → 盘上变成 `1..137, 501` → 校验判「序号断点」
+ * → 把一次合法还原报成一次审计篡改，而且用户永远消不掉
+ * （唯一出路是手删 audit.json / settings.json）。
+ *
+ * 代际号是唯一的失效钩子：数据目录被整体替换时代际 +1，这里据此丢弃旧链尾。
+ */
+let tailGeneration = -1
 let pendingStores: Stores | null = null
 let exitHookInstalled = false
 
@@ -96,14 +109,22 @@ function clearFlushTimer(): void {
 
 /**
  * 把缓冲写盘。**不抛**：它既被定时器调用（那里没人 catch），也被 verify/list 调用。
- * 写失败只记日志并把链尾置空（下一次 append 重新读盘续号），不能把错误吞成静默。
+ *
+ * 写盘失败时**保留这批记录**并等下次重试 —— 不能丢：
+ * 丢掉的往往是「用户批准了这笔支付」这类事后追责最需要的记录，
+ * 而失败只留一行主进程日志，界面上完全看不出来（磁盘满、杀软锁文件、
+ * 目标文件被独占句柄占着 —— 这些都真实发生过）。
+ *
+ * 链尾也不能动：缓冲里的记录是按当前链尾续的号，
+ * 一旦把链尾退回「盘上最后一条」而缓冲还在，下一条记录就会拿到一个
+ * 与缓冲里某条**重复的 seq** —— 盘上出现两条同号记录，校验直接判「链被篡改」，
+ * 把一次磁盘失败放大成一次审计告警。所以链尾与缓冲必须一起留、一起退。
  */
 export function flushAudit(stores: Stores): void {
   clearFlushTimer()
   if (pending.length === 0) return
 
   const batch = pending
-  pending = []
   try {
     const merged = stores.audit.list().concat(batch)
     // replaceAll 不走 CollectionStore.add，淘汰要自己补（见 AUDIT_MAX_ITEMS）
@@ -113,14 +134,53 @@ export function flushAudit(stores: Stores): void {
     // setAuditHead 内部吞掉写盘失败（见 store/settings.ts）。
     const last = batch[batch.length - 1]
     stores.settings.setAuditHead({ seq: last.seq, hash: last.hash })
+    // 只有成功才清空缓冲：清早了，这一批就永远丢了
+    pending = []
+    flushFailure = null
+    flushRetry = 0
   } catch (err) {
-    // 这一批没能落盘。链尾必须退回「盘上真实最后一条」，否则下一条会按已丢弃的
-    // seq 续号，校验时凭空多出一个断点（把一次磁盘失败报成一次篡改）。
-    tail = null
-    console.error(
-      '[audit] 批量落盘失败，本批记录已丢弃：' + (err instanceof Error ? err.message : String(err))
-    )
+    // 记录留在 pending 里（不清空），链尾也不动（两者必须一致）。
+    // 失败信息挂起来，供界面显示"有记录没落盘"。
+    flushFailure = err instanceof Error ? err.message : String(err)
+    console.error('[audit] 批量落盘失败，本批记录留在缓冲里待重试：' + flushFailure)
+    scheduleRetry(stores)
   }
+}
+
+/** 上一次落盘失败的原因（null = 没有待处理的失败） */
+let flushFailure: string | null = null
+/** 落盘失败的连续次数（用于退避） */
+let flushRetry = 0
+/** 待落盘的条数（失败时界面要显示它，否则用户以为都写进去了） */
+export function pendingAuditCount(): number {
+  return pending.length
+}
+
+/** 上一次落盘失败的原因，null = 一切正常 */
+export function auditFlushError(): string | null {
+  return flushFailure
+}
+
+/** 落盘失败后的重试间隔上限（毫秒） */
+const AUDIT_RETRY_MAX_MS = 30_000
+
+/**
+ * 落盘失败后的退避重试。
+ *
+ * 不靠"下一次 appendAudit 顺带重试"：如果这次失败是最后一条记录，
+ * 之后再没有新动作，缓冲里的记录就会一直躺在内存里（直到进程退出）。
+ * 退避到 30 秒封顶，避免磁盘彻底不可写时疯狂重试把 CPU 烧掉。
+ */
+function scheduleRetry(stores: Stores): void {
+  pendingStores = stores
+  if (flushTimer !== null) return
+  flushRetry += 1
+  const delay = Math.min(1000 * 2 ** Math.min(flushRetry, 5), AUDIT_RETRY_MAX_MS)
+  flushTimer = setTimeout(() => {
+    flushTimer = null
+    if (pendingStores !== null) flushAudit(pendingStores)
+  }, delay)
+  flushTimer.unref?.()
 }
 
 function scheduleFlush(stores: Stores): void {
@@ -150,6 +210,22 @@ function scheduleFlush(stores: Stores): void {
  * flush 失败时 `tail` 会被置回 null，下一次调用重新读盘。
  */
 function auditTail(stores: Stores): AuditTail {
+  // 代际检查放在最前面：它决定「缓存里的链尾还成不成立」。
+  const gen = currentGeneration()
+  if (tailGeneration !== gen) {
+    if (pending.length > 0) {
+      // 缓冲里的记录是按**旧链**续的号。写进新链会让序号凭空跳一段，
+      // 校验时会被报成「有人删了中间几条」—— 一次合法还原变成一条永久假警报。
+      // 这批只能丢：旧链（含这批）完整保存在 .bak- 目录里，没有真丢。
+      console.warn(
+        `[audit] 数据目录已被替换，丢弃 ${pending.length} 条未落盘记录（旧链保存在 .bak- 目录）`
+      )
+      pending = []
+    }
+    tail = null
+    tailGeneration = gen
+  }
+
   if (tail !== null) return tail
 
   const all = stores.audit.list()
@@ -1103,5 +1179,16 @@ export function registerAuditModule(ctx: ModuleContext): void {
     listAudit(ctx.stores, typeof limit === 'number' ? limit : 200)
   )
   ctx.handle(CH.audit.verify, () => verifyAudit(ctx.stores))
+  /**
+   * 落盘状态：有没有记录还卡在内存里。
+   *
+   * 审计是批量落盘的，所以正常只有 200ms 窗口；落盘失败时窗口一直开着。
+   * 不把它报出来，用户就会以为「刚才那次操作已经记下来了」——
+   * 而丢的往往正是「用户批准了这笔支付」这种事后追责最需要的记录。
+   */
+  ctx.handle(CH.audit.status, () => ({
+    pending: pendingAuditCount(),
+    error: auditFlushError()
+  }))
   ctx.handle(CH.selfcheck.run, (_event, profileId) => runSelfCheck(ctx, String(profileId)))
 }

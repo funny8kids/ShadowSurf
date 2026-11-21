@@ -510,6 +510,32 @@ export class ProfileStore {
   }
 
   /**
+   * 启动时把「运行中」的状态归零。返回被改动的条数。
+   *
+   * 异常退出（任务管理器强杀 / 断电 / 主进程崩溃）之后，
+   * profiles.json 里会留下 `status: 'running'` —— 而进程刚起来时
+   * **不可能**有环境正在运行（窗口都还没建）。
+   *
+   * 不归零的后果：控制台显示某个环境「运行中」，可窗口根本不存在；
+   * 用户点「停止」→ `runtime.stop()` 因为内存里没有记录直接 return →
+   * **状态永远消不掉**，只能重启应用（或再启动一次那个环境）。
+   *
+   * 只在启动时调用，运行中的正常流转不受影响。
+   */
+  resetRunningToIdle(): number {
+    const all = this.store.read()
+    let changed = 0
+    for (const p of all) {
+      if (p.status !== 'idle') {
+        p.status = 'idle'
+        changed += 1
+      }
+    }
+    if (changed > 0) this.store.write(all)
+    return changed
+  }
+
+  /**
    * 对外列表。**返回值里没有 seed**（见 `toPublicProfile`）。
    *
    * 回收站里的环境（`deletedAt` 非空）不在这里返回。过滤必须放在这里而不是

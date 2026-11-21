@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
+  BackupFile,
   CookieItem,
   DownloadItem,
   DownloadState,
@@ -151,6 +152,87 @@ export function DataPanel({ profiles }: PanelProps) {
    * 事件处理里立刻占住，第二次点击直接返回。
    */
   const warmupBusy = useRef(false)
+
+  /**
+   * 整机备份 / 还原。
+   *
+   * 放在这个面板里而不是「设置」里，是因为它操作的就是**数据**，
+   * 而这里是唯一一块讲数据的界面 —— 用户找数据相关操作时只会来这里。
+   *
+   * 还原是不可逆的（当前数据目录会被整体换掉），所以必须走二次确认，
+   * 而且确认文案里要写清楚三件事：会关掉所有环境、旧数据保留在哪、不能反悔。
+   */
+  const [backups, setBackups] = useState<BackupFile[]>([])
+  const [backingUp, setBackingUp] = useState(false)
+  /** 正在等待确认还原的备份；null = 没有待确认的还原 */
+  const [restoreTarget, setRestoreTarget] = useState<BackupFile | null>(null)
+  const [restoring, setRestoring] = useState(false)
+  /**
+   * 备份/还原的同步锁。
+   *
+   * 还原会把数据目录整个换掉 —— 两下极快的点击会让第二次还原在第一次
+   * 刚换完目录的瞬间开始，跑在一个已经被换掉的目录上。
+   * 状态要等下一次渲染才生效，所以用 ref 在事件处理里立刻占住。
+   */
+  const backupBusy = useRef(false)
+
+  const loadBackups = useCallback(async (): Promise<void> => {
+    if (!hasBridge()) return
+    try {
+      setBackups(await bridge().data.backupList())
+    } catch (err) {
+      // 读不到备份列表不等于「没有备份」：界面必须说"读失败"，
+      // 而不是画一个空的备份列表让人以为从没备份过。
+      toast.push(errorMessage(err), 'err')
+    }
+  }, [toast])
+
+  useEffect(() => {
+    void loadBackups()
+  }, [loadBackups])
+
+  const doBackup = useCallback(async (): Promise<void> => {
+    if (backupBusy.current || !hasBridge()) return
+    backupBusy.current = true
+    setBackingUp(true)
+    try {
+      const { path } = await bridge().data.backup()
+      await loadBackups()
+      toast.push(t('ws.backup.done', { path }), 'ok')
+    } catch (err) {
+      toast.push(t('ws.backup.failed', { reason: errorMessage(err) }), 'err')
+    } finally {
+      backupBusy.current = false
+      setBackingUp(false)
+    }
+  }, [backups.length, loadBackups, t, toast])
+
+  const doRestore = useCallback(async (): Promise<void> => {
+    const target = restoreTarget
+    setRestoreTarget(null)
+    if (!target || backupBusy.current || !hasBridge()) return
+    backupBusy.current = true
+    setRestoring(true)
+    try {
+      const result = await bridge().data.restore(target.path)
+      toast.push(
+        t('ws.backup.restored', { n: result.fileCount, path: result.keeperPath }),
+        'ok'
+      )
+      await loadBackups()
+      // 整个工作区被换掉了：环境列表、设置、团队、脚本、代理全都变了。
+      // 渲染层手里那些是**旧工作区**的快照 —— 不重载的话，
+      // 界面上会继续显示已经不存在的环境，用户点下去才发现。
+      // 延迟一点再重载，是为了让 toast 先被看见。
+      toast.push(t('ws.backup.reloading'), 'info')
+      setTimeout(() => window.location.reload(), 1200)
+    } catch (err) {
+      toast.push(t('ws.backup.restoreFailed', { reason: errorMessage(err) }), 'err')
+    } finally {
+      backupBusy.current = false
+      setRestoring(false)
+    }
+  }, [loadBackups, restoreTarget, t, toast])
 
   /**
    * 每个列表当前渲染多少条（见 PAGE_SIZE 的注释）。
@@ -522,6 +604,48 @@ export function DataPanel({ profiles }: PanelProps) {
           )}
         </div>
       </header>
+
+      {/* 整机备份 / 还原：工作区级别（不按环境隔离），所以放在环境选择器这一层之外 */}
+      <section className="dp-backup">
+        <div className="dp-backup-main">
+          <div className="dp-backup-text">
+            <h3>{t('ws.backup.title')}</h3>
+            <p>{t('ws.backup.desc')}</p>
+          </div>
+          <Button
+            size="sm"
+            variant="primary"
+            icon="shield"
+            onClick={() => void doBackup()}
+            disabled={backingUp || restoring}
+          >
+            {backingUp ? t('ws.backup.creating') : t('ws.backup.create')}
+          </Button>
+        </div>
+        {backups.length === 0 ? (
+          <p className="dp-backup-empty">{t('ws.backup.empty')}</p>
+        ) : (
+          <ul className="dp-backup-list">
+            {backups.slice(0, 5).map((b) => (
+              <li key={b.path}>
+                <span className="dp-backup-name" title={b.path}>
+                  {t('ws.backup.item', { name: b.name, size: formatBytes(b.size) })}
+                </span>
+                <span className="dp-backup-time">{formatDate(b.createdAt)}</span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon="swap"
+                  onClick={() => setRestoreTarget(b)}
+                  disabled={restoring || backingUp}
+                >
+                  {t('ws.backup.restore')}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       <div className="dp-tabs" role="tablist" aria-label={t('data.tabsAria')}>
         {(Object.keys(TAB_LABEL) as Tab[]).map((key) => (
@@ -961,6 +1085,28 @@ export function DataPanel({ profiles }: PanelProps) {
             </ul>
           </details>
         ) : null}
+      </Modal>
+
+      {/* 还原确认：不可逆操作，确认框必须把「会发生什么」讲清楚 */}
+      <Modal
+        open={restoreTarget !== null}
+        title={t('ws.backup.title')}
+        icon="shield"
+        tone="danger"
+        onClose={() => setRestoreTarget(null)}
+        note={t('ws.backup.restoreConfirm')}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setRestoreTarget(null)}>
+              {t('common.cancel')}
+            </Button>
+            <Button variant="danger" icon="swap" onClick={() => void doRestore()}>
+              {restoring ? t('ws.backup.restoring') : t('ws.backup.restore')}
+            </Button>
+          </>
+        }
+      >
+        <p className="dp-backup-target">{restoreTarget?.name ?? ''}</p>
       </Modal>
     </div>
   )

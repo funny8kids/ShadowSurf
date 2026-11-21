@@ -117,6 +117,25 @@ export const zh: Dict = {
   'data.warmup.failedDetail': '查看 {n} 条失败明细',
   'data.warmup.noProfile': '请先选择环境',
 
+  /* ────────────────────────────── 工作区备份 ────────────────────────────── */
+  'ws.backup.title': '整机备份',
+  'ws.backup.desc':
+    '把整个工作区（环境、指纹、代理、团队、脚本、审计）加密成一个文件。密钥绑定本机与当前系统账户，换一台机器解不开。',
+  'ws.backup.create': '立即备份',
+  'ws.backup.creating': '备份中…',
+  'ws.backup.list': '备份文件',
+  'ws.backup.empty': '还没有备份',
+  'ws.backup.item': '{name} · {size}',
+  'ws.backup.restore': '还原',
+  'ws.backup.restoreConfirm':
+    '还原会用备份内容整体替换当前数据目录。现在所有环境会被关闭，当前改动将丢失；旧的整份数据会保留为 .bak- 目录，确认没问题后可自行删除。确定还原？',
+  'ws.backup.restoring': '还原中…',
+  'ws.backup.done': '已备份到 {path}',
+  'ws.backup.restored': '已还原 {n} 个文件，旧数据保留在 {path}',
+  'ws.backup.reloading': '工作区已整体替换，正在重新加载界面…',
+  'ws.backup.failed': '备份失败：{reason}',
+  'ws.backup.restoreFailed': '还原失败：{reason}',
+
   /* ────────────────────────────── 本地 API ────────────────────────────── */
   'api.title': '本地 API',
   'api.subtitle':
@@ -307,6 +326,9 @@ export const zh: Dict = {
   'audit.kind.unanchored.label': '锚点刚建立',
   'audit.kind.unanchored.hint':
     '这次之前还没有锚点（旧版本数据，或设置文件被删），所以没法判断尾部有没有被删。已按当前最后一条建立锚点，从下次校验起尾部可验证；此前的记录只能验证「内部是否自洽」。',
+
+  'audit.flush.title': '审计记录还没写进磁盘',
+  'audit.flush.pending': '有 {n} 条记录卡在内存里（下面的日志是旧的）。主进程会退避重试。',
 
   /* ────────────────────────────── 团队与成员 ────────────────────────────── */
   'team.title': '团队与成员',
@@ -515,6 +537,25 @@ export const en: Dict = {
   'data.warmup.failedDetail': 'View {n} failure(s)',
   'data.warmup.noProfile': 'Select a profile first',
 
+  /* ────────────────────────────── Workspace backup ────────────────────────────── */
+  'ws.backup.title': 'Workspace backup',
+  'ws.backup.desc':
+    'Encrypts the whole workspace (profiles, fingerprints, proxies, team, scripts, audit) into a single file. The key is bound to this machine and system account — it cannot be opened on another one.',
+  'ws.backup.create': 'Back up now',
+  'ws.backup.creating': 'Backing up…',
+  'ws.backup.list': 'Backup files',
+  'ws.backup.empty': 'No backups yet',
+  'ws.backup.item': '{name} · {size}',
+  'ws.backup.restore': 'Restore',
+  'ws.backup.restoreConfirm':
+    'Restoring replaces the current data directory with the backup. All profiles will be closed and current changes will be lost; the previous data is kept as a .bak- directory you can delete later. Restore anyway?',
+  'ws.backup.restoring': 'Restoring…',
+  'ws.backup.done': 'Backed up to {path}',
+  'ws.backup.restored': 'Restored {n} file(s); previous data kept at {path}',
+  'ws.backup.reloading': 'The workspace was replaced — reloading the interface…',
+  'ws.backup.failed': 'Backup failed: {reason}',
+  'ws.backup.restoreFailed': 'Restore failed: {reason}',
+
   /* ────────────────────────────── Local API ────────────────────────────── */
   'api.title': 'Local API',
   'api.subtitle':
@@ -715,6 +756,10 @@ export const en: Dict = {
   'audit.kind.unanchored.label': 'Anchor just established',
   'audit.kind.unanchored.hint':
     'There was no anchor before this run (older data, or the settings file was deleted), so whether the tail was deleted cannot be determined. An anchor has now been established from the current last record; the tail becomes verifiable from the next check onward. Earlier records can only be checked for internal consistency.',
+
+  'audit.flush.title': 'Audit records are not on disk yet',
+  'audit.flush.pending':
+    '{n} record(s) are still in memory (the log below is stale). The main process retries with backoff.',
 
   /* ────────────────────────────── Team & members ────────────────────────────── */
   'team.title': 'Team & members',

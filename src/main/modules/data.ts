@@ -11,10 +11,13 @@
 
 import { app, session } from 'electron'
 import type { DownloadItem as ElectronDownloadItem, Session, WebContents } from 'electron'
+import { existsSync, readdirSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import { CH } from '@shared/ipc'
 import type { CookieExportFormat, CookieImportSummary } from '@shared/ipc'
-import type { DownloadItem, HistoryItem } from '@shared/types'
-import { CollectionStore } from '@main/store'
+import type { BackupFile, DownloadItem, HistoryItem } from '@shared/types'
+import { CollectionStore, dataDir } from '@main/store'
+import { appendAudit, flushAudit } from '@main/modules/audit'
 import { partitionFor } from '@main/core/session'
 import type { ModuleContext } from './context'
 import {
@@ -214,6 +217,73 @@ export function registerDataModule(ctx: ModuleContext): void {
     // 逐条 remove 会触发 N 次落盘（历史上限 2000），一次性 replaceAll 只写一次
     if (removed > 0) stores.history.replaceAll(kept)
     return removed
+  })
+
+  /* ── 整机备份 / 还原 ── */
+
+  /**
+   * 整机备份：把整个数据目录加密成一个文件。
+   *
+   * 备份的是**配置与身份**（环境、指纹、代理、团队、审计、脚本），
+   * 不含浏览器的 Cookie / IndexedDB —— 那些在各环境的分区里，
+   * 由站点自己的同步机制负责。
+   *
+   * 加密密钥由 `safeStorage` 派生：**只有同一台机器、同一个系统账户**能还原。
+   * 这是刻意的取舍 —— 免去"备份文件可以随便发给别人"的隐患，
+   * 代价是换机器还原不了（换机器请用迁移包）。
+   */
+  ctx.handle(CH.data.backup, async () => {
+    const { createBackup } = await import('@main/store/backup')
+    const path = await createBackup(dataDir())
+    appendAudit(stores, '数据·备份', '本机工作区', path, 'local')
+    return { path }
+  })
+
+  /** 备份目录里的文件列表（按写入时间倒序，最新的在最前） */
+  ctx.handle(CH.data.backupList, async () => {
+    const { backupsDir } = await import('@main/store/backup')
+    const dir = backupsDir(dataDir())
+    if (!existsSync(dir)) return []
+    const files: BackupFile[] = []
+    for (const name of readdirSync(dir)) {
+      if (!name.endsWith('.ssbak')) continue
+      const full = join(dir, name)
+      try {
+        const st = statSync(full)
+        if (!st.isFile()) continue
+        files.push({ name, path: full, size: st.size, createdAt: st.mtimeMs })
+      } catch {
+        // 读不到就跳过这一条：备份列表是辅助信息，
+        // 一条坏记录不该让整个列表报不出来
+        continue
+      }
+    }
+    return files.sort((a, b) => b.createdAt - a.createdAt)
+  })
+
+  /**
+   * 整机还原。
+   *
+   * 不可逆：当前数据目录会被整体改名保留成 `.bak-<ts>`，新目录写入备份内容。
+   * 保留的那份**不自动删** —— 用户确认没问题后自己清理。
+   *
+   * 还原前先把审计缓冲写干净：旧链会被完整保留在 `.bak-` 里，
+   * 否则旧链最后几条只存在于内存，还原后就永远没了。
+   */
+  ctx.handle(CH.data.restore, async (_event, raw) => {
+    const path = typeof raw === 'string' ? raw : ''
+    if (path === '') throw new Error('请选择要还原的备份文件')
+    const { restoreBackup } = await import('@main/store/backup')
+    flushAudit(stores)
+    const result = await restoreBackup(path, dataDir(), ctx.runtime)
+    appendAudit(
+      stores,
+      '数据·还原',
+      '本机工作区',
+      `已还原 ${result.fileCount} 个文件；旧数据保留在 ${result.keeperPath}`,
+      'local'
+    )
+    return { keeperPath: result.keeperPath, fileCount: result.fileCount }
   })
 
   /* ── 事件接线 ── */

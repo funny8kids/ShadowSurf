@@ -25,6 +25,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type {
   AuditEntry,
+  AuditFlushStatus,
   AuditVerifyKind,
   AuditVerifyResult,
   CheckSeverity,
@@ -289,9 +290,34 @@ export function AuditPanel({ profiles }: PanelProps) {
     }
   }, [])
 
+  /**
+   * 落盘状态：有没有记录还卡在内存里。
+   *
+   * 审计是「内存缓冲 + 定时批量落盘」，正常只有 200ms 窗口；
+   * 但落盘失败时窗口会一直开着（磁盘满 / 文件被独占句柄占着）。
+   * 这时候面板上那份日志是**旧的** —— 用户看到的不是完整的审计记录，
+   * 而丢的往往正是「用户批准了这笔支付」这种最该留的。
+   *
+   * 所以这里轮询它：正常时 pending=0，不显示任何东西；
+   * 有问题时报一条常驻提示（不是 toast —— toast 会消失）。
+   */
+  const [flush, setFlush] = useState<AuditFlushStatus | null>(null)
+
+  const refreshFlush = useCallback(async (): Promise<void> => {
+    try {
+      setFlush(await window.ss.audit.status())
+    } catch {
+      // 读不到状态本身不该刷屏：审计面板照常工作
+    }
+  }, [])
+
   useEffect(() => {
     void refreshLog()
-  }, [refreshLog])
+    void refreshFlush()
+    // 落盘失败时主进程会退避重试，5 秒一次足够看出"有没有恢复"
+    const timer = setInterval(() => void refreshFlush(), 5000)
+    return () => clearInterval(timer)
+  }, [refreshLog, refreshFlush])
 
   const active = profiles.find((p) => p.id === profileId) ?? null
 
@@ -371,6 +397,15 @@ export function AuditPanel({ profiles }: PanelProps) {
           <p>{t('audit.subtitle')}</p>
         </div>
       </div>
+
+      {/* 落盘失败提示：常驻，不做成会消失的 toast */}
+      {flush && (flush.error !== null || flush.pending > 0) ? (
+        <p className="au-note bad">
+          <b>{t('audit.flush.title')}</b>
+          {t('audit.flush.pending', { n: flush.pending })}
+          {flush.error ? <span className="au-note-sub">{flush.error}</span> : null}
+        </p>
+      ) : null}
 
       <section className="au-sec">
         <div className="au-head">

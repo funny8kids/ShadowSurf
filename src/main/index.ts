@@ -5,7 +5,7 @@
  * 业务逻辑一律在 core / agent / store 里，这里不写。
  */
 
-import { app, BrowserWindow, nativeTheme } from 'electron'
+import { app, BrowserWindow, nativeTheme, dialog } from 'electron'
 import { join } from 'node:path'
 import { CH } from '@shared/ipc'
 import { getStores, dataDir, sealLegacyBackups, GATE_ACTION_PREFIX } from '@main/store'
@@ -122,7 +122,15 @@ if (gotLock) {
     if (consoleWindow && !consoleWindow.isDestroyed()) {
       if (consoleWindow.isMinimized()) consoleWindow.restore()
       consoleWindow.focus()
+      return
     }
+    // 控制台已经不在了 → **重建**它。
+    //
+    // 原先这里是空的 if，什么也不做：控制台窗口被用户关掉之后，
+    // 再双击 exe 也开不回来（Windows 上 app.on('activate') 根本不触发），
+    // 而环境窗口还开着 → `window-all-closed` 不触发 → App 成了一个
+    // "有浏览器、没控制台、也回不去"的孤儿，只能任务管理器杀进程。
+    consoleWindow = createConsoleWindow()
   })
 
   app.on('window-all-closed', () => {
@@ -164,6 +172,27 @@ if (gotLock) {
     }
 
     const stores = getStores()
+
+    /**
+     * 启动时把残留的「运行中」归零。
+     *
+     * 进程刚起来时不可能有环境在跑（窗口都还没建），
+     * 所以盘上任何 `status: 'running'` 都只可能是上一次异常退出留下的。
+     * 不清掉的话，控制台会显示一个根本不存在的"运行中"环境，
+     * 而且用户点「停止」也消不掉（运行时内存里没有它的记录）。
+     */
+    try {
+      const reset = stores.profiles.resetRunningToIdle()
+      if (reset > 0) {
+        console.warn(`[boot] 已把 ${String(reset)} 个残留的"运行中"状态归零（上次异常退出）`)
+      }
+    } catch (err) {
+      // 归零失败不阻断启动：profiles.json 读不出来时下面的读路径会降级，
+      // 这里再抛一次只会让应用起不来
+      console.error(
+        '[boot] 归零残留状态失败：' + (err instanceof Error ? err.message : String(err))
+      )
+    }
 
     /**
      * 历史备份原地密封。
@@ -342,10 +371,31 @@ if (gotLock) {
     consoleWindow = createConsoleWindow()
 
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
+      // 判据是「没有控制台窗口」，不是「一个窗口都没有」：
+      // 环境窗口开着、控制台被关掉时，App 就是一个回不去的孤儿。
+      if (!consoleWindow || consoleWindow.isDestroyed()) {
         consoleWindow = createConsoleWindow()
       }
     })
+  }).catch((err: unknown) => {
+    // 启动链上任何一步抛错（最常见的是数据目录不可写：磁盘满 / 用户目录只读 /
+    // OneDrive 掉线 / 杀软锁目录），以前都会变成未捕获的 Promise 拒绝 ——
+    // Node 15+ 直接把主进程打退出，**没有窗口、没有对话框、日志在用户看不到的地方**。
+    // 用户的体验是「双击没反应」，而且连打开界面去修的机会都没有。
+    const message = err instanceof Error ? err.message : String(err)
+    console.error('[boot] 启动失败：' + message)
+    try {
+      dialog.showErrorBox(
+        'ShadowSurf 启动失败',
+        '数据目录不可用，应用无法启动。\n\n' +
+          message +
+          '\n\n常见原因：磁盘已满、用户目录只读、网盘（OneDrive 等）未同步、或安全软件锁住了目录。\n' +
+          '请在磁盘上腾出空间或解除目录占用后重试。'
+      )
+    } catch {
+      // 连对话框都弹不出来（例如无 GUI 环境）时，至少留一条日志
+    }
+    app.exit(1)
   })
 } else {
   // 第二个实例：唯一的职责是退出。

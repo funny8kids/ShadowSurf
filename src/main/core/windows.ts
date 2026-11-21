@@ -480,11 +480,44 @@ export class WindowManager {
         nodeIntegration: false,
         sandbox: true,
         webviewTag: false,
+        /**
+         * 网页视图**禁用开发者工具**。
+         *
+         * 理由不是"安全洁癖"，是这个产品本身：注入的伪装脚本、运行时台账
+         * （`window[Symbol.for("ss.mask")]`）、以及整套 CDP 覆盖逻辑，
+         * 在 DevTools 里一眼就能看穿。一个反检测浏览器如果让人一眼看出它是套壳，
+         * 它存在的意义就没有了 —— 站点只要发现 DevTools 开着就知道你在反检测。
+         *
+         * 壳层窗口（控制台）**保留** DevTools：那是用户自己应用的调试工具，
+         * 而且壳层的 DevTools 里看到的是自己的控制台，不是被伪装的那个页面。
+         */
+        devTools: false,
         // 影子轨常常在后台被 Agent 驱动，节流会让定时器和动画卡住
         backgroundThrottling: false
       }
     })
     const wc = view.webContents
+
+    /**
+     * 拦掉开发者工具的快捷键。
+     *
+     * `devTools: false` 只关掉"能打开"这件事，但 F12 / Ctrl+Shift+I 这类
+     * **浏览器级**快捷键在不同版本 / 不同平台上的行为并不一致，
+     * 有的仍然会触发打开动作。这里再补一道 `before-input-event` 拦截，
+     * 宁可多拦一道，也不能让"按 F12"成为绕过点。
+     */
+    wc.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown') return
+      const key = input.key.toLowerCase()
+      if (key === 'f12') {
+        event.preventDefault()
+        return
+      }
+      // Ctrl+Shift+I / J / C：Chrome 的 DevTools 与"检查元素"三件套
+      if (input.control && input.shift && (key === 'i' || key === 'j' || key === 'c')) {
+        event.preventDefault()
+      }
+    })
 
     rec.win.contentView.addChildView(view)
 

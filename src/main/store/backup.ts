@@ -22,15 +22,35 @@
  * 不可逆：先把当前 data 目录**原地改名**保留为 `.bak-<ts>`，
  * 再解包写入。任一步失败都保留 `.bak-` 那份，绝不留下半份数据。
  * 调用方必须停掉所有环境（由 localapi 的 ctx.runtime 完成）。
+ *
+ * ── 三条硬约束（都是踩过的坑）──
+ * 1. `.bak-` 保留目录必须是 data 目录的**兄弟**，不能是它的子目录：
+ *    `rename(old, new)` 在 new 以 old 为前缀时必然 EINVAL（POSIX 规定，
+ *    Windows 的 MoveFileEx 同样失败）。之前写成 `data/.bak-<ts>`，
+ *    还原 100% 失败 —— 而且是在把用户所有环境都停掉之后才失败。
+ * 2. 备份文件**不能**放在 data 目录里：还原会把 data 目录整个换掉，
+ *    放在里面的备份会跟着旧目录一起被改名，用户会发现"备份历史空了"。
+ * 3. 解密与校验必须**先于**停环境完成：停完环境再失败，
+ *    用户得到的是"环境全被关了 + 一个看不懂的 EINVAL"。
  */
 
-import { createCipheriv, createDecipheriv, hkdfSync } from 'node:crypto'
+import { createCipheriv, createDecipheriv, hkdfSync, randomFillSync } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { join, basename } from 'node:path'
+import { join, basename, dirname, resolve, sep } from 'node:path'
 import { safeStorage } from 'electron'
+import { bumpGeneration } from './db'
 
 const MAGIC = 'SSBACKUP1'
-const BACKUP_DIR = 'backups'
+
+/**
+ * 备份目录：与数据目录**同级**（`<userData>/backups`），不在 data 里面。
+ *
+ * 放在 data 里会有两个后果：还原把它连同旧目录一起改名（备份历史消失），
+ * 以及 collect() 要额外排除自己（多一层出错机会）。
+ */
+export function backupsDir(dataDir: string): string {
+  return join(dirname(dataDir), 'backups')
+}
 
 /** 备份密钥：从 safeStorage 加密后的一个固定串派生（同一机器/账户恒定） */
 function backupKey(): Buffer {
@@ -49,14 +69,29 @@ interface Snapshot {
   files: Record<string, string>
 }
 
+/**
+ * 收集数据目录里的普通文件。
+ *
+ * 排除两类：
+ * - 写一半的临时文件（`xxx.json.tmp`）—— 备份半截文件没有意义，
+ *   还原后它还会被下一次写截断复用；
+ * - 损坏隔离副本（`xxx.json.corrupt-<ts>`）—— 那是**证据**，
+ *   还原回去只会让新目录再次被判定损坏。
+ */
 function collect(dir: string): Record<string, string> {
   const out: Record<string, string> = {}
   if (!existsSync(dir)) return out
   for (const name of readdirSync(dir)) {
     const p = join(dir, name)
-    if (!statSync(p).isFile()) continue
-    // 不备份备份自身，也不备份 .tmp（写一半的临时文件）
-    if (name.startsWith('.tmp') || name.startsWith('.bak-')) continue
+    let isFile = false
+    try {
+      isFile = statSync(p).isFile()
+    } catch {
+      continue
+    }
+    if (!isFile) continue
+    if (name.startsWith('.tmp') || name.endsWith('.tmp')) continue
+    if (name.includes('.corrupt-')) continue
     out[name] = readFileSync(p).toString('base64')
   }
   return out
@@ -68,32 +103,53 @@ export async function createBackup(dataDir: string): Promise<string> {
   const plain = Buffer.from(JSON.stringify(snapshot), 'utf8')
   const nonce = Buffer.alloc(12)
   // randomFillSync 避免可预测的 nonce（同 key + 同 nonce 会毁掉 GCM 的安全性）
-  const { randomFillSync } = await import('node:crypto')
   randomFillSync(nonce)
   const cipher = createCipheriv('aes-256-gcm', key, nonce)
   const enc = Buffer.concat([cipher.update(plain), cipher.final()])
   const tag = cipher.getAuthTag()
-  const out = Buffer.concat([
-    Buffer.from(MAGIC, 'utf8'),
-    nonce,
-    tag,
-    enc
-  ])
+  const out = Buffer.concat([Buffer.from(MAGIC, 'utf8'), nonce, tag, enc])
 
-  const dir = join(dataDir, BACKUP_DIR)
+  const dir = backupsDir(dataDir)
   mkdirSync(dir, { recursive: true })
   const path = join(dir, `workspace-${new Date().toISOString().replace(/[:.]/g, '-')}.ssbak`)
   writeFileSync(path, out)
   return path
 }
 
+/** 还原的结果：告诉调用方旧数据留在哪 */
+export interface RestoreResult {
+  /** 旧数据目录被改名保留在这里（用户确认没问题后可以自己删） */
+  keeperPath: string
+  /** 还原回来的文件数 */
+  fileCount: number
+}
+
+/**
+ * 校验待还原的文件确实躺在备份目录里。
+ *
+ * 没有这一条的话，本地 API 的 `POST /v1/restore` 就是任意文件读写的入口：
+ * 调用方传一个系统上的任意路径，App 会拿自己的密钥去尝试解密。
+ * 更糟的是"备份文件"可以来自别的机器 —— 密钥不匹配，解不开，
+ * 但错误信息会把整条路径回显出去。
+ */
+function assertInsideBackups(backupPath: string, dataDir: string): string {
+  const root = resolve(backupsDir(dataDir))
+  const target = resolve(backupPath)
+  if (target !== root && !target.startsWith(root + sep)) {
+    throw new Error('备份文件不在备份目录内，拒绝还原')
+  }
+  if (!existsSync(target)) throw new Error('备份文件不存在')
+  return target
+}
+
 export async function restoreBackup(
   backupPath: string,
   dataDir: string,
   runtime?: { stop: (id: string) => Promise<void>; runningIds: () => string[] }
-): Promise<void> {
+): Promise<RestoreResult> {
   const key = backupKey()
-  const raw = readFileSync(backupPath)
+  const target = assertInsideBackups(backupPath, dataDir)
+  const raw = readFileSync(target)
   const magic = raw.subarray(0, MAGIC.length).toString('utf8')
   if (magic !== MAGIC) throw new Error('不是 ShadowSurf 备份文件')
   const nonce = raw.subarray(MAGIC.length, MAGIC.length + 12)
@@ -112,16 +168,22 @@ export async function restoreBackup(
     throw new Error('备份格式无法识别')
   }
 
-  // 停运行中的环境（不关控制台自己）
+  // ── 到这里为止还没有碰用户的运行环境 ──
+  // 顺序很要紧：解密失败 / 格式不认识时，用户的环境还好好开着，
+  // 而不是先全停了再报错。
   if (runtime) {
     for (const id of runtime.runningIds()) {
       await runtime.stop(id).catch(() => undefined)
     }
   }
 
-  // 先把当前目录整体改名保留
+  // 先把当前目录整体改名保留。
+  //
+  // keeper 必须是 data 目录的**兄弟**：rename(old, new) 在 new 以 old 为前缀时
+  // 必然失败（EINVAL / ERROR_ACCESS_DENIED）—— 写成 data/.bak-<ts> 就是把自己
+  // 改名到自己的子目录，100% 失败，且失败点在"用户环境已经全停了"之后。
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-  const keeper = join(dataDir, `.bak-${stamp}`)
+  const keeper = join(dirname(dataDir), `.bak-${stamp}`)
   if (existsSync(dataDir)) renameSync(dataDir, keeper)
   mkdirSync(dataDir, { recursive: true })
   try {
@@ -136,5 +198,12 @@ export async function restoreBackup(
     renameSync(keeper, dataDir)
     throw err
   }
+
+  // 数据目录已经换掉了：所有 store 的内存缓存与派生状态（审计链尾）
+  // 必须一并作废，否则还原之后界面继续显示旧数据、
+  // 审计校验还会报一次"链被篡改"。
+  bumpGeneration()
+
   // 成功也保留 .bak-（不自动删）：用户确认没问题后自己清
+  return { keeperPath: keeper, fileCount: Object.keys(snapshot.files).length }
 }

@@ -197,7 +197,9 @@ const api: ShadowSurfAPI = {
 
   audit: {
     list: (limit) => invoke(CH.audit.list, limit),
-    verify: () => invoke(CH.audit.verify)
+    verify: () => invoke(CH.audit.verify),
+    // 有多少条记录还没落盘 / 上次落盘失败的原因
+    status: () => invoke(CH.audit.status)
   },
 
   selfcheck: {
@@ -225,6 +227,10 @@ const api: ShadowSurfAPI = {
     clearDownloads: () => invoke(CH.data.clearDownloads),
     history: (profileId) => invoke(CH.data.history, profileId),
     clearHistory: (profileId) => invoke(CH.data.clearHistory, profileId),
+    // 整机备份 / 还原：加密与目录换位都在主进程做，渲染层只传文件名
+    backup: () => invoke(CH.data.backup),
+    backupList: () => invoke(CH.data.backupList),
+    restore: (path) => invoke(CH.data.restore, path),
     onDownload: (cb) => subscribe(CH.push.download, cb)
   },
 

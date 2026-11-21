@@ -49,7 +49,7 @@ import { captureSnapshot } from '@main/agent/snapshot'
 import { ApprovalRequiredError, AuditUnavailableError, MaskIncompleteError, executeAction } from '@main/agent/actions'
 import { assessRisk } from '@main/agent/risk'
 import { requestConsent } from '@main/agent/consent'
-import { appendAudit, auditGate, verifyAudit } from '@main/modules/audit'
+import { appendAudit, auditGate, flushAudit, verifyAudit } from '@main/modules/audit'
 import type { ModuleContext } from './context'
 
 /* ────────────────────────────── 常量 ────────────────────────────── */
@@ -617,9 +617,21 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         throw new ApiError(400, 'E_BAD_INPUT', '还原必须提供 path 且 confirm 为 RESTORE')
       }
       const { restoreBackup } = await import('@main/store/backup')
-      await restoreBackup(path, dataDir(), context?.runtime)
-      appendAudit(getStores(), '数据·还原', '本机工作区', path, 'api')
-      sendJson(res, 200, { ok: true, data: { restored: true } })
+      // 还原前先把审计缓冲写干净：旧链会被完整保留在 .bak- 目录里，
+      // 否则旧链的最后几条只存在于内存，还原后就永远没了。
+      flushAudit(getStores())
+      const result = await restoreBackup(path, dataDir(), context?.runtime)
+      appendAudit(
+        getStores(),
+        '数据·还原',
+        '本机工作区',
+        `已还原 ${result.fileCount} 个文件；旧数据保留在 ${result.keeperPath}`,
+        'api'
+      )
+      sendJson(res, 200, {
+        ok: true,
+        data: { restored: true, keeperPath: result.keeperPath, fileCount: result.fileCount }
+      })
       return
     }
 

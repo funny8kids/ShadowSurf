@@ -20,6 +20,36 @@ import type { JsonStoreOptions, Migrate } from './json-file'
 
 let cachedDir: string | null = null
 
+/**
+ * 数据目录的「代际」。每次目录被**整体替换**（整机还原）就 +1。
+ *
+ * 为什么需要它：store 的内存缓存能靠 mtime 作废，但**派生状态**（审计链尾 seq/hash）
+ * 是从文件里算出来的，没有任何失效钩子 —— 还原之后链尾还停在旧链的最后一条，
+ * 于是新记录接着旧 seq 写下去，校验时凭空多出一个「序号断点」，
+ * 把一次合法还原报成一次审计篡改，而且用户永远消不掉。
+ *
+ * 派生状态拿不到文件句柄、也没法自己判断"盘上换没换"，
+ * 所以由这里提供一个单调递增的代际号：变了就说明盘上的东西被换过，
+ * 缓存与链尾一起作废。
+ */
+let generation = 0
+
+/** 当前代际。派生状态（审计链尾等）用它判断自己是否过期 */
+export function currentGeneration(): number {
+  return generation
+}
+
+/**
+ * 数据目录被整体替换后调用：作废所有 store 的内存缓存，并推进代际。
+ *
+ * 顺序很重要：先作废缓存（否则下一次读还会命中旧内容），
+ * 再推进代际（否则派生状态可能在缓存作废前抢跑）。
+ */
+export function bumpGeneration(): void {
+  JsonFileStore.invalidateAll()
+  generation += 1
+}
+
 /** 所有数据文件的根目录：<userData>/data，首次调用时创建 */
 export function dataDir(): string {
   if (cachedDir !== null) return cachedDir
@@ -31,7 +61,15 @@ export function dataDir(): string {
     base = process.cwd()
   }
   const dir = path.join(base, 'data')
-  fs.mkdirSync(dir, { recursive: true })
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+  } catch (err) {
+    // mkdir 失败（磁盘满 / 用户目录只读 / 网盘掉线 / 杀软锁目录）在这里抛，
+    // 而这里抛的东西会一路冒到启动链上 —— 所以必须自带人话：
+    // 光一个 ENOSPC 没人知道该怎么办。
+    const why = err instanceof Error ? err.message : String(err)
+    throw new Error(`数据目录不可用（${dir}）：${why}`)
+  }
   cachedDir = dir
   return dir
 }

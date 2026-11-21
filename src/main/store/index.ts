@@ -134,17 +134,44 @@ function refWithTouch(health: () => HealthStoreRef, touch: () => void): HealthSt
   }
 }
 
+/**
+ * 健康面板的 store 引用表。
+ *
+ * **必须覆盖全部 store，不能手写白名单。**
+ *
+ * 原先这里只列了 8 个，另外 7 个（members / activity / shares / extensions /
+ * schedules / proxyGroups / webhooks）不在检查范围内。后果不是"少看几个文件"，
+ * 而是：这些文件损坏时 `read()` 会走 quarantine 降级成 `[]`，
+ * 调用方（webhooks / scheduler / 团队模块）又不查 corruption，
+ * 于是界面显示「尚未配置 Webhook / 还没有定时任务」，
+ * 健康横幅因为根本没检查这些文件而一直显示「一切正常」。
+ *
+ * 数据在盘上完好，用户却以为从没配过 —— 然后重新配一遍。
+ *
+ * 所以这里的清单跟着 `Stores` 走（`Object.entries`），而不是手写一遍：
+ * 新增 store 的人只要加了字段，这里自动覆盖；手写白名单一定会漏。
+ */
 export function healthRefs(stores: Stores): HealthStoreRef[] {
-  return [
-    refWithTouch(() => stores.profiles.health, () => stores.profiles.list()),
-    refWithTouch(() => stores.tasks.health, () => stores.tasks.list()),
-    refWithTouch(() => stores.settings.health, () => stores.settings.get()),
-    refWithTouch(() => stores.proxies.health, () => stores.proxies.list()),
-    refWithTouch(() => stores.templates.health, () => stores.templates.list()),
-    refWithTouch(() => stores.scripts.health, () => stores.scripts.list()),
-    refWithTouch(() => stores.audit.health, () => stores.audit.list()),
-    refWithTouch(() => stores.history.health, () => stores.history.list())
-  ]
+  const refs: HealthStoreRef[] = []
+  for (const value of Object.values(stores)) {
+    const store = value as {
+      health?: HealthStoreRef
+      list?: () => unknown
+      get?: () => unknown
+    }
+    // ProfileStore / TaskStore / SettingsStore 有自己的 health（字段更细），
+    // CollectionStore 也有。理论上每个 store 都有 —— 但这里仍然做一次防御：
+    // 少一个 store 引用不该让整个健康面板变成空白页。
+    if (typeof store.health !== 'object' || store.health === null) continue
+    const touch =
+      typeof store.list === 'function'
+        ? () => store.list!()
+        : typeof store.get === 'function'
+          ? () => store.get!()
+          : () => undefined
+    refs.push(refWithTouch(() => store.health!, touch))
+  }
+  return refs
 }
 
 export { ProfileStore } from './profiles'
