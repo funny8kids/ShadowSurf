@@ -73,3 +73,20 @@ test('渲染层没有硬编码的中文 toast', () => {
   }
   assert.deepEqual(offenders, [], `发现硬编码中文 toast：\n${offenders.join('\n')}`)
 })
+
+/**
+ * E2E 入口必须覆盖 tools/ 下所有 e2e-*.mjs 与 stress-*.mjs。
+ *
+ * 之前 e2e-new-features.mjs 存在却从没进过回归脚本 ——
+ * 扩展 / Cookie 预热 / 定时任务 / 回收站这些功能从来没在 CI 里被验证过，
+ * 而报告里显示"E2E 全绿"。少测一套却看起来全绿，比没有 E2E 更危险。
+ */
+test('e2e-all.sh 覆盖了所有 E2E 脚本', () => {
+  const root = join(ROOT, 'tools')
+  const all = readdirSync(root).filter(
+    (f) => /^(e2e|stress)-.*\.mjs$/.test(f)
+  )
+  const entry = readFileSync(join(root, 'e2e-all.sh'), 'utf8')
+  const missed = all.filter((f) => !entry.includes(f))
+  assert.deepEqual(missed, [], `这些 E2E 脚本没进统一入口：${missed.join(', ')}`)
+})

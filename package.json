@@ -16,6 +16,7 @@
     "mock": "node tools/mock-llm.mjs",
     "shot": "node tools/shot-prototype.mjs",
     "test": "node tools/run-tests.mjs",
+    "test:e2e": "bash tools/e2e-all.sh",
     "verify:injection": "node tools/check-injection.mjs && node tools/run-electron.mjs tools/probe-mask.cjs && node tools/run-electron.mjs tools/probe-worker.cjs",
     "verify:gate": "node tools/probe-gate.mjs",
     "verify:consent": "node tools/probe-consent.mjs",
