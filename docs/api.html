@@ -42,9 +42,30 @@
 <header class="doc-head">
   <div class="doc-kicker">API Reference · v1.0</div>
   <h1>ShadowSurf <em>API 接口文档</em></h1>
+
+  <div class="note bad" style="margin:18px 0">
+    <div class="lbl">重要：本页大部分内容是「目标契约」，不是当前实现</div>
+    <p>这份文档最初按下一代控制面写就，里面描述的 <b>Spaces / WebSocket 事件 / Idempotency-Key / 202 异步任务</b>
+       等<strong>都还没有实现</strong>。照着它写脚本会得到一串 404。</p>
+    <p>当前真正能调用的端点只有下面这些（实现在 <code>src/main/modules/localapi.ts</code>）：</p>
+    <pre><code>GET    /v1/health
+GET    /v1/profiles                    POST   /v1/profiles
+GET    /v1/profiles/{id}               PATCH  /v1/profiles/{id}
+DELETE /v1/profiles/{id}
+POST   /v1/profiles/{id}/launch        POST   /v1/profiles/{id}/stop
+GET    /v1/profiles/{id}/snapshot      GET    /v1/profiles/{id}/consistency
+POST   /v1/profiles/{id}/act           GET    /v1/tasks
+GET    /v1/templates                   GET    /v1/scripts
+GET    /v1/proxies                     GET    /v1/audit/verify
+POST   /v1/backup                      POST   /v1/restore</code></pre>
+    <p>下面各章节里凡是出现 <code>/v1/spaces</code>、<code>/v1/models</code>、WebSocket、
+       <code>Idempotency-Key</code> 的地方，都请当作<strong>设计稿</strong>阅读，不是可用接口。
+       机器可读规格见 <a href="api/openapi.yaml">openapi.yaml</a>（其中同样标注了这一点）。</p>
+  </div>
+
   <p class="sub">本地控制面接口。桌面 UI、CLI、SDK、IDE 插件共用同一套契约。机器可读规格见 <a href="api/openapi.yaml">openapi.yaml</a>，可直接导入 Postman / Insomnia / Apifox。</p>
   <div class="doc-meta">
-    <div><b>Base URL</b>　<code>http://127.0.0.1:7801</code></div>
+    <div><b>Base URL</b>　<code>http://127.0.0.1:7717</code></div>
     <div><b>版本</b>　<code>v1</code></div>
     <div class="rel"><b>关联</b>
       <a href="architecture.html">架构设计</a>
@@ -56,18 +77,20 @@
 
 <!-- ============ 1 ============ -->
 <h2 id="overview"><span class="n">01</span>概述</h2>
-<p class="lede">接口分两套：<b>REST</b> 负责状态查询与命令提交，<b>WebSocket</b> 负责实时事件。任务执行是异步的——<code>POST /v1/tasks</code> 立刻返回 <code>202</code> 与 <code>task_id</code>，进度通过事件流推送。</p>
+<p class="lede"><b>当前实现</b>只有同步的 <b>REST</b>：<code>POST /v1/{资源}</code> 直接返回 <code>{ok:true,data:...}</code>。
+   <code>GET /v1/tasks</code> 可以用来轮询任务状态；<b>没有 WebSocket</b>。
+   Agent 的实时事件走应用内 IPC，不对外暴露。下文的 WebSocket / 202 描述属于未实现的设计稿。</p>
 
 <div class="tbl">
 <table>
 <thead><tr><th style="width:22%">特性</th><th style="width:78%">说明</th></tr></thead>
 <tbody>
 <tr><td>协议</td><td>HTTP/1.1，JSON 请求体，UTF-8</td></tr>
-<tr><td>基址</td><td><code>http://127.0.0.1:7801</code>（仅回环，不监听 0.0.0.0）</td></tr>
+<tr><td>基址</td><td><code>http://127.0.0.1:7717</code>（仅回环，不监听 0.0.0.0）</td></tr>
 <tr><td>版本策略</td><td>路径版本 <code>/v1</code>；破坏性变更才升主版本</td></tr>
 <tr><td>时间</td><td>全部为 Unix 毫秒整数，字段名以 <code>_at</code> 结尾</td></tr>
 <tr><td>ID 前缀</td><td><code>prf_</code> 环境 · <code>spc_</code> 空间 · <code>tsk_</code> 任务 · <code>stp_</code> 步骤 · <code>prx_</code> 代理 · <code>art_</code> 产物</td></tr>
-<tr><td>幂等</td><td>所有 <code>POST</code> 支持 <code>Idempotency-Key</code> 头，24h 内同 key 返回首次结果</td></tr>
+<tr><td>幂等</td><td><b>当前不支持</b> <code>Idempotency-Key</code>（设计稿里写了，但没实现）：重复提交会重复执行</td></tr>
 </tbody>
 </table>
 </div>
@@ -80,7 +103,9 @@
 
 <div class="note warn">
   <div class="lbl">回环防护</div>
-  <p>服务校验 <code>Origin</code> 头，仅接受 <code>chrome-extension://</code>、<code>file://</code>、<code>http://127.0.0.1:*</code> 与无 Origin 的本地进程调用。任何网页发起的跨域请求都会被 <code>403</code> 拒绝——这是防止恶意页面通过 localhost 驱动浏览器的关键一道。</p>
+  <p>服务校验 <code>Origin</code> 头，只给 <code>http://127.0.0.1:*</code> 与 <code>http://localhost:*</code> 发 CORS 头。
+     没有匹配 Origin 的浏览器请求会被浏览器自己拦下；curl 等不带 Origin 的本地进程照常可用。
+     令牌由主进程写进剪贴板，<strong>任何接口都不返回明文令牌</strong>。</p>
   <p>同时设置 <code>Access-Control-Allow-Origin</code> 为白名单精确匹配，不使用 <code>*</code>。</p>
 </div>
 
@@ -202,7 +227,7 @@
     </table>
 
     <div class="code-title">请求</div>
-<pre><code>curl -X POST http://127.0.0.1:7801/v1/profiles \
+<pre><code>curl -X POST http://127.0.0.1:7717/v1/profiles \
   -H <span class="s-s">"Authorization: Bearer $TOKEN"</span> \
   -H <span class="s-s">"Content-Type: application/json"</span> \
   -d <span class="s-s">'{
@@ -336,7 +361,7 @@
     <p>这三种情况<b>动作一步都没有执行</b>。把它们折成一个 <code>409</code>，客户端只能一律重试，而「一律重试」对着一个明确拒绝的动作就是在骚扰机器前的人。</p>
 
     <div class="code-title">请求 / 响应</div>
-<pre><code>curl -X POST http://127.0.0.1:7801/v1/profiles/prf_7c9a/act \
+<pre><code>curl -X POST http://127.0.0.1:7717/v1/profiles/prf_7c9a/act \
   -H <span class="s-s">"Authorization: Bearer $TOKEN"</span> \
   -H <span class="s-s">"Content-Type: application/json"</span> \
   -d <span class="s-s">'{"action": {"type": "click", "id": "e_12"}}'</span>
@@ -699,7 +724,7 @@
     <span class="ep-tag">事件流</span>
   </div>
   <div class="ep-body">
-    <p>连接：<code>ws://127.0.0.1:7801/v1/events?token=&lt;token&gt;&amp;since=&lt;seq&gt;</code>。断线重连时带 <code>since</code> 可补发遗漏事件（服务端保留最近 10 分钟）。</p>
+    <p>连接：<code>ws://127.0.0.1:7717/v1/events?token=&lt;token&gt;&amp;since=&lt;seq&gt;</code>。断线重连时带 <code>since</code> 可补发遗漏事件（服务端保留最近 10 分钟）。</p>
 
     <table class="params">
       <tr><th>字段</th><th>类型</th><th>说明</th></tr>
@@ -856,7 +881,7 @@ console.log(task.status, task.output)</code></pre>
 <pre><code><span class="s-kw">import</span> requests, os
 
 TOKEN = <span class="s-kw">open</span>(os.path.expanduser(<span class="s-s">'~/.shadowsurf/token'</span>)).read().strip()
-BASE = <span class="s-s">'http://127.0.0.1:7801/v1'</span>
+BASE = <span class="s-s">'http://127.0.0.1:7717/v1'</span>
 H = {<span class="s-s">'Authorization'</span>: <span class="s-s">f'Bearer {TOKEN}'</span>}
 
 task = requests.post(<span class="s-s">f'{BASE}/tasks'</span>, headers=H, json={
