@@ -470,11 +470,14 @@ function trackDownload(
 function watchNavigation(stores: ModuleContext['stores']): void {
   /** session 对象没有可反查的 partition 名，只能用对象身份反推归属环境 */
   const ownerBySession = new Map<Session, string>()
-  let mappedCount = -1
+  /** 环境集合的签名：比单纯的"数量"更可靠（见 ownerOf 的注释） */
+  let mappedSignature = ''
 
   const rebuildOwners = (): void => {
     const profiles = stores.profiles.list()
-    mappedCount = profiles.length
+    // 用 id 拼成签名：删一个再建一个时数量不变，但 id 变了 —— 必须重建映射。
+    // 比每次导航读一遍 Map 便宜：签名一次 O(n) 字符串拼接，导航时只比一个字符串。
+    mappedSignature = profiles.map((p) => p.id).sort().join('|')
     ownerBySession.clear()
     for (const profile of profiles) {
       ownerBySession.set(session.fromPartition(partitionFor(profile.id)), profile.id)
@@ -484,10 +487,11 @@ function watchNavigation(stores: ModuleContext['stores']): void {
   const ownerOf = (ses: Session): string | null => {
     const hit = ownerBySession.get(ses)
     if (hit) return hit
-    // 环境可能在模块注册之后才创建。用「环境数量」当变更信号重建映射，
-    // 比每次导航都读一遍环境库便宜得多；代价是「删一个再建一个」这种
-    // 数量不变的情况要等下一次数量变化才认得出新环境。
-    if (stores.profiles.list().length !== mappedCount) {
+    // 环境可能在模块注册之后才创建，或刚被删掉重建。用 id 集合的签名当变更信号。
+    // 原先只比"数量"，于是"删一个再建一个"这种数量不变的情况认不出新环境 ——
+    // 新环境的导航全部被判成"无归属"，历史页一片空白，而用户明明访问了。
+    const current = stores.profiles.list().map((p) => p.id).sort().join('|')
+    if (current !== mappedSignature) {
       rebuildOwners()
       return ownerBySession.get(ses) ?? null
     }
