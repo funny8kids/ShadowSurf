@@ -29,7 +29,7 @@ import type {
 import { CollectionStore } from '@main/store'
 import { appendAudit } from './audit'
 import type { ModuleContext } from './context'
-import { probeProxy } from './proxy'
+import { probeProxy, reveal } from './proxy'
 import {
   candidateOrder,
   isStrategy,
@@ -64,12 +64,17 @@ function asProxyIds(value: unknown): string[] {
 }
 
 function proxyOf(record: ProxyRecord): ProxyConfig {
+  // 必须解密：盘上的密码是 enc: 密文（见 secret-box.ts）。
+  // 原先这里直接用原值，于是"通过代理组挂的代理"全部认证失败，
+  // 而"直接挂单条代理"（走 proxy.ts 的 toProxyConfig）是正常的 ——
+  // 两条路径行为不一致，用户只会觉得"代理组坏了"。
+  const plain = reveal(record)
   return {
-    type: record.protocol,
-    host: record.host,
-    port: record.port,
-    ...(record.username ? { username: record.username } : {}),
-    ...(record.password ? { password: record.password } : {})
+    type: plain.protocol,
+    host: plain.host,
+    port: plain.port,
+    ...(plain.username ? { username: plain.username } : {}),
+    ...(plain.password ? { password: plain.password } : {})
   }
 }
 

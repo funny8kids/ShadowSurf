@@ -86,7 +86,14 @@ function addressKey(host: string, port: number): string {
  * 盘上存的是 `enc:<base64>`（safeStorage）或 `raw:<明文>`（降级），
  * 老数据是裸明文 —— `decryptSecret` 三种都认。
  */
-function reveal(record: ProxyRecord): ProxyRecord {
+/**
+ * 把盘上的密文密码还原成明文（内存形态）。
+ *
+ * 导出给 proxy-groups 用：那条路径也要把代理挂到 session 上，
+ * 而它原先直接用盘上的 `enc:` 字符串当密码 —— 认证必然失败。
+ * 解密规则只能有一份（secret-box.ts），所以两条路径都走这个函数。
+ */
+export function reveal(record: ProxyRecord): ProxyRecord {
   if (typeof record.password !== 'string' || record.password === '') return record
   return { ...record, password: decryptSecret(record.password) }
 }

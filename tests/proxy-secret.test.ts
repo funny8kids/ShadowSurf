@@ -94,3 +94,17 @@ test('代理池所有写路径都经过加密，不能有一条漏网', () => {
     'proxies.import 必须加密密码，不能写明文'
   )
 })
+
+test('代理组挂载代理时也必须解密密码（不能把 enc: 当密码发）', () => {
+  const src = read('src/main/modules/proxy-groups.ts')
+  assert.match(
+    src,
+    /import \{[^}]*reveal[^}]*\} from '\.\/proxy'/,
+    'proxy-groups 必须复用 proxy.ts 的 reveal，而不是自己解密或直接用原值'
+  )
+  assert.match(
+    src,
+    /const plain = reveal\(record\)[\s\S]{0,200}password: plain\.password/,
+    'proxyOf 必须用解密后的密码'
+  )
+})
