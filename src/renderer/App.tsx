@@ -772,8 +772,18 @@ function Shell() {
           }
           onNew={() => {
             if (view === 'tasks') {
-              setView('browser')
-              toast.push(t('app.toast.describeInShadow'), 'info')
+              /**
+               * 任务页的「新建」不切视图。
+               *
+               * 原来这里 setView('browser')，意图是"让用户在影子面板输入指令" ——
+               * 但**控制台窗口没有影子面板**：BrowserShell 拿的 windowState 是
+               * 环境窗口推来的别人的状态（甚至可能是 null）。
+               * 结果是用户点「新建任务」后看到一个空白的浏览器占位壳，
+               * 既不能输入指令，也回不到任务页（Esc 在无窗口时不会自动切回）。
+               *
+               * 正确的引导是提示用户去环境窗口，而不是切到一个不存在的界面。
+               */
+              toast.push(t('app.toast.taskFromShadow'), 'info')
             } else {
               void createProfile()
             }

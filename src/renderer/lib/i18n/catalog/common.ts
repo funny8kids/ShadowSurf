@@ -22,7 +22,6 @@ export const zh: Dict = {
   'app.toast.proxyDirect': '已改为直连',
   'app.toast.runningEnv': '{n} 个环境正在运行',
   'app.toast.noNotify': '暂时没有新的通知',
-  'app.toast.describeInShadow': '请在影子面板里描述任务',
   'app.toast.modelSettingsHint': '模型设置在浏览器窗口右侧的「模型设置」里打开',
   'app.toast.taskFromShadow': '任务由影子面板发起：打开环境后在右侧输入指令',
 
@@ -79,7 +78,6 @@ export const en: Dict = {
   'app.toast.proxyDirect': 'Switched to direct connection',
   'app.toast.runningEnv': '{n} environment(s) running',
   'app.toast.noNotify': 'No new notifications',
-  'app.toast.describeInShadow': 'Describe the task in the shadow panel',
   'app.toast.modelSettingsHint': 'Model settings live in the "Model settings" panel on the right of the browser window',
   'app.toast.taskFromShadow': 'Tasks start from the shadow panel: open an environment and type on the right',
 
