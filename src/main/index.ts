@@ -10,6 +10,7 @@ import type { MenuItemConstructorOptions } from 'electron'
 import { join } from 'node:path'
 import { CH } from '@shared/ipc'
 import { getStores, dataDir, sealLegacyBackups, GATE_ACTION_PREFIX } from '@main/store'
+import { readWindowGeometry, writeWindowGeometry } from '@main/store/window-geometry'
 import { masterKey } from '@main/core/fingerprint'
 import { WindowManager, guardShellNavigation } from '@main/core/windows'
 import { applyThemeMode, applyThemeToWindows, windowBackground } from '@main/core/theme'
@@ -82,9 +83,18 @@ function loadRenderer(win: BrowserWindow, query?: string): void {
 }
 
 function createConsoleWindow(): BrowserWindow {
+  /**
+   * 恢复上次的窗口几何。
+   *
+   * 读不到 / 损坏 / 显示器拔掉导致坐标离谱，都回退到默认值 ——
+   * 这是纯展示偏好，绝不能因为它把启动搞挂（见 window-geometry.ts 的说明）。
+   */
+  const saved = readWindowGeometry(dataDir())
   const win = new BrowserWindow({
-    width: 1360,
-    height: 900,
+    x: saved?.x,
+    y: saved?.y,
+    width: saved?.width ?? 1360,
+    height: saved?.height ?? 900,
     minWidth: 1080,
     minHeight: 700,
     backgroundColor: windowBackground(),
@@ -103,9 +113,23 @@ function createConsoleWindow(): BrowserWindow {
     }
   })
 
-  win.once('ready-to-show', () => win.show())
+  win.once('ready-to-show', () => {
+    // 最大化要等窗口显示后再设：创建时设 maximized 在部分平台上会被 show() 覆盖
+    if (saved?.maximized) win.maximize()
+    win.show()
+  })
   // 控制台窗口同样挂着完整 preload，同样不能被顶层导航劫持
   guardShellNavigation(win)
+  win.on('close', () => {
+    // 关窗时记一次几何（不是 resize 时记几十次）。
+    // isMaximized 时保存的 bounds 是全屏尺寸，恢复时靠 maximized 标志处理。
+    try {
+      const bounds = win.getBounds()
+      writeWindowGeometry(dataDir(), { ...bounds, maximized: win.isMaximized() })
+    } catch {
+      /* 拿不到就跳过展示偏好 */
+    }
+  })
   win.on('closed', () => {
     consoleWindow = null
   })
