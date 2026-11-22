@@ -23,7 +23,7 @@
  * ─────────────────────────────────────────────────────────────────────
  * 门禁 vs 探针
  * ─────────────────────────────────────────────────────────────────────
- * gate=true   失败 → 退出码 1，接进 PR 门禁（AC-01~10、AC-13~23）
+ * gate=true   失败 → 退出码 1，接进 PR 门禁（AC-01~10、AC-13~24）
  * gate=false  只记录读数，永远不判红（AC-11 Electron 探测面、AC-12 跨环境）
  * 基线没拿到就断死，只会让门禁一上来就红，然后就没人看了 —— 所以先采数。
  *
@@ -231,6 +231,35 @@ async function pageProbe() {
     webdriver: navigator.webdriver,
     pdfViewerEnabled: navigator.pdfViewerEnabled
   }
+
+  /* 键盘布局：getLayoutMap 报的是**宿主机当前输入法**的布局。
+   * 中英文混排的 Windows 机器上，一个声明 en-US 的身份会报出 zh-CN ——
+   * 站点一读就知道"这个身份是拼出来的"。
+   *
+   * 这一项必须异步读（返回 Promise），所以单独一段而不是塞进上面的 nav 字面量。
+   * 三件事都要记：值、类型、以及 toString 外观 ——
+   * 少记类型的话，"注入了但返回的是普通对象"这种破绽看不见。 */
+  const keyboard = await (async () => {
+    try {
+      const kb = navigator.keyboard
+      if (!kb || typeof kb.getLayoutMap !== 'function') {
+        return { supported: false, layout: null, tag: null, ctor: null }
+      }
+      const map = await kb.getLayoutMap()
+      return {
+        supported: true,
+        layout: map && typeof map.keyboardLayout === 'string' ? map.keyboardLayout : null,
+        // 真 KeyboardLayoutMap 的 Symbol.toStringTag 就是 "KeyboardLayoutMap"。
+        // 用 Object.prototype.toString 读，而不是读 map.constructor.name ——
+        // 后者可以被一行代码改掉，前者要走 Symbol.toStringTag。
+        tag: Object.prototype.toString.call(map),
+        ctor: map === null || map === undefined ? null : String(map.constructor && map.constructor.name)
+      }
+    } catch (e) {
+      return { supported: true, layout: null, tag: 'THROW', ctor: null, error: String((e && e.message) || e) }
+    }
+  })()
+  nav.keyboard = keyboard
 
   /* 6：plugins 的**值**（不是 getter 外观） */
   const plugins = []
@@ -3077,6 +3106,57 @@ function judge(fp, d, runs, ctx = {}) {
           '）。WebRTC 规范里这些是 [Exposed=Window]，出现说明内核变了 —— ' +
           '此时 buildWorkerScript 必须补上候选过滤，否则 worker 成为新的候选泄漏面；AC-17 只覆盖主世界，挡不住这条。',
     { unmeasured: !measured, group: 'P0 子目标注入' }
+  )
+
+  /* 24 —— 键盘布局必须跟随环境声明的语言
+   *
+   * 为什么值得单独一条：`navigator.keyboard.getLayoutMap().keyboardLayout`
+   * 报的是**宿主机当前输入法**的布局。中英文混排的 Windows 机器上，
+   * 一个声明 en-US 的身份会报出 zh-CN —— 站点一读就知道"这个身份是拼出来的"，
+   * 而这一项不像 UA 那样被大多数人检查，所以漏了也长期没人发现。
+   *
+   * 三条判据（缺一条这个面就是漏的）：
+   *   1. 能读出来（接口存在、不抛）—— 读不出来标"未测量"，不算通过；
+   *   2. 值与 profile 声明的 locale 一致（这是这条检查的全部意义）；
+   *   3. 类型外观对：Object.prototype.toString 必须是 [object KeyboardLayoutMap]，
+   *      否则"值对了但类型是个普通对象"照样是破绽。 */
+  const kb = (d.nav && d.nav.keyboard) || null
+  const kbSupported = kb !== null && kb.supported === true
+  const kbMeasured = kbSupported && typeof kb.layout === 'string' && kb.layout !== ''
+  const wantLocale = (fp.locale || (Array.isArray(fp.languages) && fp.languages[0]) || '').toLowerCase()
+  const gotLocale = typeof kb?.layout === 'string' ? kb.layout.toLowerCase() : ''
+  // 语言主标签比较：en-US 的布局可能报成 en-US 或 en —— 只要主标签一致就算对，
+  // 因为 Chromium 在不同平台上对"区域"的粒度并不统一。
+  const langOk = wantLocale !== '' && gotLocale !== '' && gotLocale.split('-')[0] === wantLocale.split('-')[0]
+  const tagOk = kb?.tag === '[object KeyboardLayoutMap]'
+  const kbProblems = []
+  if (!kbSupported) kbProblems.push('navigator.keyboard.getLayoutMap 不可用')
+  else if (!kbMeasured) kbProblems.push('getLayoutMap() 没有返回可用的 keyboardLayout')
+  else {
+    if (!langOk) kbProblems.push('布局与声明语言不一致')
+    if (!tagOk) kbProblems.push('类型外观不对')
+  }
+  add(
+    'AC-24',
+    '键盘布局跟随环境声明的语言，且类型外观正确',
+    'keyboardLayout 与 ' + (fp.locale || '?') + ' 同语种 / [object KeyboardLayoutMap]',
+    {
+      supported: kbSupported,
+      layout: kb?.layout ?? null,
+      tag: kb?.tag ?? null,
+      ctor: kb?.ctor ?? null,
+      error: kb?.error ?? null
+    },
+    kbMeasured ? kbProblems.length === 0 : null,
+    !kbMeasured
+      ? '读不到键盘布局（' +
+        (kb?.error !== undefined && kb?.error !== null ? String(kb.error) : '接口不可用或未返回 keyboardLayout') +
+        '），本条未测量 —— 不是通过'
+      : kbProblems.length === 0
+        ? '布局与声明语言同语种，且 Object.prototype.toString 报 [object KeyboardLayoutMap]（不是普通对象）'
+        : kbProblems.join('；') +
+          '。getLayoutMap 报的是**宿主机输入法**的布局，不跟随环境就等于把真实机器的语言暴露给站点。',
+    { unmeasured: !kbMeasured, group: 'P0 子目标注入' }
   )
 }
 }
