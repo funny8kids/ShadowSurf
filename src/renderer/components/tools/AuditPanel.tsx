@@ -32,7 +32,7 @@ import type {
   ConsistencyReport,
   Profile
 } from '@shared/types'
-import { Button, cx, useToast } from '@renderer/components/ui'
+import { Button, EmptyState, cx, useToast } from '@renderer/components/ui'
 import { ACTION_LABEL, formatClock, formatDate } from '@renderer/lib/format'
 import { useI18n } from '@renderer/lib/i18n'
 import './audit.css'
@@ -511,10 +511,11 @@ export function AuditPanel({ profiles }: PanelProps) {
             </div>
           </>
         ) : checkError ? null : (
-          <div className="au-empty">
-            <b>{t('audit.empty.noResult.title')}</b>
-            <p>{t('audit.empty.noResult.body')}</p>
-          </div>
+          <EmptyState
+            icon="shield"
+            title={t('audit.empty.noResult.title')}
+            desc={t('audit.empty.noResult.body')}
+          />
         )}
       </section>
 
@@ -596,19 +597,28 @@ export function AuditPanel({ profiles }: PanelProps) {
             <b>{t('audit.log.loading')}</b>
           </div>
         ) : log.kind === 'error' ? (
-          <div className="au-empty bad">
-            <b>{t('audit.log.error.title')}</b>
-            <p>{log.message}</p>
-            <p className="au-empty-hint">{t('audit.log.error.hint')}</p>
-            <Button variant="ghost" onClick={() => void refreshLog()}>
-              {t('common.retryRead')}
-            </Button>
-          </div>
+          <EmptyState
+            icon="alert"
+            tone="bad"
+            title={t('audit.log.error.title')}
+            desc={
+              <>
+                <p>{log.message}</p>
+                <p className="au-empty-hint">{t('audit.log.error.hint')}</p>
+              </>
+            }
+            action={
+              <Button variant="ghost" onClick={() => void refreshLog()}>
+                {t('common.retryRead')}
+              </Button>
+            }
+          />
         ) : entries.length === 0 ? (
-          <div className="au-empty">
-            <b>{t('audit.log.empty.title')}</b>
-            <p>{t('audit.log.empty.body')}</p>
-          </div>
+          <EmptyState
+            icon="list"
+            title={t('audit.log.empty.title')}
+            desc={t('audit.log.empty.body')}
+          />
         ) : (
           <>
             <div className="au-table au-log">

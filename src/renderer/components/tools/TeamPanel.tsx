@@ -19,7 +19,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Profile, TeamRole, TeamState, TeamProfileShare } from '@shared/types'
-import { Badge, Button, Field, Icon, Modal, Select, cx, useToast } from '@renderer/components/ui'
+import { Badge, Button, EmptyState, Field, Icon, Modal, Select, cx, useToast } from '@renderer/components/ui'
 import { errorMessage } from '@renderer/lib/api'
 import { formatClock, formatDate, formatRelative } from '@renderer/lib/format'
 import { useI18n } from '@renderer/lib/i18n'
@@ -328,10 +328,11 @@ export function TeamPanel() {
             </div>
 
             {members.length === 0 ? (
-              <div className="tp-empty">
-                <b>{t('team.members.empty.title')}</b>
-                <p>{t('team.members.empty.body')}</p>
-              </div>
+              <EmptyState
+                icon="users"
+                title={t('team.members.empty.title')}
+                desc={t('team.members.empty.body')}
+              />
             ) : (
               <div className="tp-table">
                 <div className="tp-tr tp-th">
@@ -469,10 +470,11 @@ export function TeamPanel() {
             ) : null}
 
             {shares.length === 0 ? (
-              <div className="tp-empty">
-                <b>{t('team.shares.empty.title')}</b>
-                <p>{t('team.shares.empty.body')}</p>
-              </div>
+              <EmptyState
+                icon="list"
+                title={t('team.shares.empty.title')}
+                desc={t('team.shares.empty.body')}
+              />
             ) : (
               <div className="tp-table tp-table-shares">
                 <div className="tp-tr tp-th">
@@ -569,10 +571,11 @@ export function TeamPanel() {
             </div>
 
             {activity.length === 0 ? (
-              <div className="tp-empty">
-                <b>{t('team.activity.empty.title')}</b>
-                <p>{t('team.activity.empty.body')}</p>
-              </div>
+              <EmptyState
+                icon="tasks"
+                title={t('team.activity.empty.title')}
+                desc={t('team.activity.empty.body')}
+              />
             ) : (
               <div className="tp-activity">
                 {activity.slice(0, activityShown).map((a) => (

@@ -300,56 +300,6 @@
   text-align: center;
 }
 
-.px-empty-guide {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  padding: 44px 24px;
-  background: var(--surface);
-  border-color: var(--line-strong);
-  border-radius: var(--r-lg);
-}
-
-.px-empty-guide .mark {
-  width: 40px;
-  height: 40px;
-  border-radius: var(--r);
-  background: var(--accent);
-  color: var(--surface);
-  display: grid;
-  place-items: center;
-}
-
-.px-empty-guide h3 {
-  font-size: 14px;
-  font-weight: 650;
-  color: var(--ink);
-}
-
-.px-empty-guide p {
-  margin: 0;
-  font-size: 11.5px;
-  line-height: 1.8;
-  color: var(--ink-3);
-  max-width: 460px;
-}
-
-.px-empty-guide code {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: var(--ink-2);
-  background: var(--surface-3);
-  border-radius: var(--r-xs);
-  padding: 1px 5px;
-}
-
-.px-empty-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 4px;
-}
-
 /* ────────────────────────────── 读失败态（琥珀 / 未知） ──────────────────────────────
    读不到 ≠ 没有。这里用琥珀语义（--amber / --amber-2 / --amber-line），
    不用 --red：红色是「确认坏了」这个结论，而读不到只是「还不知道」（DESIGN.md §不可判读状态）。

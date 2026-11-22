@@ -18,7 +18,7 @@ import type {
   Profile,
   WarmupReport
 } from '@shared/types'
-import { Button, Field, Icon, Modal, cx, useToast } from '@renderer/components/ui'
+import { Button, EmptyState, Field, Icon, Modal, cx, useToast } from '@renderer/components/ui'
 import { bridge, errorMessage, hasBridge } from '@renderer/lib/api'
 import type { CookieExportFormat, CookieImportSummary } from '@shared/ipc'
 import { formatBytes, formatDate, formatRelative, profileNo } from '@renderer/lib/format'
@@ -1108,26 +1108,6 @@ export function DataPanel({ profiles }: PanelProps) {
       >
         <p className="dp-backup-target">{restoreTarget?.name ?? ''}</p>
       </Modal>
-    </div>
-  )
-}
-
-function EmptyState({
-  icon,
-  title,
-  desc
-}: {
-  icon: 'grid' | 'shield' | 'download' | 'list'
-  title: string
-  desc: string
-}) {
-  return (
-    <div className="dp-empty">
-      <div className="mark">
-        <Icon name={icon} size={18} strokeWidth={2} />
-      </div>
-      <h3>{title}</h3>
-      <p>{desc}</p>
     </div>
   )
 }

@@ -2505,6 +2505,66 @@
  * `.spin` 原本只在 `.btab` 下有样式（标签页上的加载圈），
  * 这里需要一个独立版本 —— 转圈本身不依赖任何上下文。
  */
+/* ────────────────────────────── 空状态 ────────────────────────────── */
+
+/*
+ * 共享空状态：图标 + 标题 + 说明 +（可选）下一步动作。
+ *
+ * 原来每个面板各写一套（dp-empty / px-empty / wh-empty / au-empty / ext-empty /
+ * tp-empty / tpl-empty），尺寸与节奏各不相同 —— 这种不一致最容易被读成
+ * "这个面板是后做的"。现在只有这一处定义。
+ */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-6);
+  padding: var(--sp-32) var(--sp-20);
+  text-align: center;
+}
+
+.empty-state .mark {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  margin-bottom: var(--sp-4);
+  border: 1px solid var(--line-2);
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--ink-4);
+}
+
+.empty-state h3 {
+  font-size: var(--fs-14);
+  font-weight: 620;
+  color: var(--ink-2);
+}
+
+.empty-state p {
+  max-width: 48ch;
+  font-size: var(--fs-12);
+  line-height: 1.6;
+  color: var(--ink-4);
+}
+
+.empty-state.bad .mark {
+  border-color: var(--red-line);
+  background: var(--red-2);
+  color: var(--red-ink);
+}
+
+.empty-state.bad h3 {
+  color: var(--red-ink);
+}
+
+.empty-state .empty-actions {
+  display: flex;
+  gap: var(--sp-8);
+  margin-top: var(--sp-8);
+}
+
 .panel-loading {
   display: flex;
   align-items: center;

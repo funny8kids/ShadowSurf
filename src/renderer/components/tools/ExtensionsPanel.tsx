@@ -21,6 +21,7 @@ import {
   Button,
   Field,
   Icon,
+  EmptyState,
   Modal,
   Toggle,
   cx,
@@ -227,13 +228,7 @@ export function ExtensionsPanel() {
             </Button>
           </div>
         ) : records.length === 0 ? (
-          <div className="ext-empty">
-            <div className="ext-empty-mark">
-              <Icon name="folder" size={18} strokeWidth={2} />
-            </div>
-            <h3>{t('ext.empty')}</h3>
-            <p>{t('ext.emptyHint')}</p>
-          </div>
+          <EmptyState icon="folder" title={t('ext.empty')} desc={t('ext.emptyHint')} />
         ) : (
           <div className="ext-list">
             {records.map((record) => {

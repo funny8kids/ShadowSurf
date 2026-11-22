@@ -13,7 +13,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Profile, ProxyConfig, ProxyInput, ProxyProtocol, ProxyRecord } from '@shared/types'
-import { Button, Icon, Modal, cx, useToast } from '@renderer/components/ui'
+import { Button, EmptyState, Icon, Modal, cx, useToast } from '@renderer/components/ui'
 import { bridge, errorMessage } from '@renderer/lib/api'
 import { formatRelative } from '@renderer/lib/format'
 import { useI18n } from '@renderer/lib/i18n'
@@ -422,26 +422,28 @@ export function ProxyPanel({ profiles }: PanelProps) {
             </Button>
           </div>
         ) : records.length === 0 ? (
-          <div className="px-empty px-empty-guide">
-            <div className="mark">
-              <Icon name="globe" size={20} strokeWidth={2} />
-            </div>
-            <h3>{t('proxy.empty.title')}</h3>
-            <p>
-              {t('proxy.empty.body')}
-              <br />
-              <code>http://user:pass@1.2.3.4:8080</code> · <code>1.2.3.4:8080:user:pass</code> ·{' '}
-              <code>1.2.3.4:8080</code>
-            </p>
-            <div className="px-empty-actions">
-              <Button variant="ghost" icon="download" onClick={openImport}>
-                {t('proxy.import.paste')}
-              </Button>
-              <Button variant="primary" icon="plus" onClick={openCreate}>
-                {t('proxy.create')}
-              </Button>
-            </div>
-          </div>
+          <EmptyState
+            icon="globe"
+            title={t('proxy.empty.title')}
+            desc={
+              <>
+                {t('proxy.empty.body')}
+                <br />
+                <code>http://user:pass@1.2.3.4:8080</code> · <code>1.2.3.4:8080:user:pass</code> ·{' '}
+                <code>1.2.3.4:8080</code>
+              </>
+            }
+            action={
+              <>
+                <Button variant="ghost" icon="download" onClick={openImport}>
+                  {t('proxy.import.paste')}
+                </Button>
+                <Button variant="primary" icon="plus" onClick={openCreate}>
+                  {t('proxy.create')}
+                </Button>
+              </>
+            }
+          />
         ) : (
           <div className="px-table">
             <div className="px-row px-head">

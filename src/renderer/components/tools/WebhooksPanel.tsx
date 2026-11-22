@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { WebhookEvent, WebhookRecord } from '@shared/types'
-import { Button, Icon, Modal, cx, useToast } from '@renderer/components/ui'
+import { Button, EmptyState, Icon, Modal, cx, useToast } from '@renderer/components/ui'
 import { bridge, errorMessage } from '@renderer/lib/api'
 import { useI18n } from '@renderer/lib/i18n'
 import './webhooks.css'
@@ -143,13 +143,7 @@ export function WebhooksPanel() {
             </Button>
           </div>
         ) : state.hooks.length === 0 ? (
-          <div className="wh-empty">
-            <div className="mark">
-              <Icon name="send" size={22} />
-            </div>
-            <h3>{t('wh.empty')}</h3>
-            <p>{t('wh.emptyHint')}</p>
-          </div>
+          <EmptyState icon="send" title={t('wh.empty')} desc={t('wh.emptyHint')} />
         ) : (
           <div className="wh-list">
             {state.hooks.map((hook) => (

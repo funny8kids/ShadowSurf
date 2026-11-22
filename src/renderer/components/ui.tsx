@@ -803,6 +803,49 @@ export function Card({ title, subtitle, actions, children, className }: CardProp
   )
 }
 
+/* ────────────────────────────── EmptyState ────────────────────────────── */
+
+/**
+ * 空状态。
+ *
+ * 为什么做成**共享**组件：原先每个面板各写一套
+ * （dp-empty / px-empty / wh-empty / au-empty / ext-empty / tp-empty / tpl-empty），
+ * 图标大小、标题字号、段间距各不相同 ——
+ * 于是"这个面板是后做的"这种观感，十有八九是从这里来的。
+ *
+ * 现在只有一处定义：图标 20px、标题 14px/620、说明 12px、行距 1.6。
+ *
+ * 「下一步做什么」通过 action 传：空状态最该回答的是这个，
+ * 而不同面板的下一步不一样（新建环境 / 导入代理 / 去设置模型）。
+ */
+export function EmptyState({
+  icon,
+  title,
+  desc,
+  action,
+  tone = 'plain'
+}: {
+  icon: IconName
+  title: string
+  desc?: ReactNode
+  action?: ReactNode
+  /** bad = 读失败之类的坏状态（图标与标题用红色） */
+  tone?: 'plain' | 'bad'
+}): React.JSX.Element {
+  return (
+    <div className={cx('empty-state', tone === 'bad' && 'bad')}>
+      <div className="mark" aria-hidden="true">
+        <Icon name={icon} size={20} strokeWidth={2} />
+      </div>
+      <h3>{title}</h3>
+      {desc !== undefined && desc !== null ? <p>{desc}</p> : null}
+      {action !== undefined && action !== null ? (
+        <div className="empty-actions">{action}</div>
+      ) : null}
+    </div>
+  )
+}
+
 /* ────────────────────────────── Badge ────────────────────────────── */
 
 /**

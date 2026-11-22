@@ -213,16 +213,6 @@
   text-align: center;
 }
 
-.ext-empty-mark {
-  width: 38px;
-  height: 38px;
-  display: grid;
-  place-items: center;
-  border-radius: var(--r);
-  background: var(--accent-2);
-  color: var(--accent);
-}
-
 .ext-empty h3 {
   margin: 0;
   font-size: 13px;
