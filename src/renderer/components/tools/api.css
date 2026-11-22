@@ -399,7 +399,7 @@
 }
 
 .api-scope strong {
-  color: var(--ink-1);
+  color: var(--ink);
   font-weight: 600;
 }
 

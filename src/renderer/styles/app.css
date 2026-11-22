@@ -4290,7 +4290,7 @@
 }
 
 .ext-chip:hover {
-  color: var(--ink-1);
+  color: var(--ink);
   background: var(--wash-lift);
 }
 
