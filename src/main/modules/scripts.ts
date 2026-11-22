@@ -29,6 +29,7 @@ import type { ModuleContext } from './context'
 import { CollectionStore } from '@main/store'
 import { bridgeFor } from '@main/core/cdp'
 import { captureSnapshot } from '@main/agent/snapshot'
+import { retargetApprovedAction } from '@main/agent/retarget'
 import { ApprovalRequiredError, MaskIncompleteError, executeAction } from '@main/agent/actions'
 import { assessRisk } from '@main/agent/risk'
 import { requestConsent, type ConsentOutcome } from '@main/agent/consent'
@@ -431,7 +432,8 @@ export async function runScript(
       const at = i + 1
 
       // 每步都重抓快照：页面是活的，上一帧的编号可能已经指向别的元素
-      const snapshot = await captureSnapshot(cdp)
+      // let：拿到同意票后还要再重采一次（见下面的 retarget）
+      let snapshot = await captureSnapshot(cdp)
 
       let action: Action
       try {
@@ -483,6 +485,31 @@ export async function runScript(
           }
         }
         ticket = outcome.ticket
+
+        /**
+         * 拿到同意票之后、执行之前：**重新采一帧并按可读名重新定位**。
+         *
+         * 脚本回放和 agent loop、本地 API 一样会等确认框（最多 120 秒）——
+         * 这期间页面完全可以换掉那个按钮。而风险等级、确认框文案都是用旧快照算的，
+         * 不复核就会出现"用户批准的是 A，脚本点的是 B"。
+         *
+         * 名变了就停在这一步（可从这一步续跑），绝不沿用旧编号点下去。
+         */
+        const retarget = await retargetApprovedAction(cdp, action, snapshot)
+        if (!retarget.ok) {
+          return {
+            ok: false,
+            executed,
+            total,
+            failedAt: at,
+            needsConfirm: true,
+            error:
+              `第 ${at} 步目标在确认期间发生变化，已中止执行：${retarget.reason ?? '未知原因'}。` +
+              `请重新确认当前页面上的目标（前 ${executed} 步已执行）`
+          }
+        }
+        action = retarget.action
+        snapshot = retarget.snapshot
       }
 
       let result: ActionResult
