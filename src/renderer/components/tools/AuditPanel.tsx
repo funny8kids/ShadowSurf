@@ -263,7 +263,10 @@ export function AuditPanel({ profiles }: PanelProps) {
     a.href = url
     a.download = `shadowsurf-audit-${new Date().toISOString().slice(0, 10)}.csv`
     a.click()
-    URL.revokeObjectURL(url)
+    // 不能紧跟 click 就 revoke：下载是异步开始的，
+    // 有些内核在这一行执行时还没读取 blob URL —— 结果是"点了导出没反应"。
+    // 延迟一秒释放，足够浏览器消费掉 URL，又不会长期泄漏。
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
     toast.push(t('audit.export.done', { n: entries.length }), 'ok')
   }
   const [profileId, setProfileId] = useState<string>(profiles[0]?.id ?? '')

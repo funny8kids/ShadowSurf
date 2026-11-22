@@ -457,7 +457,9 @@ export function DataPanel({ profiles }: PanelProps) {
         document.body.appendChild(a)
         a.click()
         a.remove()
-        URL.revokeObjectURL(url)
+        // 和其它导出一样延迟释放：紧跟 click 就 revoke 会让部分内核
+        // 还没开始下载就丢了 blob URL（表现为"点了导出没反应"）
+        setTimeout(() => URL.revokeObjectURL(url), 1000)
         toast.push(t('data.toast.exported', { format: format === 'json' ? 'JSON' : 'Netscape' }), 'ok')
       } catch (err) {
         toast.push(errorMessage(err), 'err')
