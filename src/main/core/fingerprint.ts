@@ -1542,6 +1542,51 @@ function buildPageScript(fp: FingerprintConfig, seed: string): string {
   L.push("      if (typeof NP.getBattery === 'function') { NP.getBattery = _maskOne(_noProto(function () { return Promise.resolve(_battery); }), 'getBattery', 0); }")
   L.push('    } catch (e) { _failed.push({ p: "Navigator.getBattery", why: String((e && e.message) || e) }); }')
 
+  /* ── 键盘布局 ──
+   *
+   * `navigator.keyboard.getLayoutMap()` 报的是**宿主机当前输入法的布局**。
+   * 中英文混排的 Windows 机器上，一个声明 en-US 的身份会报出 zh-CN 布局 ——
+   * 站点一读就知道"这个身份是拼出来的"，而这一项不像 UA 那样被大多数人检查。
+   *
+   * 所以按环境声明的 locale 回一份布局。
+   *
+   * 形状要像真的 KeyboardLayoutMap：它是个 map-like 对象，
+   * `keyboardLayout` / `size` 等都在**原型**上（own property 是 0），
+   * 而且带 `Symbol.toStringTag` —— 站点可以用 `Object.prototype.toString.call(map)`
+   * 区分"真对象"和"我们造的对象"。所以这里用 Object.create 建，而不是字面量。 */
+  L.push('')
+  L.push('    try {')
+  L.push('      var _kb = navigator.keyboard;')
+  L.push('      if (_kb && typeof _kb.getLayoutMap === "function" && C.locale) {')
+  L.push('        var _layout = String(C.locale);')
+  L.push('        var _klmProto = {};')
+  L.push('        try {')
+  L.push('          Object.defineProperty(_klmProto, Symbol.toStringTag, {')
+  L.push('            value: "KeyboardLayoutMap", configurable: true')
+  L.push('          });')
+  L.push('          Object.defineProperty(_klmProto, "keyboardLayout", {')
+  L.push('            get: function () { return _layout; },')
+  L.push('            enumerable: true,')
+  L.push('            configurable: true')
+  L.push('          });')
+  L.push('        } catch (e) {}')
+  L.push('        _klmProto.size = 1;')
+  L.push('        _klmProto.get = function () { return undefined; };')
+  L.push('        _klmProto.has = function () { return false; };')
+  L.push('        _klmProto.entries = function () { return [][Symbol.iterator](); };')
+  L.push('        _klmProto.keys = function () { return [][Symbol.iterator](); };')
+  L.push('        _klmProto.forEach = function () {};')
+  L.push('        _klmProto[Symbol.iterator] = function () { return [][Symbol.iterator](); };')
+  L.push('        // 挂在 Keyboard.prototype 上，不挂实例：')
+  L.push('        // 真 Chrome 里 navigator.keyboard 的 own property 是 0。')
+  L.push('        var _kbdProto = Object.getPrototypeOf(_kb) || Keyboard.prototype;')
+  L.push('        var _getLayoutMap = _kbdProto.getLayoutMap;')
+  L.push('        _kbdProto.getLayoutMap = function () {')
+  L.push('          return Promise.resolve(Object.create(_klmProto));')
+  L.push('        };')
+  L.push('      }')
+  L.push('    } catch (e) { _failed.push({ p: "Navigator.keyboard.getLayoutMap", why: String((e && e.message) || e) }); }')
+
   /* ── storage.estimate ──
    *
    * quota 是钉死的常量（见 presets 的注释），usage 是固定的小数。
