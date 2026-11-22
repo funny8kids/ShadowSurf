@@ -25,7 +25,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { createMcpServer } from '../src/main/modules/mcp-server.ts'
+import { createMcpServer, runStdio } from '../src/main/modules/mcp-server.ts'
 import type { ApiCaller, JsonRpcResponse, McpToolResult } from '../src/main/modules/mcp-server.ts'
 
 const ROOT = join(import.meta.dirname, '..')
@@ -344,4 +344,32 @@ test('动作类型清单不得与 shared/protocol.ts 漂移', () => {
   const serverTypes = [...(list[1] ?? '').matchAll(/'([a-z]+)'/g)].map((m) => m[1]).sort()
 
   assert.deepEqual(serverTypes, protocolTypes, 'MCP 服务器的动作类型清单与协议层漂移了')
+})
+
+/* ────────────────────────────── stdio 输入上限 ────────────────────────────── */
+
+test('stdio 超长行必须回合法错误，不能让客户端一直等', async () => {
+  const { PassThrough } = await import('node:stream')
+  const input = new PassThrough()
+  const output = new PassThrough()
+  const chunks: string[] = []
+  output.setEncoding('utf8')
+  output.on('data', (s: string) => chunks.push(s))
+
+  // 没有 API caller：本条只测输入层，不该碰到它
+  const server = createMcpServer(async () => {
+    throw new Error('不该被调用')
+  })
+  runStdio(server, input, output)
+
+  // 4MB 上限之上随便造一行（远小于真正危险的尺寸，但足够触发判定）
+  const huge = 'x'.repeat(5 * 1024 * 1024)
+  input.write(huge + '\n')
+  // 等一个 event loop 回合让 readline 的 'line' 事件与 promise 链跑完
+  await new Promise<void>((resolve) => setTimeout(resolve, 50))
+
+  assert.equal(chunks.length, 1, '超限行必须回一条响应，不能不回让客户端一直等')
+  const res = JSON.parse(chunks[0]) as JsonRpcResponse & { error?: { code: number } }
+  assert.equal(res.error?.code, -32602, '超限属于参数错误，不是内部错误')
+  assert.match(String(res.error?.message ?? ''), /请求过长/)
 })

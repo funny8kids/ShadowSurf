@@ -104,6 +104,8 @@ const INTERNAL_ERROR = -32603
 
 /** 一次 API 响应的体积上限。快照是里面最大的一块，但仍要封顶 */
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+/** stdio 单行请求的上限（一行 = 一条完整 JSON-RPC 消息） */
+const MAX_REQUEST_CHARS = 4 * 1024 * 1024
 
 /** 本地 API 请求超时。快照与自检要跑页面内探针，给得比代理探测宽一些 */
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -898,6 +900,25 @@ export function runStdio(
     chain = chain.then(async () => {
       const text = line.trim()
       if (text === '') return
+      /**
+       * 单行长度上限。
+       *
+       * stdio 协议一行就是一条完整消息，没有 HTTP 那种 Content-Length 可以预检。
+       * 没有这道拦阻，一个写坏了的客户端（或被攻破的调用方）发出几百 MB 的一行，
+       * 会先被 readline 整行读进内存，再交给 JSON.parse —— 主进程直接假死。
+       *
+       * 4MB 远大于任何正常的 MCP 调用（工具参数都是短 JSON）。
+       * 超限**回一条合法错误响应**：stdio 里没有超时自动兜底，不回客户端就一直等。
+       * id 只能是 null —— 这行连 JSON 都 parse 不了，拿不到调用方给的 id。
+       */
+      if (text.length > MAX_REQUEST_CHARS) {
+        output.write(
+          JSON.stringify(
+            errorResponse(null, INVALID_PARAMS, `请求过长（上限 ${MAX_REQUEST_CHARS / 1024 / 1024}MB）`)
+          ) + '\n'
+        )
+        return
+      }
       try {
         const response = await server.handleMessage(text)
         if (response !== null) output.write(response + '\n')
