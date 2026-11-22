@@ -414,21 +414,43 @@ function Shell() {
     return tasks.find((t) => t.status === 'running' && t.profileId === profileId)
   }, [tasks, windowState, activeProfile])
 
+  /**
+   * 刷新失败不能静默。
+   *
+   * 原先的注释是"主流程已经给过提示，这里再弹一次只会刷屏" ——
+   * 但那句话只在**首屏**成立：首屏读成功之后进入 ready，
+   * 之后每一次 refresh 失败都会被吞掉，界面继续显示**上一次**的环境列表 / 任务列表，
+   * 用户以为看到的是最新的，而实际上主进程的数据可能已经变了
+   * （或这份数据已经读不出来了）。
+   *
+   * 这比首屏失败更难发现：首屏有琥珀色错误态，刷新失败则是一张**看起来正常**的旧脸。
+   *
+   * 所以失败时把快照整体标成 error：界面会显示带原文的错误态与"重试"，
+   * 而不是继续拿旧数据冒充新的。
+   */
   const refreshProfiles = useCallback(async (): Promise<void> => {
     if (!hasBridge()) return
     try {
-      setProfiles(await bridge().profiles.list())
-    } catch {
-      // 静默：主流程已经给过提示，这里再弹一次只会刷屏
+      const list = await bridge().profiles.list()
+      if (!Array.isArray(list)) throw new Error('环境列表返回了无法识别的结果')
+      setProfiles(list)
+    } catch (err) {
+      if (aliveRef.current) {
+        setLoad({ kind: 'error', message: cleanIpcMessage(errorMessage(err)) })
+      }
     }
   }, [])
 
   const refreshTasks = useCallback(async (): Promise<void> => {
     if (!hasBridge()) return
     try {
-      setTasks(await bridge().tasks.list())
-    } catch {
-      /* 同上 */
+      const list = await bridge().tasks.list()
+      if (!Array.isArray(list)) throw new Error('任务列表返回了无法识别的结果')
+      setTasks(list)
+    } catch (err) {
+      if (aliveRef.current) {
+        setLoad({ kind: 'error', message: cleanIpcMessage(errorMessage(err)) })
+      }
     }
   }, [])
 

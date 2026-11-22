@@ -133,6 +133,7 @@ export const zh: Dict = {
   'ws.backup.done': '已备份到 {path}',
   'ws.backup.restored': '已还原 {n} 个文件，旧数据保留在 {path}',
   'ws.backup.reloading': '工作区已整体替换，正在重新加载界面…',
+  'ws.backup.kept': '旧数据：{path} · {size} · {date}（请确认无误后自行清理）',
   'ws.backup.failed': '备份失败：{reason}',
   'ws.backup.restoreFailed': '还原失败：{reason}',
 
@@ -553,6 +554,7 @@ export const en: Dict = {
   'ws.backup.done': 'Backed up to {path}',
   'ws.backup.restored': 'Restored {n} file(s); previous data kept at {path}',
   'ws.backup.reloading': 'The workspace was replaced — reloading the interface…',
+  'ws.backup.kept': 'Previous data: {path} · {size} · {date} (delete it yourself once you are sure)',
   'ws.backup.failed': 'Backup failed: {reason}',
   'ws.backup.restoreFailed': 'Restore failed: {reason}',
 

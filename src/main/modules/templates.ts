@@ -358,9 +358,27 @@ function parseMigrationProxy(raw: unknown, index: number): MigrationProxy {
   }
 }
 
+/**
+ * 迁移包的体积上限。
+ *
+ * 为什么需要：导入是"用户粘贴或选一个文件"，而 JSON.parse 之前没有任何拦阻 ——
+ * 一个几百 MB 的 JSON 会让主进程**同步**解析到内存里（parse 期间整个 UI 卡住），
+ * 而且解析完还要再建一遍对象。一次误操作就能让 App 假死几分钟。
+ *
+ * 24MB 的依据：一个环境导出后大约几 KB（明文层只有 name + platform，
+ * 密封层是身份参数）。24MB 够装几千个环境，远超任何真实迁移包。
+ */
+const MAX_BUNDLE_BYTES = 24 * 1024 * 1024
+
 function parseBundle(raw: string): MigrationBundle {
   const text = raw.trim()
   if (text === '') throw new Error('迁移包内容为空：请粘贴 JSON 或选择文件')
+  if (text.length > MAX_BUNDLE_BYTES) {
+    throw new Error(
+      `迁移包过大（${(text.length / 1024 / 1024).toFixed(1)}MB，上限 24MB）。` +
+        '请确认选对了文件；一个正常的环境包只有几 KB。'
+    )
+  }
 
   let data: unknown
   try {

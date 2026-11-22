@@ -234,6 +234,7 @@ const api: ShadowSurfAPI = {
     // 整机备份 / 还原：加密与目录换位都在主进程做，渲染层只传文件名
     backup: () => invoke(CH.data.backup),
     backupList: () => invoke(CH.data.backupList),
+    backupKeptDirs: () => invoke(CH.data.backupKeptDirs),
     restore: (path) => invoke(CH.data.restore, path),
     onDownload: (cb) => subscribe(CH.push.download, cb)
   },

@@ -183,7 +183,12 @@ export function ProfileGrid({
     setTrashLoading(true)
     setTrashError(null)
     try {
-      setTrashItems(await bridge().profiles.trash())
+      const list = await bridge().profiles.trash()
+      // 验形而不是只靠 try/catch：IPC 少包一层 Result 时拿到的是 undefined，
+      // catch 根本不会触发，setTrashItems(undefined) 之后渲染里的 .map()
+      // 直接抛，React 卸载整棵树 —— 用户看到的是白屏，不是"读失败"。
+      if (!Array.isArray(list)) throw new Error('回收站列表返回了无法识别的结果')
+      setTrashItems(list)
     } catch (err) {
       // 读失败 ≠ 回收站为空：清空旧数据会把「读不到」伪装成「没有」，
       // 与正常列表的 loadState 同一条原则。

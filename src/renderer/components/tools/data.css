@@ -606,6 +606,18 @@
   color: var(--ink-2);
 }
 
+/* 还原保留的旧数据：弱化显示，但必须看得见 */
+.dp-kept-list {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top-style: dashed;
+}
+
+.dp-kept-list .dp-backup-name {
+  color: var(--ink-4);
+  font-size: 11px;
+}
+
 /* ────────────────────────────── 整机备份 ────────────────────────────── */
 
 /*

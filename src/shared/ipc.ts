@@ -35,6 +35,7 @@ import type {
   AuditVerifyResult,
   AuditFlushStatus,
   BackupFile,
+  KeptBackupDir,
   ConsistencyReport,
   CookieItem,
   DownloadItem,
@@ -265,6 +266,8 @@ export const CH = {
     backup: 'ss:data:backup',
     /** 列出备份目录里的备份文件 */
     backupList: 'ss:data:backup-list',
+    /** 还原时保留下来的旧数据目录（只读，无删除通道） */
+    backupKeptDirs: 'ss:data:backup-kept-dirs',
     /** 整机还原（不可逆：会把当前数据目录整体换掉） */
     restore: 'ss:data:restore'
   },
@@ -725,6 +728,12 @@ export interface DataAPI {
   backup(): Promise<{ path: string }>
   /** 列出备份目录里的备份文件（按时间倒序） */
   backupList(): Promise<BackupFile[]>
+  /**
+   * 还原时保留下来的旧数据目录（在哪 / 多大 / 什么时候）。
+   *
+   * 只报不改：那是还原前的完整数据，误删代价太大，所以没有删除通道。
+   */
+  backupKeptDirs(): Promise<KeptBackupDir[]>
   /**
    * 整机还原。
    *

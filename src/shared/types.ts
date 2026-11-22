@@ -904,6 +904,18 @@ export interface AuditVerifyResult {
 
 /* ────────────────────────────── 整机备份 ────────────────────────────── */
 
+/**
+ * 还原时保留下来的旧数据目录。
+ *
+ * 为什么要出现在界面里：还原流程说"旧数据保留为 .bak- 目录"，
+ * 但没有任何地方告诉用户它在哪、占多大 —— 于是它成了看不见的磁盘占用。
+ */
+export interface KeptBackupDir {
+  path: string
+  bytes: number
+  at: number
+}
+
 /** 备份目录里的一个备份文件 */
 export interface BackupFile {
   /** 文件名（不含目录） */

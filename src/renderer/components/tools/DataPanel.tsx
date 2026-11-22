@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   BackupFile,
   CookieItem,
+  KeptBackupDir,
   DownloadItem,
   DownloadState,
   HistoryItem,
@@ -163,6 +164,8 @@ export function DataPanel({ profiles }: PanelProps) {
    * 而且确认文案里要写清楚三件事：会关掉所有环境、旧数据保留在哪、不能反悔。
    */
   const [backups, setBackups] = useState<BackupFile[]>([])
+  /** 还原时保留下来的旧数据目录（用户需要知道它在哪、多大） */
+  const [keptDirs, setKeptDirs] = useState<KeptBackupDir[]>([])
   const [backingUp, setBackingUp] = useState(false)
   /** 正在等待确认还原的备份；null = 没有待确认的还原 */
   const [restoreTarget, setRestoreTarget] = useState<BackupFile | null>(null)
@@ -179,7 +182,12 @@ export function DataPanel({ profiles }: PanelProps) {
   const loadBackups = useCallback(async (): Promise<void> => {
     if (!hasBridge()) return
     try {
-      setBackups(await bridge().data.backupList())
+      const [list, kept] = await Promise.all([
+        bridge().data.backupList(),
+        bridge().data.backupKeptDirs()
+      ])
+      setBackups(list)
+      setKeptDirs(kept)
     } catch (err) {
       // 读不到备份列表不等于「没有备份」：界面必须说"读失败"，
       // 而不是画一个空的备份列表让人以为从没备份过。
@@ -645,6 +653,21 @@ export function DataPanel({ profiles }: PanelProps) {
             ))}
           </ul>
         )}
+        {keptDirs.length > 0 ? (
+          <ul className="dp-backup-list dp-kept-list">
+            {keptDirs.map((d) => (
+              <li key={d.path}>
+                <span className="dp-backup-name" title={d.path}>
+                  {t('ws.backup.kept', {
+                    path: d.path,
+                    size: formatBytes(d.bytes),
+                    date: formatDate(d.at)
+                  })}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </section>
 
       <div className="dp-tabs" role="tablist" aria-label={t('data.tabsAria')}>

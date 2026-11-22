@@ -262,6 +262,17 @@ export function registerDataModule(ctx: ModuleContext): void {
   })
 
   /**
+   * 还原时保留下来的旧数据目录。
+   *
+   * 只报位置与大小，**不提供删除**：那是用户还原前的唯一完整数据，
+   * 误删的代价远大于让它多占一点磁盘。
+   */
+  ctx.handle(CH.data.backupKeptDirs, async () => {
+    const { listKeptDirs } = await import('@main/store/backup')
+    return listKeptDirs(dataDir())
+  })
+
+  /**
    * 整机还原。
    *
    * 不可逆：当前数据目录会被整体改名保留成 `.bak-<ts>`，新目录写入备份内容。
