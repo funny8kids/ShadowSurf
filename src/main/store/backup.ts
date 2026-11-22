@@ -43,7 +43,6 @@ import {
   renameSync,
   rmSync,
   statSync,
-  unlinkSync,
   writeFileSync
 } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
@@ -53,14 +52,12 @@ import { bumpGeneration } from './db'
 const MAGIC = 'SSBACKUP1'
 
 /**
- * 备份目录：与数据目录**同级**（`<userData>/backups`），不在 data 里面。
- *
- * 放在 data 里会有两个后果：还原把它连同旧目录一起改名（备份历史消失），
- * 以及 collect() 要额外排除自己（多一层出错机会）。
+ * 路径规则 / 保留策略 / 旧目录盘点在 `backup-files.ts`（零 electron 依赖，可单测），
+ * 这里 re-export 保持原有调用方的写法不变。
  */
-export function backupsDir(dataDir: string): string {
-  return join(dirname(dataDir), 'backups')
-}
+export { backupsDir, listKeptDirs, pruneBackups } from './backup-files'
+export type { KeptDir } from './backup-files'
+import { backupsDir, pruneBackups } from './backup-files'
 
 /** 备份密钥：从 safeStorage 加密后的一个固定串派生（同一机器/账户恒定） */
 function backupKey(): Buffer {
@@ -125,105 +122,6 @@ export async function createBackup(dataDir: string): Promise<string> {
   writeFileSync(path, out)
   pruneBackups(dir)
   return path
-}
-
-/**
- * 备份文件保留策略：只留最近 KEEP_BACKUPS 份。
- *
- * 为什么需要：原先每次点"立即备份"都新增一个文件，**永不清理**。
- * 每个备份是整个数据目录的加密快照（几 MB 到几十 MB），
- * 用户点一年就是几百个文件、几个 GB —— 而磁盘满是这个 App 最怕的故障
- * （写不进去 → 审计丢批、配置保存失败）。
- *
- * 只删**最旧的**，且只在新建备份之后删：用户主动点备份时顺手清一下，
- * 不会在他没操作的时候动文件。
- *
- * 按文件名里的时间戳排序（文件名是 ISO 时间戳，字典序 = 时间序），
- * 不按 mtime —— 复制/同步会改 mtime，文件名不会。
- */
-const KEEP_BACKUPS = 10
-
-function pruneBackups(dir: string): void {
-  try {
-    const all = readdirSync(dir).filter((n) => n.endsWith('.ssbak'))
-    if (all.length <= KEEP_BACKUPS) return
-    all.sort()
-    const stale = all.slice(0, all.length - KEEP_BACKUPS)
-    for (const name of stale) {
-      try {
-        unlinkSync(join(dir, name))
-      } catch {
-        /* 删不掉就算了（被占用），下次再试 */
-      }
-    }
-    if (stale.length > 0) {
-      console.warn(`[backup] 已清理 ${String(stale.length)} 份过期备份（保留最近 ${String(KEEP_BACKUPS)} 份）`)
-    }
-  } catch {
-    /* 备份目录读不了就不清理：不能因为清理失败影响备份本身 */
-  }
-}
-
-/**
- * 还原时被改名保留的旧数据目录。
- *
- * 为什么要报给用户：还原流程说"旧数据保留为 .bak- 目录，确认没问题后可自行删除"，
- * 但**没有任何界面告诉他在哪、有多大** —— 于是那些目录就成了
- * 用户不知道的隐藏垃圾，一年下来几个 GB，而他还以为磁盘是别的东西占满的。
- *
- * 只报"在哪 / 多大 / 什么时候"，**不提供删除按钮**：
- * 那是他唯一一份还原前的完整数据，误删的代价太大。
- */
-export interface KeptDir {
-  path: string
-  bytes: number
-  at: number
-}
-
-export function listKeptDirs(dataDir: string): KeptDir[] {
-  const parent = dirname(dataDir)
-  const out: KeptDir[] = []
-  let names: string[] = []
-  try {
-    names = readdirSync(parent)
-  } catch {
-    return out
-  }
-  for (const name of names) {
-    if (!name.startsWith('.bak-')) continue
-    const full = join(parent, name)
-    try {
-      if (!statSync(full).isDirectory()) continue
-    } catch {
-      continue
-    }
-    // 目录名里的时间戳：`.bak-2026-11-21T10-30-00-000Z`
-    const raw = name.slice('.bak-'.length)
-    const stamp = Date.parse(raw)
-    out.push({ path: full, bytes: dirSize(full), at: Number.isFinite(stamp) ? stamp : 0 })
-  }
-  return out.sort((a, b) => b.at - a.at)
-}
-
-/** 目录占用（递归求和）。出错就返回已累计的部分 —— 这是个诊断数字，不该抛 */
-function dirSize(dir: string): number {
-  let total = 0
-  let entries: string[] = []
-  try {
-    entries = readdirSync(dir)
-  } catch {
-    return total
-  }
-  for (const name of entries) {
-    try {
-      const st = statSync(join(dir, name))
-      if (st.isDirectory()) total += dirSize(join(dir, name))
-      else total += st.size
-    } catch {
-      /* 单个文件读不到就跳过 */
-    }
-  }
-  return total
 }
 
 /** 还原的结果：告诉调用方旧数据留在哪 */

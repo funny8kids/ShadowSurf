@@ -85,7 +85,18 @@ export class ProfileRuntime {
 
   async stop(id: string): Promise<void> {
     const ids = this.running.get(id)
-    if (!ids) return
+    // 内存里没有这个环境，也要把状态落回 idle。
+    //
+    // 什么情况下会这样：盘上残留着 `status:'running'`（上次异常退出），
+    // 或窗口被外部关掉时 onProfileStopped 那一跳丢了。
+    // 原先这里直接 return，于是用户点「停止」什么都没发生 ——
+    // 卡片永远显示"运行中"，而窗口根本不存在，只能重启 App 碰运气。
+    //
+    // 启动时的归零覆盖了"重启"那条路径；这里是**运行中**的兜底。
+    if (!ids) {
+      this.setStatus(id, 'idle')
+      return
+    }
     this.running.delete(id)
     this.setStatus(id, 'idle')
     for (const windowId of [...ids]) {
