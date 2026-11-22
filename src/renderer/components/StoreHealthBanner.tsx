@@ -20,12 +20,19 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { StoreHealth } from '@shared/types'
 import { bridge, errorMessage, hasBridge } from '@renderer/lib/api'
+import { useI18n } from '@renderer/lib/i18n'
 import './store-health.css'
 
-const ORIGIN_LABEL: Record<string, string> = {
-  corrupt: '损坏副本',
-  preupgrade: '迁移前快照',
-  schema: '旧命名迁移快照'
+/**
+ * 备份文件的来源标签。
+ *
+ * 键名对应主进程 `health.ts` 给出的 origin 值；
+ * 认不出来的值原样显示（不显示成空白 —— 空白看起来像"没有问题"）。
+ */
+const ORIGIN_LABEL_KEY: Record<string, string> = {
+  corrupt: 'sh.origin.corrupt',
+  preupgrade: 'sh.origin.preupgrade',
+  schema: 'sh.origin.schema'
 }
 
 function formatBytes(n: number): string {
@@ -82,6 +89,7 @@ function sanitize(raw: unknown): StoreHealth | null {
 }
 
 export function StoreHealthBanner(): React.JSX.Element | null {
+  const { t } = useI18n()
   const [health, setHealth] = useState<StoreHealth | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [open, setOpen] = useState(false)
@@ -96,16 +104,16 @@ export function StoreHealthBanner(): React.JSX.Element | null {
         // 形状不对 ≠ 一切正常。见 sanitize() 的注释：把它当成正常，
         // 就等于替一次没做成的检查背书。
         setHealth(null)
-        setError('数据健康检查返回了无法识别的结果（这不等于「一切正常」，请重试或查看日志）')
+        setError(t('sh.error.shape'))
         return
       }
       setHealth(clean)
       setError(null)
     } catch (err) {
       // 连健康检查本身都失败了：这本身就是该报的信息，不能静默吞掉
-      setError(`无法读取数据健康状态：${errorMessage(err)}`)
+      setError(t('sh.error.read', { reason: errorMessage(err) }))
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     void load()
@@ -127,14 +135,14 @@ export function StoreHealthBanner(): React.JSX.Element | null {
         <span className="sh-headline">{headline}</span>
         {notes.length > 0 ? (
           <button type="button" className="sh-link" onClick={() => setOpen((v) => !v)}>
-            {open ? '收起' : `详情（${String(notes.length)}）`}
+            {open ? t('sh.detail.close') : t('sh.detail.open', { n: notes.length })}
           </button>
         ) : null}
         <button
           type="button"
           className="sh-close"
           onClick={() => setDismissed(true)}
-          title="本次会话不再提示（问题本身没有被修复）"
+          title={t('sh.close.title')}
         >
           ×
         </button>
@@ -152,10 +160,10 @@ export function StoreHealthBanner(): React.JSX.Element | null {
             <table className="sh-table">
               <thead>
                 <tr>
-                  <th>备份文件</th>
-                  <th>来源</th>
-                  <th>大小</th>
-                  <th>明文 seed</th>
+                  <th>{t('sh.table.backup')}</th>
+                  <th>{t('sh.table.origin')}</th>
+                  <th>{t('sh.table.size')}</th>
+                  <th>{t('sh.table.plaintextSeeds')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -164,9 +172,11 @@ export function StoreHealthBanner(): React.JSX.Element | null {
                     <td className="sh-mono" title={b.path}>
                       {b.name}
                     </td>
-                    <td>{ORIGIN_LABEL[b.origin] ?? b.origin}</td>
+                    <td>{t(ORIGIN_LABEL_KEY[b.origin] ?? b.origin)}</td>
                     <td>{formatBytes(b.bytes)}</td>
-                    <td>{b.plaintextSeeds > 0 ? `${String(b.plaintextSeeds)} 条（明文）` : '—'}</td>
+                    <td>
+                      {b.plaintextSeeds > 0 ? t('sh.plaintextCount', { n: b.plaintextSeeds }) : '—'}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -174,11 +184,12 @@ export function StoreHealthBanner(): React.JSX.Element | null {
           ) : null}
 
           <p className="sh-foot">
-            这些文件不会被自动清理：损坏文件是排查依据，含明文 seed 的备份可能仍是唯一的已知良好快照。
-            数据目录：<span className="sh-mono">{health?.dataDir ?? '未知'}</span>
+            {t('sh.foot')}
+            {t('sh.dataDir')}
+            <span className="sh-mono">{health?.dataDir ?? t('sh.unknown')}</span>
           </p>
           <button type="button" className="sh-link" onClick={() => void load()}>
-            重新检查
+            {t('sh.recheck')}
           </button>
         </div>
       ) : null}

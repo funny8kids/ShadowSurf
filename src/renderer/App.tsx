@@ -366,10 +366,16 @@ function Shell() {
   }, [])
 
   /** 导航统一入口：切视图时清掉勾选，避免从一个页面带到另一个页面 */
-  const navigate = useCallback((key: NavKey) => {
-    setView(key)
-    setSelected(new Set())
-  }, [])
+  const navigate = useCallback(
+    (key: NavKey) => {
+      // 环境窗口永远停在 browser 视图：导航会卸载 BrowserShell，
+      // 而切回来的时机不受控（见 Ctrl+K 那段注释）。
+      if (isBrowserWindow) return
+      setView(key)
+      setSelected(new Set())
+    },
+    [isBrowserWindow]
+  )
 
   /* ── 主题切换 ── */
   const changeTheme = useCallback(
@@ -412,7 +418,7 @@ function Shell() {
       // 主进程已经广播了完整列表，这里按 id upsert：直接 prepend 会出现两张同名卡
       setProfiles((prev) => [created, ...prev.filter((p) => p.id !== created.id)])
       setDrawerId(created.id)
-      toast.push('已创建环境，先核对指纹再启动', 'ok')
+      toast.push(t('app.toast.envCreated'), 'ok')
     } catch (err) {
       toast.push(errorMessage(err), 'err')
     }
@@ -516,7 +522,12 @@ function Shell() {
         } else if (action === 'proxy' && value) {
           const proxy = parseProxy(value)
           const n = await bridge().profiles.batchUpdate(ids, { proxy })
-          toast.push(proxy ? `已切换代理 ${proxy.host}:${proxy.port}` : '已改为直连', 'ok')
+          toast.push(
+            proxy
+              ? t('app.toast.proxySwitched', { addr: `${proxy.host}:${proxy.port}` })
+              : t('app.toast.proxyDirect'),
+            'ok'
+          )
         } else if (action === 'remove') {
           await Promise.all(ids.map((id) => bridge().profiles.remove(id)))
           setSelected(new Set())
@@ -620,12 +631,23 @@ function Shell() {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault()
+        // **环境窗口里不开命令面板**。
+        //
+        // 面板里的导航类命令会 setView(...)：而环境窗口的 view 是 'browser'，
+        // 一旦切走，BrowserShell 就卸载了 —— 环境窗口变成控制台界面、
+        // 网页区域一片空白，而且**不会自动切回来**
+        // （切回只在收到窗口状态推送时发生，此后不再有推送）。
+        //
+        // 结果是：用户在环境窗口里按了一下 Ctrl+K、随手点了个"代理池"，
+        // 他的浏览器窗口就变成了一个空白的控制台，而且不知道怎么回去。
+        // 环境窗口是浏览器，不是控制台 —— 这里不该有面板。
+        if (isBrowserWindow) return
         setPaletteOpen((open) => !open)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [isBrowserWindow])
 
   return (
     <div className="app">
@@ -653,14 +675,16 @@ function Shell() {
           runningCount={runningCount}
           onBell={() =>
             toast.push(
-              runningCount > 0 ? `${runningCount} 个环境正在运行` : '暂时没有新的通知',
+              runningCount > 0
+                ? t('app.toast.runningEnv', { n: runningCount })
+                : t('app.toast.noNotify'),
               'info'
             )
           }
           onNew={() => {
             if (view === 'tasks') {
               setView('browser')
-              toast.push('请在影子面板里描述任务', 'info')
+              toast.push(t('app.toast.describeInShadow'), 'info')
             } else {
               void createProfile()
             }
@@ -679,7 +703,7 @@ function Shell() {
             onCreate={() => void createProfile()}
             onOpenSettings={() => {
               setDrawerId(null)
-              toast.push('模型设置在浏览器窗口右侧的「模型设置」里打开', 'info')
+              toast.push(t('app.toast.modelSettingsHint'), 'info')
             }}
             onOpenDocs={() => {
               void bridge().system.openExternal('https://github.com/funny8kids/ShadowSurf#readme')
@@ -699,7 +723,7 @@ function Shell() {
                 query={query}
                 onNew={() => {
                   void refreshTasks()
-                  toast.push('任务由影子面板发起：打开环境后在右侧输入指令', 'info')
+                  toast.push(t('app.toast.taskFromShadow'), 'info')
                 }}
                 onOpenProfile={(profileId) => {
                   void openProfile(profileId)

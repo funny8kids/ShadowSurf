@@ -126,7 +126,8 @@ export function flushAudit(stores: Stores): void {
 
   const batch = pending
   try {
-    const merged = stores.audit.list().concat(batch)
+    // listRaw：这里只读不改（merged 是新数组），克隆 5000 条纯属白花
+    const merged = stores.audit.listRaw().concat(batch)
     // replaceAll 不走 CollectionStore.add，淘汰要自己补（见 AUDIT_MAX_ITEMS）
     evictInPlace(merged, AUDIT_MAX_ITEMS, isGateAudit)
     stores.audit.replaceAll(merged)
@@ -228,7 +229,7 @@ function auditTail(stores: Stores): AuditTail {
 
   if (tail !== null) return tail
 
-  const all = stores.audit.list()
+  const all = stores.audit.listRaw()
   // 读到了损坏判定就必须当场失败（和 add() 的 fail-closed 语义一致）：
   // 缓冲起来的话，这个错误只会在定时器里抛，没人接得住。
   const corruption = stores.audit.corruption
@@ -424,7 +425,12 @@ export function listAudit(stores: Stores, limit = 200): AuditEntry[] {
   const cap = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 200
   // 先 flush：缓冲里的记录还没落盘，面板读盘就会少最后几条
   flushAudit(stores)
-  return stores.audit.list().reverse().slice(0, cap)
+  // 先切再克隆：全量克隆 5000 条只为返回 200 条，是白花的
+  const raw = stores.audit.listRaw()
+  return raw
+    .slice(raw.length - cap)
+    .reverse()
+    .map((entry) => structuredClone(entry))
 }
 
 /**
@@ -455,7 +461,8 @@ export function verifyAudit(stores: Stores): AuditVerifyResult {
   // `corruption` 是**上一次读失败**留下的判定，没读过就恒为 null —— 先查它，
   // 在一个还没读过审计文件的进程里永远查不到（IPC 调用顺序不保证面板一定先
   // list 再 verify）。顺序反了，一个损坏的审计文件会被报成「链路为空」= 通过。
-  const all = stores.audit.list()
+  // 只读不改 → listRaw（校验要遍历全量，克隆 5000 条没有意义）
+  const all = stores.audit.listRaw()
   const corruption = stores.audit.corruption
   if (corruption !== null) {
     // 文案按 kind 分支：`io` 是「读不到」（文件被占用/没权限），数据本身可能完好；

@@ -158,11 +158,37 @@ try {
     async (port) =>
       await window.ss.webhooks.create({
         url: `http://127.0.0.1:${port}/hook`,
-        events: ['task.done']
+        events: ['task.done'],
+        // 接收端在本机回环上 —— 主进程默认**拒绝**投递到回环 / 私网 /
+        // 链路本地（云元数据）地址，所以这里显式声明"允许内网"。
+        // 这不是绕过检查，而是那个检查本来就有的开关：
+        // 有些人的回调就在自己家里（NAS、家庭服务器）。
+        allowInternal: true
       }),
     PORT
   )
   check(hook.url.includes(String(PORT)), 'Webhook 创建成功', hook.id)
+
+  // 不开开关时，回环地址必须**投不出去**。
+  // 这条是 SSRF 防护的回归护栏：主进程发出的请求绕开了浏览器的 CORS 与
+  // 代理策略，能打到本机管理接口（Docker 2375 等）与云元数据服务。
+  const guarded = await w.evaluate(
+    async (port) => {
+      const h = await window.ss.webhooks.create({
+        url: `http://127.0.0.1:${port}/hook`,
+        events: ['task.done']
+      })
+      const r = await window.ss.webhooks.test(h.id)
+      await window.ss.webhooks.remove(h.id)
+      return r
+    },
+    PORT
+  )
+  check(
+    guarded.ok === false && guarded.status === 0 && /拒绝|内网/.test(String(guarded.error ?? '')),
+    '默认拒绝投递到回环 / 内网地址',
+    `ok=${String(guarded.ok)} status=${String(guarded.status)} ${String(guarded.error ?? '')}`
+  )
 
   // 非法协议必须在主进程拒绝
   let badRejected = false

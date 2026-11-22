@@ -73,12 +73,41 @@ export class CollectionStore<T extends Entity> {
     }
   }
 
+  /**
+   * 列表。**返回的是快照**：每个元素都克隆过。
+   *
+   * 为什么必须克隆：`read()` 命中缓存时返回的是 `this.cache` 本身，
+   * 而 `list()` 原先只是 `.slice()` —— 数组是新的，**元素不是**。
+   * 于是调用方写一句 `record.enabled = true`，缓存就被就地改掉了，
+   * 盘上却没变：界面显示的值和盘上的值分叉，
+   * 而下一次**任何**无关的 update()（内部是 `clone(this.read())`）
+   * 会把这次偷偷的修改落盘。
+   *
+   * 这种 bug 的症状是"我明明没改这个字段，它怎么变了"——
+   * 极难定位，所以从读边界就堵掉。
+   */
   list(): T[] {
+    return this.store.read().map((item) => structuredClone(item))
+  }
+
+  /**
+   * 列表（**不克隆**）。只给内部只读路径用。
+   *
+   * 存在的理由：审计有 5000 条、每次落盘都要读全量，
+   * 克隆 5000 条是要花钱的（几毫秒的同步阻塞）。
+   * 而那些路径只读不改 —— 用完即弃。
+   *
+   * 约定：**调用方不得修改返回值，也不得把其中的元素存起来**。
+   * 要留就用 `list()`（克隆版）。
+   */
+  listRaw(): T[] {
     return this.store.read().slice()
   }
 
+  /** 按 id 取一条。**返回的是快照**（同 list() 的理由） */
   get(id: string): T | null {
-    return this.store.read().find((item) => item.id === id) ?? null
+    const hit = this.store.read().find((item) => item.id === id)
+    return hit === undefined ? null : structuredClone(hit)
   }
 
   add(item: T): T {

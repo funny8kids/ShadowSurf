@@ -26,6 +26,7 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { randomBytes } from 'node:crypto'
 
 // 只做类型标注，运行时会被完全擦除 —— 这是本文件保持零相对依赖的前提
 import type { StoredProfile } from '@shared/types'
@@ -169,6 +170,47 @@ function statQuietly(file: string): fs.Stats | null {
   } catch {
     return null
   }
+}
+
+/**
+ * rename 的退避重试。
+ *
+ * 为什么需要：Windows 上目标文件被独占句柄占着时（杀毒软件正在扫、
+ * 网盘同步正开着、用户用记事本打开着），`renameSync` 直接 EPERM。
+ * 一次失败就把用户这次的修改丢掉太狠 ——
+ * 而这种占用通常只持续几十毫秒。
+ *
+ * 退避 50ms → 100ms → 200ms → 400ms → 800ms，总共不到 2 秒。
+ */
+const RENAME_RETRIES = 5
+
+/**
+ * 同步等待（毫秒）。
+ *
+ * 为什么需要同步的：persist 整体是同步的（fs.writeFileSync / fsyncSync），
+ * 改成异步会让所有调用方（update / write / migrate）都要 await，
+ * 而它们在热路径上（审计每 200ms 落一次盘）。
+ *
+ * `Atomics.wait` 是 Node 里唯一能做到"同步睡一会儿"的办法：
+ * 它把当前线程挂在共享内存上，由计时器唤醒。
+ */
+function sleepSync(ms: number): void {
+  const shared = new Int32Array(new SharedArrayBuffer(4))
+  Atomics.wait(shared, 0, 0, ms)
+}
+
+function renameWithRetry(from: string, to: string): void {
+  let lastErr: unknown = null
+  for (let attempt = 0; attempt < RENAME_RETRIES; attempt += 1) {
+    try {
+      fs.renameSync(from, to)
+      return
+    } catch (err) {
+      lastErr = err
+      if (attempt < RENAME_RETRIES - 1) sleepSync(50 * 2 ** attempt)
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr))
 }
 
 /** store 对外只给快照，调用方随便改都不会污染内存缓存 */
@@ -1034,7 +1076,18 @@ export class JsonStore<T> {
     const out = this.serialize === undefined ? data : this.serialize(data, target)
     if (this.verify !== undefined) this.verify(out, target, this.file)
 
-    const tmp = this.file + '.tmp'
+    /**
+     * 临时文件名带进程号与随机后缀。
+     *
+     * 固定名（`xxx.json.tmp`）的问题不是"两个进程同时写"（单机单实例很少发生），
+     * 而是**上一次写失败留下的 .tmp 会被下一次写直接复用** ——
+     * 它带着上一次的内容，而中间可能隔了很久；
+     * 而且这个残骸会被整机备份当成正式文件收进去（还原后又被写回数据目录）。
+     *
+     * 带随机后缀则每次都是新文件：失败留下的残骸只占一次空间，
+     * 而且下面的 catch 会把它删掉。
+     */
+    const tmp = `${this.file}.${String(process.pid)}.${randomBytes(4).toString('hex')}.tmp`
     const payload: unknown = this.envelope ? encodeEnvelope(target, out) : out
     // 紧凑序列化（无缩进）。审计 / 历史这类几千条的文件，2 空格美化会让体积大
     // 30-40%，stringify / parse / 写盘都跟着变慢；而这些文件只在程序里读写，
@@ -1046,10 +1099,44 @@ export class JsonStore<T> {
     try {
       fs.writeFileSync(fd, json, 'utf8')
       fs.fsyncSync(fd)
+    } catch (err) {
+      // 写一半就失败：把半截 tmp 删掉，别让它躺在数据目录里
+      try {
+        fs.closeSync(fd)
+      } catch {
+        /* 已经关过了 */
+      }
+      try {
+        fs.unlinkSync(tmp)
+      } catch {
+        /* 删不掉就算了，它带随机名，不会被下次写复用 */
+      }
+      throw err
     } finally {
-      fs.closeSync(fd)
+      try {
+        fs.closeSync(fd)
+      } catch {
+        /* 上面 catch 里可能已经关了 */
+      }
     }
-    fs.renameSync(tmp, this.file)
+
+    // rename 之后 fsync 目录：POSIX 上 rename 的持久性需要这一步才成立，
+    // 缺它时断电可能回到旧内容 —— 症状是"刚才保存的配置丢了"。
+    // Windows 上打不开目录句柄（对目录 fsync 会失败），跳过。
+    if (process.platform !== 'win32') {
+      try {
+        const dirFd = fs.openSync(path.dirname(this.file), 'r')
+        try {
+          fs.fsyncSync(dirFd)
+        } finally {
+          fs.closeSync(dirFd)
+        }
+      } catch {
+        // 拿不到就算了：不能因为 fsync 失败把一次**已经成功**的写报成失败
+      }
+    }
+
+    renameWithRetry(tmp, this.file)
 
     // 收尾取 mtime 用不抛的版本：写入已经成功了，这时再抛会把一次成功的写报成失败。
     // 拿不到就让 cachedMtime 停在 0，下一次读会重新读盘 —— 正确，只是多一次 IO。

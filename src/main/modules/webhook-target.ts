@@ -27,6 +27,9 @@ import { lookup } from 'node:dns/promises'
 /** 最多跟几跳重定向 */
 export const MAX_REDIRECTS = 3
 
+/** 域名解析的超时（毫秒）。超时按"检查不出来"处理 → 拒绝投递 */
+const DNS_TIMEOUT_MS = 3_000
+
 /**
  * 这个地址是不是"内网 / 本机 / 元数据"那类不该被主进程主动打到的地方。
  *
@@ -92,11 +95,26 @@ export async function assertDeliverableTarget(url: string, allowInternal: boolea
   if (isIP(host) === 0) {
     let addresses: Array<{ address: string }> = []
     try {
-      addresses = await lookup(host, { all: true })
+      // 超时保护：没有它，一次慢 DNS 会把每次投递都拖住几秒，
+      // 而投递是**同步等待**的（emitWebhook 逐条 await）——
+      // 一个慢域名就能把任务结束的时间拖长。
+      addresses = await Promise.race([
+        lookup(host, { all: true }),
+        new Promise<Array<{ address: string }>>((resolve) => {
+          const timer = setTimeout(() => resolve([]), DNS_TIMEOUT_MS)
+          timer.unref?.()
+        })
+      ])
     } catch (err) {
-      // 解析不了：交给 fetch 去报错，这里不重复判
+      // 解析**失败**：交给 fetch 去报错（它会给出同样的 DNS 错误），
+      // 这里不重复判，也不重复报错
       console.warn('[webhook] 域名解析失败：' + (err instanceof Error ? err.message : String(err)))
       return
+    }
+    if (addresses.length === 0) {
+      // 超时：解析不出来就没法判断目标是不是内网 —— **拒绝**。
+      // 宁可这次投递失败，也不能让"检查不出来"等于"放行"。
+      throw new Error(`回调域名 ${host} 解析超时，无法确认目标地址，已拒绝投递`)
     }
     for (const item of addresses) {
       if (isPrivateAddress(item.address)) {

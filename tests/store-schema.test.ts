@@ -24,7 +24,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, statSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -446,12 +446,29 @@ test('迁移写回失败且主文件未动：纯副本备份必须被清掉', ()
   try {
     const legacy = JSON.stringify(makeProfiles(), null, 2)
     writeFileSync(box.file, legacy, 'utf8')
-    /* 跨平台、确定的失败注入：persist 会 openSync(file + '.tmp', 'w')，
-       把那个路径先建成目录，open 就抛 EISDIR。
-       不用 chmod（Windows 上无效）、不用只读盘（CI 上不可靠）。 */
-    mkdirSync(box.file + '.tmp')
-
-    const store = profilesStore(box.file)
+    /*
+     * 跨平台、确定的失败注入：**在动文件之前**就失败。
+     *
+     * verify 回调跑在 persist 写盘**之前**（见 json-file.ts 的 persist：
+     * serialize → verify → 才 open tmp 文件），所以它抛错 =
+     * 「写回失败，且主文件一个字节都没动」—— 正是这一档要验的东西。
+     *
+     * 为什么不再用「把 <file>.tmp 建成目录」：那个注入点依赖临时文件名，
+     * 而临时文件名现在带进程号与随机后缀（避免上一次写失败的残骸
+     * 被下一次写复用），路径对不上了。
+     *
+     * 不用 chmod（Windows 上无效）、不用只读盘（CI 上不可靠）。
+     */
+    const store = new JsonStore<FakeProfile[]>(
+      box.file,
+      () => [],
+      (data, schema, path) => validateProfiles(data, schema, path) as unknown as FakeProfile[],
+      {
+        verify: () => {
+          throw new Error('注入：写回失败')
+        }
+      }
+    )
     const r = store.readResult()
 
     assert.equal(r.ok, true, '写回失败不该判成数据损坏 —— 文件还是旧格式，内容完好')

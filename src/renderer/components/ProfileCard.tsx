@@ -100,19 +100,24 @@ export const ProfileCard = memo(function ProfileCard({
   const favoriteLabel = favorite ? t('profiles.favorite.remove') : t('profiles.favorite.add')
 
   return (
+    /*
+     * 卡片**不是** role="button"。
+     *
+     * 原先整张卡是 role="button" + tabIndex=0，里面却塞着三个真正的
+     * <button>（选中框、星标、更多）。这在 ARIA 上是错的：
+     * button 角色的可交互后代必须被压平，读屏软件会把内部控件的语义吞掉，
+     * 键盘用户 Tab 进卡片后也不知道自己在哪。
+     *
+     * 现在分成两条路径：
+     * - **鼠标**：点卡片空白处仍然打开（onClick 留在 article 上，纯便利路径）；
+     * - **键盘 / 读屏**：靠里面的环境名按钮（真正的 <button>，有 aria-label）。
+     *
+     * 内部控件一律 stopPropagation，不让点击冒泡成"打开环境"。
+     */
     <article
       className={`env${selected ? ' sel' : ''}`}
       style={cssVars({ '--c': profile.color })}
       onClick={() => onOpen(profile.id)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          onOpen(profile.id)
-        }
-      }}
-      tabIndex={0}
-      role="button"
-      aria-label={t('profiles.card.openAria', { name: profile.name })}
       title={failed && profile.lastError ? profile.lastError : undefined}
     >
       <div className="env-top">
@@ -129,7 +134,17 @@ export const ProfileCard = memo(function ProfileCard({
           <Icon name="check" size={9} strokeWidth={3.5} />
         </button>
         <span className="env-id">{profileNo(profile.id)}</span>
-        <span className="env-name">{profile.name}</span>
+        <button
+          type="button"
+          className="env-name env-name-btn"
+          aria-label={t('profiles.card.openAria', { name: profile.name })}
+          onClick={(e) => {
+            e.stopPropagation()
+            onOpen(profile.id)
+          }}
+        >
+          {profile.name}
+        </button>
         {/*
           伪装状态点。只在有东西可说的时候出现：
           idle（环境没启动）什么都不画 —— 那时候没有窗口，也就没有可测的状态，

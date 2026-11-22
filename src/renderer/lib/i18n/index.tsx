@@ -29,6 +29,7 @@ import { en as enExtensions, zh as zhExtensions } from './catalog/extensions'
 import { en as enPg, zh as zhPg } from './catalog/proxy-groups'
 import { en as enSync, zh as zhSync } from './catalog/sync'
 import { en as enWh, zh as zhWh } from './catalog/webhooks'
+import { en as enSh, zh as zhSh } from './catalog/store-health'
 
 export type Lang = 'zh' | 'en'
 export type Dict = Record<string, string>
@@ -45,7 +46,8 @@ const ZH: Dict = {
   ...zhExtensions,
   ...zhPg,
   ...zhSync,
-  ...zhWh
+  ...zhWh,
+  ...zhSh
 }
 
 const EN: Dict = {
@@ -60,7 +62,8 @@ const EN: Dict = {
   ...enExtensions,
   ...enPg,
   ...enSync,
-  ...enWh
+  ...enWh,
+  ...enSh
 }
 
 const LANG_KEY = 'ss:lang'
