@@ -336,10 +336,10 @@
 
 .tpl-field input,
 .tpl-field select {
-  height: 30px;
+  height: var(--ctl-h);
   padding: 0 9px;
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--ctl-fs);
   color: var(--ink);
   background: var(--surface-2);
   border: 1px solid var(--line-2);
@@ -597,7 +597,9 @@
 }
 
 .tpl-adopt-row.bad {
-  color: var(--danger, #d9534f);
+  /* 用设计令牌里的红色，而不是一个没定义的 --danger：
+     那个 fallback 色 #d9534f 不在色板里（亮色主题下对比度也不够）。 */
+  color: var(--red);
 }
 
 .tpl-adopt-name {

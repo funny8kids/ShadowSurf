@@ -8,7 +8,7 @@
  * 路由用 useState，不引入 react-router：只有三个互斥视图，用不上路由库。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useI18n } from '@renderer/lib/i18n'
 import type {
   MaskRow,
@@ -24,24 +24,76 @@ import type { NavKey } from '@renderer/components/Sidebar'
 import { TopBar } from '@renderer/components/TopBar'
 import { ProfileGrid } from '@renderer/components/ProfileGrid'
 import type { BatchAction } from '@renderer/components/ProfileGrid'
-import { FingerprintDrawer } from '@renderer/components/FingerprintDrawer'
-import { BrowserShell } from '@renderer/components/BrowserShell'
-import { TaskList } from '@renderer/components/TaskList'
+/*
+ * 抽屉、浏览器壳、命令面板也是**按需加载**。
+ *
+ * 浏览器壳（BrowserShell + 它的 Agent 面板）是**环境窗口**的界面，
+ * 而同一个渲染层包也服务于控制台窗口 ——
+ * 于是控制台的首屏要为一整套用不上的浏览器界面付出解析代价。
+ * 拆成独立 chunk 之后，控制台不渲染它 → 那一块永远不会被下载与解析。
+ */
+const FingerprintDrawer = lazy(() =>
+  import('@renderer/components/FingerprintDrawer').then((m) => ({ default: m.FingerprintDrawer }))
+)
+const BrowserShell = lazy(() =>
+  import('@renderer/components/BrowserShell').then((m) => ({ default: m.BrowserShell }))
+)
+const TaskList = lazy(() =>
+  import('@renderer/components/TaskList').then((m) => ({ default: m.TaskList }))
+)
 import { ToastProvider, useToast } from '@renderer/components/ui'
 import type { IconName } from '@renderer/components/ui'
-import { CommandPalette } from '@renderer/components/CommandPalette'
+const CommandPalette = lazy(() =>
+  import('@renderer/components/CommandPalette').then((m) => ({ default: m.CommandPalette }))
+)
 import type { Command } from '@renderer/components/CommandPalette'
-import { ProxyPanel } from '@renderer/components/tools/ProxyPanel'
-import { TemplatePanel } from '@renderer/components/tools/TemplatePanel'
-import { ScriptPanel } from '@renderer/components/tools/ScriptPanel'
-import { ApiPanel } from '@renderer/components/tools/ApiPanel'
-import { AuditPanel } from '@renderer/components/tools/AuditPanel'
-import { DataPanel } from '@renderer/components/tools/DataPanel'
-import { TeamPanel } from '@renderer/components/tools/TeamPanel'
-import { ExtensionsPanel } from '@renderer/components/tools/ExtensionsPanel'
-import { ProxyGroupsPanel } from '@renderer/components/tools/ProxyGroupsPanel'
-import { SyncPanel } from '@renderer/components/tools/SyncPanel'
-import { WebhooksPanel } from '@renderer/components/tools/WebhooksPanel'
+/*
+ * 工具面板**按需加载**。
+ *
+ * 为什么：这十一个面板在首屏一个都用不到，却各自带着自己的 CSS 与逻辑，
+ * 全都静态打进首屏包 —— 渲染层单包 1.2MB，启动时要把它们全解析一遍。
+ *
+ * 用 lazy + Suspense 之后，每个面板是独立 chunk：
+ * 点了才下载、下载完才解析。首屏只付"环境列表 + 外壳"的钱。
+ *
+ * 为什么要 Suspense 包裹：React.lazy 的组件在 chunk 到达前会抛一个 promise，
+ * 没有边界的话整个界面会白掉。
+ */
+const ProxyPanel = lazy(() =>
+  import('@renderer/components/tools/ProxyPanel').then((m) => ({ default: m.ProxyPanel }))
+)
+const TemplatePanel = lazy(() =>
+  import('@renderer/components/tools/TemplatePanel').then((m) => ({ default: m.TemplatePanel }))
+)
+const ScriptPanel = lazy(() =>
+  import('@renderer/components/tools/ScriptPanel').then((m) => ({ default: m.ScriptPanel }))
+)
+const ApiPanel = lazy(() =>
+  import('@renderer/components/tools/ApiPanel').then((m) => ({ default: m.ApiPanel }))
+)
+const AuditPanel = lazy(() =>
+  import('@renderer/components/tools/AuditPanel').then((m) => ({ default: m.AuditPanel }))
+)
+const DataPanel = lazy(() =>
+  import('@renderer/components/tools/DataPanel').then((m) => ({ default: m.DataPanel }))
+)
+const TeamPanel = lazy(() =>
+  import('@renderer/components/tools/TeamPanel').then((m) => ({ default: m.TeamPanel }))
+)
+const ExtensionsPanel = lazy(() =>
+  import('@renderer/components/tools/ExtensionsPanel').then((m) => ({ default: m.ExtensionsPanel }))
+)
+const ProxyGroupsPanel = lazy(() =>
+  import('@renderer/components/tools/ProxyGroupsPanel').then((m) => ({
+    default: m.ProxyGroupsPanel
+  }))
+)
+const SyncPanel = lazy(() =>
+  import('@renderer/components/tools/SyncPanel').then((m) => ({ default: m.SyncPanel }))
+)
+const WebhooksPanel = lazy(() =>
+  import('@renderer/components/tools/WebhooksPanel').then((m) => ({ default: m.WebhooksPanel }))
+)
 import { StoreHealthBanner } from '@renderer/components/StoreHealthBanner'
 import { OnboardingCard } from '@renderer/components/OnboardingCard'
 import { bridge, errorMessage, hasBridge, onMaskState, onWindowState } from './lib/api'
@@ -100,6 +152,21 @@ const bootParams = new URLSearchParams(window.location.search)
 const isBrowserWindow = bootParams.get('role') === 'browser'
 const bootProfileId = bootParams.get('profileId')
 const bootWindowId = bootParams.get('windowId')
+
+/**
+ * 面板 chunk 到达前的占位。
+ *
+ * 刻意做得很轻：一个居中的转圈。
+ * 之所以不做"骨架屏"：面板的布局各不相同，
+ * 一份通用的骨架只会在每个面板里都长得不对。
+ */
+function PanelLoading(): React.JSX.Element {
+  return (
+    <div className="panel-loading">
+      <span className="spin" />
+    </div>
+  )
+}
 
 export default function App() {
   return (
@@ -713,6 +780,7 @@ function Shell() {
         <div className="views scroll-thin">
           {/* 两个面板的「重试」都指向 loadConsole（整个快照重读），不是单路重读：
               四个读取是一份逻辑快照，部分重试会让面板间数据对不上。 */}
+          <Suspense fallback={<PanelLoading />}>
           {view === 'tasks' ? (
               <TaskList
                 tasks={tasks}
@@ -775,10 +843,12 @@ function Shell() {
                 onBatch={runBatch}
               />
             )}
+          </Suspense>
           </div>
         </div>
       </div>
 
+      <Suspense fallback={null}>
       <FingerprintDrawer
         profile={drawerProfile}
         onClose={() => setDrawerId(null)}
@@ -791,8 +861,10 @@ function Shell() {
           void refreshProfiles()
         }}
       />
+      </Suspense>
 
       {view === 'browser' ? (
+        <Suspense fallback={<PanelLoading />}>
         <BrowserShell
           state={windowState}
           profile={activeProfile}
@@ -805,8 +877,10 @@ function Shell() {
           }}
           onSettingsSaved={setSettings}
         />
+        </Suspense>
       ) : null}
 
+      <Suspense fallback={null}>
       <CommandPalette
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
@@ -814,6 +888,7 @@ function Shell() {
         placeholder={t('palette.placeholder')}
         emptyText={t('palette.empty')}
       />
+      </Suspense>
     </div>
   )
 }

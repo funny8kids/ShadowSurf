@@ -173,6 +173,11 @@
   font-size: var(--fs-11);
   color: var(--ink-4);
   white-space: nowrap;
+  /* 长提示要截断而不是撑破面板：
+     少这两行时，一句长提示会把快捷键标签挤出可视区。 */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .cp-row-key {

@@ -125,7 +125,7 @@
 }
 
 .wh-field input {
-  height: 34px;
+  height: var(--ctl-h);
   padding: 0 var(--sp-10);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);

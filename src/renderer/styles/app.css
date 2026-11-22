@@ -2498,6 +2498,28 @@
   to {
     transform: rotate(360deg);
   }
+
+/*
+ * 面板 chunk 到达前的占位（Suspense fallback）。
+ *
+ * `.spin` 原本只在 `.btab` 下有样式（标签页上的加载圈），
+ * 这里需要一个独立版本 —— 转圈本身不依赖任何上下文。
+ */
+.panel-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 160px;
+}
+
+.panel-loading .spin {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  border-top-color: transparent;
+  animation: rot 0.9s linear infinite;
+}
 }
 
 .tab-new {
@@ -3695,7 +3717,7 @@
 
 .set-input {
   width: 100%;
-  height: 34px;
+  height: var(--ctl-h);
   padding: 0 11px;
   border: 1px solid var(--line-soft);
   border-radius: var(--r-md);

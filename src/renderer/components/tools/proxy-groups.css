@@ -147,7 +147,7 @@
 
 .pg-field input,
 .pg-field select {
-  height: 32px;
+  height: var(--ctl-h);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
   background: var(--surface-2);

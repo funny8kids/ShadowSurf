@@ -78,8 +78,9 @@ export const zh: Dict = {
 
   /* ── 系统确认弹窗 ── */
   'agent.confirm.title': '等待你在系统窗口中确认',
-  'agent.confirm.cancel': '取消本次任务',
-  'agent.confirm.note': '确认窗口由操作系统绘制 · 这个页面无权替你点「允许」',
+  'agent.confirm.cancel': '停止整个任务',
+  'agent.confirm.note':
+    '确认窗口由操作系统绘制 · 这个页面无权替你点「允许」。「停止整个任务」会中止本环境的全部步骤，不只是这一步。',
   'agent.confirm.defaultReason': '这一步可能产生不可逆的结果。',
   'agent.confirm.body':
     '请到应用弹出的系统确认窗口上点「允许执行」。这里的按钮只能取消 —— 批准必须来自那个窗口，否则被篡改的界面就能自己批准自己。',
@@ -165,9 +166,9 @@ export const en: Dict = {
 
   /* ── System confirmation modal ── */
   'agent.confirm.title': 'Confirm in the system window',
-  'agent.confirm.cancel': 'Cancel this task',
+  'agent.confirm.cancel': 'Stop the whole task',
   'agent.confirm.note':
-    'The confirmation window is drawn by the operating system · this page cannot click “Allow” for you',
+    'The confirmation window is drawn by the operating system · this page cannot click “Allow” for you. “Stop the whole task” aborts every step of this profile, not just this one.',
   'agent.confirm.defaultReason': 'This step may produce an irreversible result.',
   'agent.confirm.body':
     'Click “Allow” in the system confirmation window that the app opened. The button here can only cancel — approval must come from that window; otherwise a tampered UI could approve itself.',

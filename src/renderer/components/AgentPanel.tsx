@@ -235,7 +235,9 @@ export function AgentPanel({
 
   async function stop(): Promise<void> {
     try {
-      await bridge().agent.cancel()
+      // 只停**本环境**的任务：不同环境可以并行跑任务，
+      // 不带 profileId 会把别的窗口正在跑的任务一起停掉
+      await bridge().agent.cancel(profileId ?? undefined)
       setStatus('idle')
     } catch (err) {
       toast.push(errorMessage(err), 'err')
