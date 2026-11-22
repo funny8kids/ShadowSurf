@@ -1241,6 +1241,9 @@ function buildPageScript(fp: FingerprintConfig, seed: string): string {
   L.push('        "hardwareConcurrency", "deviceMemory", "language", "languages", "webdriver",')
   L.push('        "pdfViewerEnabled", "plugins", "mimeTypes", "maxTouchPoints", "gpu",')
   L.push('        "connection", "getBattery", "requestMediaKeySystemAccess", "share", "canShare"]],')
+  // Keyboard.getLayoutMap：报的是宿主输入法布局，必须跟着环境声明的语言走。
+  // 不登记进台账的话，toString() 会吐出真实原生源码 —— 那比不改还糟。
+  L.push('      [window.Keyboard && Keyboard.prototype, ["getLayoutMap"]],')
   L.push('      [window.Permissions && Permissions.prototype, ["query"]],')
   L.push('      [window.MediaCapabilities && MediaCapabilities.prototype, ["decodingInfo", "encodingInfo"]],')
   L.push('      [window.MediaDevices && MediaDevices.prototype, ["enumerateDevices"]],')
