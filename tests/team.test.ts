@@ -12,6 +12,8 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   canManageMembers,
   canUseProfile,
@@ -27,6 +29,8 @@ import type {
   TeamActivity,
   TeamState
 } from '@shared/types'
+
+const ROOT = join(import.meta.dirname, '..')
 
 /* ────────────────────────────── 夹具 ────────────────────────────── */
 
@@ -252,4 +256,22 @@ test('owner 本人切换 activeMemberId → 仍然全权限（本机所有者天
   const state = teamState([OWNER, VIEWER])
   assert.equal(actorCanManage(state, OWNER.id, 'prf_9'), true)
   assert.equal(actorCanUse(state, OWNER.id, 'prf_9'), true)
+})
+
+/* ────────────── 当前操作者被删/禁用后必须复位 ────────────── */
+
+test('删除或禁用当前操作者后，activeMemberId 必须复位', () => {
+  // team.ts 依赖 electron / store，不能在纯 Node 里直接跑。
+  // 这里读源码钉住"两个变更点都调用了复位"——这个缺口一旦出现，
+  // 用户删掉一个成员之后所有 ACL 操作都会抛「当前操作者不存在」，
+  // 而界面上只显示莫名其妙的报错，没人会想到根因是几分钟前那次删除。
+  const src = readFileSync(join(ROOT, 'src/main/modules/team.ts'), 'utf8')
+  const calls = (src.match(/clearActiveOperatorIf\(/g) ?? []).length
+  // 1 次定义 + 2 次调用（updateMember 的禁用分支、removeMember）
+  assert.ok(calls >= 3, `clearActiveOperatorIf 应出现至少 3 次（定义+2 调用），实际 ${String(calls)}`)
+  assert.match(
+    src,
+    /changes\.disabled === true\s*\)\s*clearActiveOperatorIf/,
+    '禁用当前操作者后必须复位'
+  )
 })

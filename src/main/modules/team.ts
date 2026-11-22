@@ -159,6 +159,24 @@ function appendActivity(
  * 根本没有权限的人身上。所以种子必须同时满足「未禁用 + 仍是 owner」才采用，
  * 否则退回到任意一个有效 owner。
  */
+/**
+ * 如果当前操作者正是被影响的那个人，把 activeMemberId 复位到空。
+ *
+ * 空 = 本机所有者（全权限），这是 Settings.activeMemberId 的既定语义。
+ *
+ * 为什么必须复位：`resolveActor()` 对"当前操作者已删除/已禁用"是**抛错**的
+ * （fail-closed，不能悄悄当所有人），于是所有走 ACL 的操作都会挂 ——
+ * 用户删掉一个成员（或禁用他）之后，界面上只看到一串莫名其妙的报错，
+ * 而根因是几分钟前那次看似无关的操作。
+ *
+ * 复位到所有者是安全的：操作这个团队管理界面的人本来就是本机所有者，
+ * 删/禁成员这个动作本身也要求 owner 权限（currentActor 那一路）。
+ */
+function clearActiveOperatorIf(stores: Stores, memberId: string): void {
+  if (stores.settings.get().activeMemberId !== memberId) return
+  stores.settings.set({ activeMemberId: '' })
+}
+
 function currentActor(stores: Stores): TeamMember {
   ensureSeeded(stores)
   const owner = stores.members.get(OWNER_SEED_ID)
@@ -219,6 +237,9 @@ function updateMember(
   }
 
   const updated = stores.members.update(id, changes)
+  // 禁用当前操作者后，他就不能再作为 activeMemberId 使用 —— 立刻复位，
+  // 否则下一次 ACL 检查会抛「当前操作者已禁用」，所有操作看起来都坏了。
+  if (changes.disabled === true) clearActiveOperatorIf(stores, id)
   appendActivity(stores, actor, '成员·更新', id, Object.keys(changes).join('、') || '无变更')
   return updated
 }
@@ -246,6 +267,7 @@ function removeMember(stores: Stores, rawId: unknown): { ok: true } {
   const remaining = shares.filter((share) => share.memberId !== id)
   // 没有匹配项时不要写盘：「删除一个没有授权的成员」不该触发一次全量重写
   if (remaining.length !== shares.length) stores.shares.replaceAll(remaining)
+  clearActiveOperatorIf(stores, id)
   appendActivity(stores, actor, '成员·删除', id, existing.name)
   return { ok: true }
 }
