@@ -117,6 +117,17 @@ export function StoreHealthBanner(): React.JSX.Element | null {
 
   useEffect(() => {
     void load()
+    /**
+     * 每 30 秒复查一次。
+     *
+     * 只在挂载时读一次的话，运行途中才发生的文件损坏 / 磁盘写失败
+     * 永远不会被发现 —— 而"写不进去"是运行中才会发生的事
+     * （磁盘满、杀软锁文件、网盘同步冲突）。
+     *
+     * 30 秒足够及时，又不会让一个几乎永远为空的检查频繁打扰主进程。
+     */
+    const timer = setInterval(() => void load(), 30_000)
+    return () => clearInterval(timer)
   }, [load])
 
   const headline = error ?? health?.headline ?? null

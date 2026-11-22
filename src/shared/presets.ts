@@ -125,7 +125,6 @@ export const DEFAULT_SETTINGS: Settings = {
   model: 'deepseek-chat',
   temperature: 0.2,
   maxSteps: 12,
-  autoRun: true,
   panelWidth: 380,
   theme: 'system',
   humanizeInput: 'light',

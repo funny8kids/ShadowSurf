@@ -483,8 +483,15 @@ export interface Settings {
   model: string
   temperature: number
   maxSteps: number
-  /** true=安全动作自动执行，L2 动作仍要确认 */
-  autoRun: boolean
+  /**
+   * 曾经有个 `autoRun` 字段，注释写着"true=安全动作自动执行"。
+   *
+   * 它是**假的**：全仓没有任何一处读它，无论设成什么，Agent 都照常逐步执行，
+   * L2 的确认也一直由主进程的原生窗口把关（那才是真正的闸门）。
+   *
+   * 一个看起来存在、实际什么也不控制的安全开关比没有更坏 ——
+   * 用户会以为关掉它就安全了。所以删掉，不要在 UI 上假装还有这个选项。
+   */
   /** 面板宽度，渲染层用 */
   panelWidth: number
   /** 主题模式。解析成 light/dark 由主进程做，渲染层只收结果 */

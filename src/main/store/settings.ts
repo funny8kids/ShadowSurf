@@ -183,7 +183,6 @@ function migrateSettings(data: unknown): StoredSettings {
     model: asString(rec.model, DEFAULT_SETTINGS.model),
     temperature: asNumber(rec.temperature, DEFAULT_SETTINGS.temperature),
     maxSteps: asNumber(rec.maxSteps, DEFAULT_SETTINGS.maxSteps),
-    autoRun: asBoolean(rec.autoRun, DEFAULT_SETTINGS.autoRun),
     panelWidth: asNumber(rec.panelWidth, DEFAULT_SETTINGS.panelWidth),
     theme: asThemeMode(rec.theme),
     humanizeInput: asHumanizeInput(rec.humanizeInput),
@@ -269,7 +268,6 @@ export class SettingsStore {
       model: stored.model,
       temperature: stored.temperature,
       maxSteps: stored.maxSteps,
-      autoRun: stored.autoRun,
       panelWidth: stored.panelWidth,
       theme: stored.theme,
       humanizeInput: stored.humanizeInput,
@@ -299,7 +297,6 @@ export class SettingsStore {
       // panelWidth ∈ [0,2000]（0 = 自动）。越界钳到边界，不抛错。
       temperature: clampNumber(patch.temperature ?? current.temperature, 0, 2),
       maxSteps: clampNumber(patch.maxSteps ?? current.maxSteps, 1, 30),
-      autoRun: patch.autoRun ?? current.autoRun,
       panelWidth: clampNumber(patch.panelWidth ?? current.panelWidth, 0, 2000),
       theme: patch.theme ?? current.theme,
       humanizeInput: asHumanizeInput(patch.humanizeInput ?? current.humanizeInput),
