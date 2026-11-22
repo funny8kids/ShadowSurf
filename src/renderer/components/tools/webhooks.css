@@ -45,6 +45,20 @@
   white-space: nowrap;
 }
 
+.wh-last {
+  margin-top: 3px;
+  font-size: var(--fs-11);
+  line-height: 1.4;
+}
+
+.wh-last.ok {
+  color: var(--green-ink);
+}
+
+.wh-last.bad {
+  color: var(--red-ink);
+}
+
 .wh-events {
   display: flex;
   flex-wrap: wrap;

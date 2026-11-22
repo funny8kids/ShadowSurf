@@ -128,6 +128,21 @@ export async function emitWebhook(
     // 空数组 = 订阅全部
     if (hook.events.length > 0 && !hook.events.includes(event)) continue
     const result = await deliver(hook.url, payload, hook.allowInternal === true)
+    // 把结果写回记录：界面要能显示"这个回调上次没通"，
+    // 而不是永远显示"已启用"让人误以为在正常投递。
+    // 失败也不自动停用 —— 目标临时下线很常见，自动停用会把抖动变成永久失效。
+    try {
+      stores.webhooks.update(hook.id, {
+        lastDelivery: {
+          at: Date.now(),
+          ok: result.ok,
+          status: result.status,
+          ...(result.error !== undefined ? { error: result.error } : {})
+        }
+      })
+    } catch {
+      /* 记录已被用户删除，不影响投递本身 */
+    }
     try {
       appendAudit(
         stores,

@@ -631,6 +631,22 @@ export interface WebhookRecord {
    * 所以留一个显式开关，而不是一刀切禁止。
    */
   allowInternal?: boolean
+  /**
+   * 最近一次投递结果（**诊断，不是判据**）。
+   *
+   * 没有这个字段时，一个失效的 Webhook 在界面上永远显示"已启用"，
+   * 而失败只写进审计 —— 用户不会去翻审计，于是他的回调一直没工作
+   * 而他以为在正常投递。
+   *
+   * 只报"上次怎样"，不自动停用：目标临时下线很常见，
+   * 自动停用会把一次抖动变成永久失效。
+   */
+  lastDelivery?: {
+    at: number
+    ok: boolean
+    status: number
+    error?: string
+  }
 }
 
 /** Webhook 投递结果（测试按钮用） */

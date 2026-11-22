@@ -152,6 +152,19 @@ export function WebhooksPanel() {
                   <span className={cx('wh-status', hook.enabled ? 'on' : '')} />
                   <div>
                     <div className="wh-url">{hook.url}</div>
+                    {hook.lastDelivery ? (
+                      <div
+                        className={cx('wh-last', hook.lastDelivery.ok ? 'ok' : 'bad')}
+                        title={hook.lastDelivery.error ?? ''}
+                      >
+                        {hook.lastDelivery.ok
+                          ? t('wh.last.ok', { status: hook.lastDelivery.status })
+                          : t('wh.last.bad', {
+                              status: hook.lastDelivery.status,
+                              reason: hook.lastDelivery.error ?? t('wh.last.unknown')
+                            })}
+                      </div>
+                    ) : null}
                     <div className="wh-events">
                       {hook.events.length === 0
                         ? t('wh.eventsHint')
