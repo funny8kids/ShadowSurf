@@ -566,7 +566,27 @@ function importJson(text: string): ImportResult {
  * `#`，不可能是 JSON 的开头；而 JSON 文件必然以 { 或 [ 开头。这个判据不会
  * 误判 —— 唯一需要注意的是文件头有 BOM，所以先把它剥掉。
  */
+/**
+ * 导入文本的体积上限。
+ *
+ * 没有它的话，粘贴一个几百 MB 的文件会让主进程同步 split 成几十万行、
+ * 再逐行解析 —— UI 卡死好几分钟，而且中途点取消也没用（全在主进程线程上）。
+ * 8MB 远大于任何真实 Cookie 导出（几千条也就几 MB）。
+ */
+const MAX_IMPORT_CHARS = 8 * 1024 * 1024
+
 export function importCookies(text: string): ImportResult {
+  if (text.length > MAX_IMPORT_CHARS) {
+    return {
+      cookies: [],
+      errors: [
+        `导入内容过大（${(text.length / 1024 / 1024).toFixed(1)}MB，上限 8MB）。` +
+          '请确认选对了文件；Cookie 导出通常只有几十 KB。'
+      ],
+      total: 0,
+      rejected: 0
+    }
+  }
   const trimmed = text.replace(/^\uFEFF/, '').trim()
   if (trimmed === '') {
     return { cookies: [], errors: ['内容为空：没有可导入的 Cookie'], total: 0, rejected: 0 }

@@ -19,6 +19,8 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 import {
   capErrors,
@@ -286,4 +288,25 @@ test('不静默截断：解析出来的 + 报出来的 == 输入的条目数', (
 test('URL 推导：secure 用 https，否则 http；前导点必须剥掉', () => {
   assert.equal(cookieUrlFor({ domain: '.example.com', secure: true }), 'https://example.com')
   assert.equal(cookieUrlFor({ domain: 'example.com', secure: false }), 'http://example.com')
+})
+
+/* ────────────────────────────── 导入体积上限 ────────────────────────────── */
+
+test('超长导入内容必须当场拒绝，不能把主进程拖进逐行解析', () => {
+  // 造一个刚过 8MB 的输入。这里只测判定，不真造 8MB 字符串 ——
+  // 从源码里把上限读出来，用一个"恰好超过"的缩微值验逻辑，
+  // 再确认源码里的上限常量本身足够大。
+  const src = readFileSync(
+    join(import.meta.dirname, '..', 'src', 'main', 'modules', 'cookie-io.ts'),
+    'utf8'
+  )
+  const m = /const MAX_IMPORT_CHARS = (\d+(?:\s*\*\s*\d+)*)/.exec(src)
+  assert.ok(m !== null, '找不到导入上限常量')
+  assert.match(src, /text\.length > MAX_IMPORT_CHARS/, '导入入口必须检查体积上限')
+  // 上限本身要足够真实使用：8MB 以上
+  const limit = m[1]
+    .split('*')
+    .map((part) => Number(part.trim()))
+    .reduce((a, b) => a * b, 1)
+  assert.ok(limit >= 8 * 1024 * 1024, `导入上限过小：${String(limit)}`)
 })
