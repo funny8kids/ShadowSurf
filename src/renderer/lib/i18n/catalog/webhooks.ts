@@ -8,6 +8,9 @@ export const zh: Dict = {
   'wh.urlPlaceholder': 'https://example.com/hooks/shadowsurf',
   'wh.events': '订阅事件',
   'wh.eventsHint': '不勾选任何事件 = 订阅全部。',
+  'wh.allowInternal': '允许投递到内网地址',
+  'wh.allowInternalHint':
+    '默认拒绝回环 / 私网 / 链路本地地址（含云元数据）。你的回调在自己家里时才需要勾选。',
   'wh.event.taskDone': '任务完成',
   'wh.event.taskFailed': '任务失败',
   'wh.event.scheduleDone': '定时执行完成',
@@ -32,6 +35,9 @@ export const en: Dict = {
   'wh.urlPlaceholder': 'https://example.com/hooks/shadowsurf',
   'wh.events': 'Events',
   'wh.eventsHint': 'Selecting nothing subscribes to all of them.',
+  'wh.allowInternal': 'Allow internal addresses',
+  'wh.allowInternalHint':
+    'Loopback / private / link-local addresses (including cloud metadata) are refused by default. Only tick this if the endpoint is on your own network.',
   'wh.event.taskDone': 'Task finished',
   'wh.event.taskFailed': 'Task failed',
   'wh.event.scheduleDone': 'Scheduled run finished',

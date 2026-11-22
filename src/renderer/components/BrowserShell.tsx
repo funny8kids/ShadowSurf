@@ -129,6 +129,10 @@ export function BrowserShell({
   const stageRef = useRef<HTMLDivElement | null>(null)
   const panelRef = useRef<HTMLDivElement | null>(null)
   const bwBodyRef = useRef<HTMLDivElement | null>(null)
+  /** 地址栏输入框：Ctrl+L 要能聚焦它（浏览器肌肉记忆） */
+  const addrInputRef = useRef<HTMLInputElement | null>(null)
+  /** 标签搜索框：Ctrl+F 要能聚焦它 */
+  const searchInputRef = useRef<HTMLInputElement | null>(null)
 
   const groupsKey = `${GROUP_STORAGE_PREFIX}${state?.profileId ?? profile?.id ?? 'none'}`
 
@@ -276,9 +280,90 @@ export function BrowserShell({
     if (!state || !active) return
     const raw = urlDraft.trim()
     if (!raw) return
-    const url = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`
-    void guard(() => bridge().window.navigate(state.id, active.id, url), t('browser.err.navigate'))
+    // **原样**交给主进程：搜词 / 补协议 / host:port 的判断必须只有一份实现。
+    //
+    // 渲染层原先会先补 `https://`，那等于把主进程里的搜索兜底彻底废掉：
+    // 用户输入「北京天气」→ 变成 https://北京天气 → ERR_INVALID_URL，
+    // 而加载失败又被主进程吞掉了，界面上一点反应都没有 ——
+    // 用户看到的就是"地址栏敲了回车，什么都没发生"。
+    //
+    // 归一化放在主进程还有第二个好处：主进程知道真实的 host:port 与本机地址，
+    // 渲染层并不知道（也猜不到）。
+    void guard(() => bridge().window.navigate(state.id, active.id, raw), t('browser.err.navigate'))
   }
+
+  /**
+   * 浏览器级快捷键。
+   *
+   * 为什么必须挂在 window 上：原先只挂在地址栏 input 的 onKeyDown 上，
+   * 而 input 不聚焦时那个 handler 根本不触发 —— 于是「Ctrl+T 新标签 /
+   * Ctrl+W 关标签 / Ctrl+L 聚焦地址栏 / F5 刷新」只有光标正好落在地址栏里
+   * 才生效。用户会直接得出结论「这不是个浏览器」。
+   *
+   * 补齐真实浏览器最常用的六个键。
+   *
+   * 两条边界：
+   * 1. 输入框里不抢 Ctrl+T / Ctrl+W（页面自己的快捷键更该留给它），
+   *    但 Ctrl+L 与 F5 在任何地方都生效 —— 真实浏览器就是这样。
+   * 2. Ctrl+W 关的是**标签页**，不是整个窗口：整个窗口关掉会连带停掉
+   *    该环境，用户的会话就没了。
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      const mod = e.ctrlKey || e.metaKey
+      const key = e.key.toLowerCase()
+      const el = document.activeElement
+      const inField =
+        el !== null &&
+        (el.tagName === 'INPUT' ||
+          el.tagName === 'TEXTAREA' ||
+          (el as HTMLElement).isContentEditable === true)
+
+      // 地址栏类：任何时候都要生效
+      if (mod && key === 'l') {
+        e.preventDefault()
+        addrInputRef.current?.focus()
+        addrInputRef.current?.select()
+        return
+      }
+      if (e.key === 'F5' || (mod && key === 'r')) {
+        e.preventDefault()
+        if (!state || !active) return
+        void guard(() => bridge().window.reload(state.id, active.id), t('browser.err.reload'))
+        return
+      }
+      // 标签类：输入框里不抢
+      if (inField) return
+      if (mod && e.shiftKey && key === 't') {
+        e.preventDefault()
+        if (!state) return
+        void guard(async () => {
+          await bridge().window.reopenClosedTab(state.id)
+        }, t('browser.err.newTab'))
+        return
+      }
+      if (mod && key === 't') {
+        e.preventDefault()
+        if (!state) return
+        void guard(async () => {
+          await bridge().window.newTab(state.id)
+        }, t('browser.err.newTab'))
+        return
+      }
+      if (mod && key === 'w') {
+        e.preventDefault()
+        if (!state || !active) return
+        closeTab(active)
+        return
+      }
+      if (mod && key === 'f') {
+        e.preventDefault()
+        searchInputRef.current?.focus()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [state, active, t])
 
   /* 分屏拖拽：拖动 handle 调整影子轨宽度。
      为什么用 window 级监听：拖拽期间鼠标可能移出 handle 本身，必须在 window 上
@@ -500,6 +585,7 @@ export function BrowserShell({
           <div className="tab-search">
             <Icon name="search" size={12} strokeWidth={2} />
             <input
+              ref={searchInputRef}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               onKeyDown={(e) => {
@@ -636,16 +722,29 @@ export function BrowserShell({
         >
           <Icon name="chevronRight" size={13} strokeWidth={2} />
         </button>
+        {/*
+          加载中时这个按钮变成「停止」。
+          主进程一直有 stopLoading 通道，但渲染层从来没调用过 ——
+          于是页面卡在加载时用户只能干等，连 Chrome 那个 ✕ 都没有。
+          这里把它接上：加载中点它 = 停止加载，点不动的等待才是真的没有出口。
+        */}
         <button
           type="button"
           className="nav-btn"
-          aria-label={t('browser.nav.reload')}
+          aria-label={active?.loading ? t('browser.nav.stop') : t('browser.nav.reload')}
+          title={active?.loading ? t('browser.nav.stop') : t('browser.nav.reload')}
           onClick={() => {
             if (!state || !active) return
-            void guard(() => bridge().window.reload(state.id, active.id), t('browser.err.reload'))
+            void guard(
+              () =>
+                active.loading
+                  ? bridge().window.stopLoading(state.id, active.id)
+                  : bridge().window.reload(state.id, active.id),
+              t('browser.err.reload')
+            )
           }}
         >
-          <Icon name="reload" size={13} strokeWidth={2} />
+          <Icon name={active?.loading ? 'close' : 'reload'} size={13} strokeWidth={2} />
         </button>
 
         <div className="addr" data-focused={addrFocused}>
@@ -660,6 +759,7 @@ export function BrowserShell({
             </span>
           ) : null}
           <input
+            ref={addrInputRef}
             className="addr-input"
             value={urlDraft}
             onChange={(e) => setUrlDraft(e.target.value)}
@@ -708,6 +808,30 @@ export function BrowserShell({
           </button>
         </div>
       </div>
+
+      {/*
+        加载失败 / 渲染进程崩溃的横幅。
+        Chromium 自己会在视图里画一张错误页，但那只是页面内部 ——
+        地址栏还是那个打不开的地址，标签页标题还是空白，
+        而 Agent 侧完全拿不到"这次加载失败了"这个事实。
+        这里把原因摆在浏览器自己的界面上，并给一个重试出口。
+      */}
+      {active?.error ? (
+        <div className="bw-error" role="alert">
+          <Icon name="close" size={13} strokeWidth={2} />
+          <span className="msg">{active.error}</span>
+          <button
+            type="button"
+            className="retry"
+            onClick={() => {
+              if (!state || !active) return
+              void guard(() => bridge().window.reload(state.id, active.id), t('browser.err.reload'))
+            }}
+          >
+            {t('browser.err.retry')}
+          </button>
+        </div>
+      ) : null}
 
       <div className="bw-body" ref={bwBodyRef}>
         <div className="stage" ref={stageRef}>
@@ -797,7 +921,15 @@ export function BrowserShell({
             disabled={!task}
             title={t('browser.agentBar.pauseTitle')}
             onClick={() => {
-              void guard(() => bridge().agent.cancel(), t('browser.err.stop'))
+              // 只停**本环境**的任务：不同环境可以并行跑任务，
+              // 不带 profileId 会把别的窗口正在跑的任务一起停掉
+              const profileId = state?.profileId ?? profile?.id
+              void guard(
+                async () => {
+                  await bridge().agent.cancel(profileId)
+                },
+                t('browser.err.stop')
+              )
             }}
           >
             {t('browser.agentBar.pause')}

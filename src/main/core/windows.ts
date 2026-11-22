@@ -244,6 +244,16 @@ interface WindowRecord {
   insets: ContentInsets
   emitTimer: NodeJS.Timeout | null
   closing: boolean
+  /**
+   * 最近关闭的标签（栈顶是最后关的那个）。
+   *
+   * 为的是 Ctrl+Shift+T：真实浏览器里这是最常用的"手滑关错标签"补救键，
+   * 没有它的话，用户只能自己回忆地址再输一遍 ——
+   * 而在一个带代理、带指纹的环境里，输错一个字符就是另一个身份。
+   *
+   * 只记 URL 与轨道，不记标签对象：标签已经销毁了。
+   */
+  closedTabs: Array<{ url: string; track: TrackKind }>
 }
 
 interface WindowManagerOptions {
@@ -392,7 +402,8 @@ export class WindowManager {
       activeTabId: null,
       insets: { ...DEFAULT_INSETS },
       emitTimer: null,
-      closing: false
+      closing: false,
+      closedTabs: []
     }
     this.windows.set(windowId, rec)
 
@@ -606,6 +617,14 @@ export class WindowManager {
     const handle = rec.tabs.get(tabId)
     if (!handle) return
 
+    // 记一笔"刚刚关掉的是哪个地址"，供 Ctrl+Shift+T 恢复。
+    // about:blank 不记：恢复一个空白页没有任何意义，还占着恢复栈的名额。
+    if (handle.tab.url && handle.tab.url !== 'about:blank') {
+      rec.closedTabs.push({ url: handle.tab.url, track: handle.tab.track })
+      // 栈不需要无限长：真实浏览器也就记最近几十条
+      if (rec.closedTabs.length > 30) rec.closedTabs.shift()
+    }
+
     this.destroyHandle(rec, handle)
 
     // 最后一个标签关掉就关窗，和普通浏览器一致
@@ -616,6 +635,22 @@ export class WindowManager {
 
     this.layout(rec)
     this.scheduleEmit(windowId)
+  }
+
+  /**
+   * 重新打开最近关闭的标签（Ctrl+Shift+T）。
+   *
+   * 弹出栈顶一条并在新标签里打开它的地址，然后把它激活。
+   * 栈空时什么都不做 —— 返回 false 让界面知道"没得恢复了"，
+   * 而不是抛一个"没有可恢复的标签"给用户看。
+   */
+  async reopenClosedTab(windowId: string): Promise<boolean> {
+    const rec = this.require(windowId)
+    const last = rec.closedTabs.pop()
+    if (last === undefined) return false
+    const tabId = await this.newTab(windowId, last.url, last.track)
+    this.activateTab(windowId, tabId).catch(() => undefined)
+    return true
   }
 
   async activateTab(windowId: string, tabId: string): Promise<void> {
@@ -815,6 +850,8 @@ export class WindowManager {
 
     wc.on('did-start-loading', () => {
       tab.loading = true
+      // 新一次加载开始 → 上一次的失败说明已经过期
+      tab.error = undefined
       this.scheduleEmit(rec.id)
     })
     wc.on('did-stop-loading', () => {
@@ -835,12 +872,46 @@ export class WindowManager {
       tab.url = url
       // 跨页后旧 favicon 不再适用，等新页自己上报
       tab.favicon = undefined
+      // 导航成功 = 上一次的失败已经过去
+      tab.error = undefined
       this.syncNav(handle)
       this.scheduleEmit(rec.id)
     })
     wc.on('did-navigate-in-page', (_event, url) => {
       tab.url = url
       this.syncNav(handle)
+      this.scheduleEmit(rec.id)
+    })
+
+    /**
+     * 加载失败。
+     *
+     * 不接这个事件，失败在界面上没有任何痕迹：地址栏还显示那个打不开的地址，
+     * 标签页标题空白，用户分不清是"页面本身白"还是"根本打不开"；
+     * Agent 侧则拿着一个失败页面继续快照，最后报"找不到元素"这种二次错误 ——
+     * 真正的原因（连不上 / 被拒 / 证书有问题）在链路里彻底丢了。
+     *
+     * ERR_ABORTED(-3) 必须忽略：用户点导航、页面自己跳转时，
+     * 上一次加载被取消是**正常**的，不是失败。把它当失败会每次跳转都报一次。
+     */
+    wc.on('did-fail-load', (_event, errorCode, errorDescription, _url, isMainFrame) => {
+      if (!isMainFrame) return
+      if (errorCode === -3) return
+      tab.error = describeLoadError(errorCode, errorDescription)
+      tab.loading = false
+      this.scheduleEmit(rec.id)
+    })
+
+    /**
+     * 渲染进程崩溃。
+     *
+     * 崩溃之后标签页永远停在那里：内容没了、也没有任何报错，
+     * `tab.loading` 还可能一直为 true 让标签一直转圈。
+     * 真实浏览器在这里会显示"Aw, Snap"并提供重载 —— 我们至少要把原因报出来。
+     */
+    wc.on('render-process-gone', (_event, details) => {
+      tab.error = `渲染进程已退出（${details.reason}）`
+      tab.loading = false
       this.scheduleEmit(rec.id)
     })
 
@@ -1805,15 +1876,124 @@ export class WindowManager {
 
 const SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i
 
-/** 地址栏输入归一化：带协议直接用，像域名的补 https，其余当搜索词 */
+/**
+ * 地址栏可以直接打开的协议。
+ *
+ * 白名单而不是黑名单：`javascript:` / `blob:` 之类从地址栏输入时，
+ * 真实浏览器会当搜索词处理（Chrome 直接拦掉 javascript: 导航）。
+ * 我们这里同样处理 —— 免得用户不小心在自己机器上执行一段脚本。
+ */
+const SAFE_SCHEMES = new Set(['http:', 'https:', 'about:', 'file:', 'view-source:', 'chrome:'])
+
+/** 本机地址：真实浏览器默认走 http（不是 https），`localhost:3000` 也一样 */
+const LOCAL_HOSTS = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i
+
+/**
+ * 地址栏输入归一化：带协议直接用，像域名的补 https，其余当搜索词。
+ *
+ * 三条判据的顺序不能换：
+ * 1. `host:port`（localhost:3000、example.com:8080）**不是协议** ——
+ *    `SCHEME_RE` 会把 "localhost:" 当成协议名，于是地址原样传给 loadURL，
+ *    报 ERR_INVALID_URL。这类输入要补 http://。
+ * 2. 本机地址默认 http：真实浏览器对 localhost 就是这样，
+ *    补 https 会让本地开发站点直接连不上（自签证书）。
+ * 3. 其余带协议的先用白名单过滤，不在白名单里的当搜索词。
+ *
+ * 搜词兜底放在最后：带空格的、或根本不含点的（"北京天气"）都当搜索词。
+ */
 function normalizeUrl(raw: string): string {
   const input = raw.trim()
   if (!input) return DEFAULT_URL
-  if (SCHEME_RE.test(input)) return input
+
+  // "localhost:3000" / "example.com:8080"：冒号后面是端口号，不是协议
+  const hostPort = /^([^/?#\s]+):(\d+)([/?#].*)?$/.exec(input)
+  if (hostPort) {
+    return `http://${input}`
+  }
+
+  if (SCHEME_RE.test(input)) {
+    const scheme = input.slice(0, input.indexOf(':') + 1).toLowerCase()
+    return SAFE_SCHEMES.has(scheme) ? input : searchUrl(input)
+  }
+
+  // 本机地址走 http（与真实浏览器一致）
+  if (LOCAL_HOSTS.test(input)) return `http://${input}`
+
   if (input.includes(' ') || !input.includes('.')) {
-    return `https://www.bing.com/search?q=${encodeURIComponent(input)}`
+    return searchUrl(input)
   }
   return `https://${input}`
+}
+
+/** 搜索兜底：用必应（不需要用户配置任何搜索引擎，也不会把查询词发给我们自己以外的地方） */
+function searchUrl(input: string): string {
+  return `https://www.bing.com/search?q=${encodeURIComponent(input)}`
+}
+
+/**
+ * Chromium 的网络错误码 → 人话。
+ *
+ * 只给用户看得懂的结论，不给 -105（ERR_NAME_NOT_RESOLVED）这种裸码：
+ * 裸码对普通用户没有任何意义，而错误页是"用户遇到问题时的第一现场"。
+ * 号码取自 Chromium 的 net_error_list.h。
+ */
+const LOAD_ERROR_TEXT: Record<number, string> = {
+  [-1]: '网络错误',
+  [-2]: '文件不存在',
+  [-4]: '地址无效',
+  [-5]: '加载失败',
+  [-6]: '文件过大',
+  [-7]: '没有访问权限',
+  [-8]: '内存不足',
+  [-9]: '不支持的协议',
+  [-10]: '证书错误',
+  [-11]: '证书颁发机构无效',
+  [-12]: '证书通用错误',
+  [-13]: '证书尚未生效或已过期',
+  [-14]: '证书不受信任',
+  [-15]: '证书已被吊销',
+  [-16]: '证书格式无效',
+  [-17]: '证书策略约束不满足',
+  [-18]: '证书与目标主机名不匹配',
+  [-19]: '证书有效期过长',
+  [-20]: '域名解析失败（DNS）',
+  [-21]: '网络已断开',
+  [-22]: '网络不可达',
+  [-23]: '连接被关闭',
+  [-24]: '连接被重置',
+  [-25]: '代理请求失败',
+  [-26]: '代理连接失败',
+  [-27]: '代理认证失败',
+  [-28]: '代理要求认证',
+  [-29]: '代理响应格式错误',
+  [-30]: '地址格式无效',
+  [-301]: '连接被断开',
+  [-302]: 'TLS 握手失败',
+  [-303]: '证书日期无效',
+  [-304]: '证书颁发机构无效',
+  [-305]: '证书不受信任',
+  [-306]: '证书吊销状态不可用',
+  [-307]: '证书无效',
+  [-308]: '证书不受信任',
+  [-309]: '证书已被吊销',
+  [-310]: '证书透明性要求未满足',
+  [-311]: '证书名称约束不满足',
+  [-312]: '证书策略约束不满足',
+  [-313]: '证书用途约束不满足',
+  [-314]: '证书吊销状态不可用'
+}
+
+/**
+ * 把一次加载失败变成一句用户看得懂的话。
+ *
+ * 有已知说法就用它，没有就退回 Chromium 给的英文描述（**不丢信息** ——
+ * 裸码之外的那段描述往往才是真正有用的部分，比如 "certificate expired"）。
+ */
+function describeLoadError(code: number, description: string): string {
+  const detail = typeof description === 'string' ? description.trim() : ''
+  const known = LOAD_ERROR_TEXT[code]
+  if (known) return detail.length > 0 ? `${known}（${detail}）` : known
+  return detail.length > 0 ? detail : `加载失败（错误码 ${code}）`
 }
 
 /**

@@ -11,6 +11,7 @@ import { createHash, randomInt } from 'node:crypto'
 import { PROFILE_COLORS } from '@shared/presets'
 import type {
   CloneOptions,
+  ProxyConfig,
   CreateProfileInput,
   FingerprintConfig,
   MaskLastRecord,
@@ -25,6 +26,8 @@ import type { CorruptInfo } from './json-file'
 import { SCHEMA_CURRENT, SCHEMA_SEALED, seedForm, validateProfiles } from './json-file'
 
 import { openSeed, sealAvailable, sealSeed } from './seed-seal'
+import { decryptSecret, sealIfPlain } from './secret-box'
+import { MASKED_SECRET, mergeProxyPassword } from '@shared/proxy-secret'
 
 /** 去掉了 0/1/i/l/o —— 手抄、念读、日志里肉眼对齐时都不会认错 */
 const ID_ALPHABET = '23456789abcdefghjkmnpqrstuvwxyz'
@@ -98,7 +101,7 @@ export function seedHintOf(seed: string): string {
  * 打码用固定占位符而不是空串：空串会让界面显示「已配置代理」但没有密码，
  * 用户以为密码丢了；占位符让「这里有一个密码，只是不给你看」。
  */
-export const MASKED_SECRET = '••••••'
+export { MASKED_SECRET }
 
 export function toPublicProfile(p: StoredProfile): Profile {
   const { seed, ...rest } = p
@@ -177,11 +180,24 @@ function targetSchema(): number {
  */
 function migrateProfiles(data: unknown, schema: number, file: string): StoredProfile[] {
   const list = validateProfiles(data, schema, file)
-  if (seedForm(schema) === 'plain-hex') return list
-  return list.map((p, i) => ({
+  const opened = list.map((p, i) => ({
     ...p,
-    seed: openSeed(p.seed, file, `第 ${String(i + 1)} 条（id=${p.id}）`)
+    seed: openSeed(p.seed, file, `第 ${String(i + 1)} 条（id=${p.id}）`),
+    /**
+     * 代理密码也还原成**明文**（内存形态）。
+     *
+     * 和 seed 同一个理由：内存里应该是明文，密文只存在于盘上。
+     * 不这样的话，内存里的密码是 `enc:...`，
+     * 将来任何一个"直接用密码"的调用点都会把密文当成密码发出去 ——
+     * 而现在能正常工作的 `applyProxy` 是因为它**恰好**调了 `decryptSecret`。
+     * 那种"靠调用点记得解密"的约定，迟早会被漏掉一次。
+     */
+    proxy:
+      p.proxy !== null && typeof p.proxy.password === 'string' && p.proxy.password.length > 0
+        ? { ...p.proxy, password: decryptSecret(p.proxy.password) }
+        : p.proxy
   }))
+  return opened
 }
 
 /**
@@ -196,7 +212,23 @@ function sealProfiles(list: StoredProfile[], schema: number): StoredProfile[] {
   if (schema < SCHEMA_SEALED) return list
   return list.map((p, i) => ({
     ...p,
-    seed: sealSeed(p.seed, `第 ${String(i + 1)} 条（id=${p.id}）`)
+    seed: sealSeed(p.seed, `第 ${String(i + 1)} 条（id=${p.id}）`),
+    /**
+     * 代理密码与 seed 走**同一个密封点**。
+     *
+     * 为什么不单独在各个写方法里加密：同一条凭据会因为"从哪条路径写进来"
+     * 有两种落盘形态 —— 代理池写的是 `enc:`，走环境写入的却是明文。
+     * 而"哪条路径写进来的"是**调用点**决定的，不是数据决定的：
+     * 本地 API 能写环境、界面也能写环境，两者都会绕过代理池那条路。
+     *
+     * 密封点只有一个才不会漏（和 seed 同一个理由）。
+     * `sealIfPlain` 是幂等的：已经是 `enc:`/`raw:` 的原样放过，
+     * 不会出现"读取→保存一个来回就多套一层密文"。
+     */
+    proxy:
+      p.proxy !== null && typeof p.proxy.password === 'string' && p.proxy.password.length > 0
+        ? { ...p.proxy, password: sealIfPlain(p.proxy.password) }
+        : p.proxy
   }))
 }
 
@@ -371,6 +403,29 @@ function safeOf(of: (fp: FingerprintConfig) => string, fp: FingerprintConfig): s
  * 语义关键点：`proxy: null` 是「用户明确清空代理」，必须同时也清掉 proxyGroupId；
  * 而 `proxy: undefined` 是「这次不改」，不能顺手清掉组。区分靠 !== undefined。
  */
+/**
+ * 合并代理里的密码字段：**占位符 = 不改**。
+ *
+ * 界面上拿到的密码永远是脱敏占位符（见 `toPublicProfile`）。
+ * 用户改了主机或端口顺手一点保存，占位符就会原样回来 ——
+ * 原先这里直接写盘，于是**真密码被占位符覆盖**。
+ *
+ * 症状特别难查：代理还在、主机端口都对，只是"突然不认密码了"，
+ * 而真因是用户刚才点了一下保存（改的其实是屏幕分辨率）。
+ *
+ * 规则：
+ * - 传入的是占位符 → 保留盘上那份（**不改**）；
+ * - 传入空串 → 明确清空密码（用户主动清空的意图必须被尊重）；
+ * - 其他 → 当成新密码。
+ */
+function mergeProxySecret(
+  incoming: ProxyConfig,
+  existing: ProxyConfig | null
+): ProxyConfig {
+  const kept = existing !== null && existing !== undefined ? existing.password : undefined
+  return { ...incoming, password: mergeProxyPassword(incoming.password, kept) }
+}
+
 function resolveProxyFields(
   patch: Partial<Profile>,
   existing: StoredProfile
@@ -396,7 +451,9 @@ function resolveProxyFields(
   if (proxyTouched) {
     return {
       // proxyTouched 已保证 !== undefined，这里只是把 narrowing 交给 TS
-      proxy: patch.proxy ?? null,
+      proxy: patch.proxy === null || patch.proxy === undefined
+        ? null
+        : mergeProxySecret(patch.proxy, existing.proxy),
       // 显式挂单条代理 / 显式清空代理，都退出组
       proxyGroupId: null
     }

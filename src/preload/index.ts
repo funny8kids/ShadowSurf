@@ -91,6 +91,7 @@ const api: ShadowSurfAPI = {
     forward: (windowId, tabId) => invoke(CH.window.forward, windowId, tabId),
     reload: (windowId, tabId) => invoke(CH.window.reload, windowId, tabId),
     stopLoading: (windowId, tabId) => invoke(CH.window.stopLoading, windowId, tabId),
+    reopenClosedTab: (windowId) => invoke(CH.window.reopenClosedTab, windowId),
 
     setContentInsets: (payload: ContentInsetsPayload) => {
       // 高频调用（拖拽 / resize），走 send 不等待回执；主进程会自行节流布局
@@ -116,10 +117,13 @@ const api: ShadowSurfAPI = {
 
   agent: {
     run: (req) => invoke(CH.agent.run, req),
-    cancel: () => invoke(CH.agent.cancel),
+    // 带 profileId 只停那个环境的任务，不带就全停
+    cancel: (profileId) => invoke(CH.agent.cancel, profileId),
     // 这里原本有 confirm(approved)。它已经随通道一起删掉：
     // 渲染层不能断言「用户同意了」，只能请求（run）或取消（cancel）。
     snapshot: (profileId, tabId) => invoke(CH.agent.snapshot, profileId, tabId),
+    // 当前正在跑的任务：渲染层挂载时先拉一次，弥补事件流在重载后断掉的空档
+    status: (profileId) => invoke(CH.agent.status, profileId),
     onEvent: (cb) => subscribe(CH.push.agentEvent, cb)
   },
 
@@ -238,6 +242,8 @@ const api: ShadowSurfAPI = {
     state: () => invoke(CH.localApi.state),
     start: (port) => invoke(CH.localApi.start, port),
     stop: () => invoke(CH.localApi.stop),
+    // 显式重掷令牌：与"启动"分开，避免"确保在跑"静默作废在用客户端
+    regenerateToken: () => invoke(CH.localApi.regenerateToken),
     // 只把令牌写进剪贴板，不返回明文 —— 渲染层拿不到它
     copyToken: () => invoke(CH.localApi.copyToken),
     onState: (cb) => subscribe(CH.push.localApiState, cb)

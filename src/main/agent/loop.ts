@@ -23,6 +23,7 @@ import type { Settings, TaskRecord } from '@shared/types'
 import { actionSemantic, describeAction } from '@shared/protocol'
 
 import { captureSnapshot } from '@main/agent/snapshot'
+import { retargetApprovedAction } from '@main/agent/retarget'
 import { executeAction } from '@main/agent/actions'
 import { assessRisk } from '@main/agent/risk'
 import { requestConsent, type ConsentOutcome } from '@main/agent/consent'
@@ -109,7 +110,9 @@ export async function runAgent(
       const cdp = deps.getCdp()
       if (!cdp) throw new Error('目标页面已关闭')
 
-      const snapshot = await captureSnapshot(cdp)
+      // let：拿到用户同意之后要**重新采一帧**并重新定位目标（见 retarget.ts），
+      // 快照与动作都会随之更新
+      let snapshot = await captureSnapshot(cdp)
       deps.emit({ type: 'thinking', index: stepIndex })
 
       // ── decide ──────────────────────────────────────────────
@@ -148,7 +151,7 @@ export async function runAgent(
         throw new Error(message)
       }
 
-      const action = decision.action
+      let action = decision.action
       const plan = (decision.plan ?? '').trim()
       const thought = (decision.thought ?? '').trim()
 
@@ -241,6 +244,39 @@ export async function runAgent(
           continue
         }
         ticket = outcome.ticket
+
+        /**
+         * 拿到同意票之后、执行之前：**重新采一帧并重新定位目标**。
+         *
+         * 确认窗口最多等 120 秒。这段时间里页面可能把按钮换掉
+         * （"加入购物车" → "立即支付"），而任何一次新快照都会重新分配元素编号
+         * （编号是按位置给的，页面多一个横幅，后面全部往后挪一位）。
+         *
+         * 风险等级与确认框文案都是用**旧快照**算的，执行器的编号校验也只对着旧快照 ——
+         * 于是会出现"用户批准的是 A，系统点的是 B"。
+         *
+         * 这里重新采一帧、按可读名重新定位：名变了就是"目标变了"，
+         * 中止这一步（让模型换一个方案或重来），绝不沿用旧编号点下去。
+         */
+        const retarget = await retargetApprovedAction(cdp, action, snapshot)
+        if (!retarget.ok) {
+          const drifted: AgentStep = {
+            index: stepIndex,
+            plan,
+            thought,
+            action,
+            status: 'rejected',
+            result: `目标在确认期间发生变化，已中止执行：${retarget.reason ?? '未知原因'}。请重新确认当前页面上的目标`,
+            label: describeAction(action, snapshot),
+            at: Date.now(),
+            durationMs: 0
+          }
+          task.steps.push(drifted)
+          deps.emit({ type: 'step', step: { ...drifted } })
+          continue
+        }
+        action = retarget.action
+        snapshot = retarget.snapshot
       }
 
       // ── act ─────────────────────────────────────────────────

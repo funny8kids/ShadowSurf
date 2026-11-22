@@ -40,6 +40,7 @@ export const zh: Dict = {
   'browser.nav.back': '后退',
   'browser.nav.forward': '前进',
   'browser.nav.reload': '刷新',
+  'browser.nav.stop': '停止加载',
   'browser.addr.placeholder': '输入地址或搜索',
   'browser.addr.aria': '地址栏',
   'browser.addr.proxyExit': '代理出口',
@@ -77,6 +78,7 @@ export const zh: Dict = {
   'browser.err.back': '后退失败',
   'browser.err.forward': '前进失败',
   'browser.err.reload': '刷新失败',
+  'browser.err.retry': '重试',
   'browser.err.stop': '停止失败',
   'browser.err.switchTrack': '切换失败',
 
@@ -213,6 +215,7 @@ export const zh: Dict = {
   'fp.field.regionMatch': '地区匹配',
   'fp.proxy.socks5h': 'SOCKS5 (远程 DNS)',
   'fp.proxy.optional': '可选',
+  'fp.proxy.keepSecret': '已配置（留空表示不修改）',
   'fp.proxy.note':
     '代理延迟由主进程拨测后回传，渲染层不发起探测请求。出口地区与指纹地区不一致时，上面的「一致性评分」会直接扣分。',
   'fp.proxy.clear': '清除代理，改为直连',
@@ -313,6 +316,7 @@ export const en: Dict = {
   'browser.nav.back': 'Back',
   'browser.nav.forward': 'Forward',
   'browser.nav.reload': 'Reload',
+  'browser.nav.stop': 'Stop loading',
   'browser.addr.placeholder': 'Enter an address or search',
   'browser.addr.aria': 'Address bar',
   'browser.addr.proxyExit': 'Proxy exit',
@@ -356,6 +360,7 @@ export const en: Dict = {
   'browser.err.back': "Couldn't go back",
   'browser.err.forward': "Couldn't go forward",
   'browser.err.reload': "Couldn't reload",
+  'browser.err.retry': 'Retry',
   'browser.err.stop': "Couldn't stop the task",
   'browser.err.switchTrack': "Couldn't switch",
 
@@ -493,6 +498,7 @@ export const en: Dict = {
   'fp.field.regionMatch': 'Region match',
   'fp.proxy.socks5h': 'SOCKS5 (remote DNS)',
   'fp.proxy.optional': 'Optional',
+  'fp.proxy.keepSecret': 'Already set (leave empty to keep it)',
   'fp.proxy.note':
     'Proxy latency is measured by the main process and reported back; the renderer never sends probe requests. If the exit region and the fingerprint region disagree, the consistency score above loses points.',
   'fp.proxy.clear': 'Clear proxy and connect directly',

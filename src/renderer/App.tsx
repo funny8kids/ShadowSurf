@@ -334,12 +334,17 @@ function Shell() {
     [profiles, windowState]
   )
 
+  /**
+   * 这个环境正在跑的任务。
+   *
+   * 只认**本环境**的，不再回退到"任意一个运行中的任务"：
+   * 任务现在按环境分槽、可以并行，回退会把**别的环境**的任务显示到这个窗口上，
+   * 用户看到"停止"按钮亮着，却停不掉自己这个环境的任务（也不该停别人的）。
+   */
   const browserTask = useMemo(() => {
     const profileId = windowState?.profileId ?? activeProfile?.id
-    return (
-      tasks.find((t) => t.status === 'running' && t.profileId === profileId) ??
-      tasks.find((t) => t.status === 'running')
-    )
+    if (!profileId) return undefined
+    return tasks.find((t) => t.status === 'running' && t.profileId === profileId)
   }, [tasks, windowState, activeProfile])
 
   const refreshProfiles = useCallback(async (): Promise<void> => {

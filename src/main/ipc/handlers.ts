@@ -19,7 +19,7 @@ import type {
   TeamState
 } from '@shared/types'
 import type { AgentEvent, RunRequest } from '@shared/protocol'
-import { getStores, collectStoreHealth, dataDir, healthRefs } from '@main/store'
+import { getStores, collectStoreHealth, dataDir, healthRefs, CollectionStore } from '@main/store'
 import type { WindowManager } from '@main/core/windows'
 import type { ContentInsets } from '@main/core/windows'
 import type { ProfileRuntime } from '@main/core/profiles'
@@ -58,9 +58,24 @@ export interface HandlerContext {
 
 interface ActiveRun {
   controller: AbortController
+  /** 任务 id：取消时能报出「停掉的是哪一个任务」 */
+  taskId: string
+  profileId: string
 }
 
-let activeRun: ActiveRun | null = null
+/**
+ * 进行中的任务，**按环境分槽**。
+ *
+ * 原先是一个全局单例 `activeRun`：整个 App 同时只允许一个任务。
+ * 后果是：环境 A 跑着一个卡在确认框的任务（最多等 120 秒）时，
+ * 环境 B 里输入指令只得到一句「已有任务在执行，请先停止」，
+ * 而且 B 窗口里的「暂停」按钮是灰的 —— B 里**没有任何按钮**能停掉 A 的任务，
+ * 只能切回 A 窗口自己找。多环境并行时这条路完全堵死。
+ *
+ * 分槽之后：同一环境仍然串行（同一个标签页上两个 Agent 会互相踩），
+ * 不同环境可以并行；「取消」按环境走，任何窗口都能停掉**自己**那个环境的任务。
+ */
+const activeRuns = new Map<string, ActiveRun>()
 
 interface ErrorPayload {
   code: string
@@ -383,6 +398,10 @@ export function registerHandlers(ctx: HandlerContext): void {
     await ctx.wm.stopLoading(windowId as string, tabId as string)
   })
 
+  handle(CH.window.reopenClosedTab, async (_e, windowId) => {
+    return ctx.wm.reopenClosedTab(windowId as string)
+  })
+
   // 高频通道：send 而非 invoke，不做回执
   ipcMain.on(CH.window.setContentInsets, (event, raw: ContentInsets) => {
     const win = BrowserWindow.fromWebContents(event.sender)
@@ -408,9 +427,15 @@ export function registerHandlers(ctx: HandlerContext): void {
   /* ── Agent ── */
 
   handle(CH.agent.run, async (event, raw) => {
-    if (activeRun) throw new Error('已有任务在执行，请先停止')
-
     const req = raw as RunRequest
+    // 按环境查占用，而不是全局查：不同环境可以并行跑任务
+    const existing = activeRuns.get(req.profileId)
+    if (existing) {
+      throw new Error(
+        `该环境已有任务在执行（任务 ${existing.taskId}），请先停止它再发起新任务`
+      )
+    }
+
     const tab = ctx.wm.getTab(req.profileId, req.tabId)
     if (!tab) throw new Error('没有找到可操作的标签页，请先打开该环境')
 
@@ -419,22 +444,66 @@ export function registerHandlers(ctx: HandlerContext): void {
     ctx.wm.revealTab(req.profileId, req.tabId)
 
     const controller = new AbortController()
-    const run: ActiveRun = { controller }
     // 锁必须在这里同步落下。原来写在 await cdp.attach() 之后，
     // 两个并发的 agent.run 都能越过上面的检查，各自跑一个循环。
-    activeRun = run
+    const taskId = CollectionStore.newId('tsk')
+    const run: ActiveRun = { controller, taskId, profileId: req.profileId }
+    activeRuns.set(req.profileId, run)
+
+    /**
+     * 任务记录**先落一条 running 的**，而不是等跑完再落。
+     *
+     * 原来的写法是 `runAgent` 返回之后才 `stores.tasks.add(task)`。后果有两个：
+     * 1. 任务跑到一半，控制台的「任务」页是空的，环境卡片上没有进度 ——
+     *    用户只能盯着右侧那条窄影子面板，以为程序卡死了；
+     * 2. 任务跑到一半进程被杀 / 断电，历史里**一条记录都没有** ——
+     *    恰恰是最该留痕的那种情况。
+     *
+     * 这里先落一条 running 的记录，每一步再更新它。
+     */
+    const live: TaskRecord = {
+      id: taskId,
+      profileId: req.profileId,
+      intent: req.intent,
+      status: 'running',
+      plan: [],
+      steps: [],
+      summary: '',
+      startedAt: Date.now(),
+      finishedAt: null,
+      tokens: 0
+    }
+    stores.tasks.add(live)
+    broadcast(CH.push.taskUpdate, live)
 
     const cdp = bridgeFor(tab.wc)
     try {
       await cdp.attach()
     } catch (err) {
-      if (activeRun === run) activeRun = null
+      if (activeRuns.get(req.profileId) === run) activeRuns.delete(req.profileId)
+      // 页面连不上：把刚落的 running 记录改成失败，别留一条永远"运行中"的
+      stores.tasks.update(taskId, { status: 'failed', finishedAt: Date.now() })
+      broadcast(CH.push.taskUpdate, stores.tasks.get(taskId))
       throw err
     }
 
     const sender = event.sender
     const emit = (payload: AgentEvent): void => {
       if (!sender.isDestroyed()) sender.send(CH.push.agentEvent, payload)
+      // 同步到任务记录：控制台的任务页与环境卡片要能看到**实时**进度，
+      // 而不是等任务结束才突然出现一行。
+      if (payload.type === 'step') {
+        const steps = live.steps.filter((s) => s.index !== payload.step.index)
+        steps.push(payload.step)
+        steps.sort((a, b) => a.index - b.index)
+        live.steps = steps
+        stores.tasks.update(taskId, { steps })
+        broadcast(CH.push.taskUpdate, { ...live })
+      } else if (payload.type === 'plan') {
+        live.plan = payload.plan
+        stores.tasks.update(taskId, { plan: payload.plan })
+        broadcast(CH.push.taskUpdate, { ...live })
+      }
     }
 
     try {
@@ -458,8 +527,16 @@ export function registerHandlers(ctx: HandlerContext): void {
         controller.signal
       )
 
-      stores.tasks.add(task)
-      broadcast(CH.push.taskUpdate, task)
+      // 用最终结果覆盖那条 running 记录（**同一个 id**）：
+      // 任务在跑的时候用户已经能在任务页看到它了，
+      // 不能结束时又冒出第二条记录。
+      stores.tasks.update(taskId, {
+        ...task,
+        id: taskId,
+        status: task.status,
+        finishedAt: task.finishedAt ?? Date.now()
+      })
+      broadcast(CH.push.taskUpdate, stores.tasks.get(taskId))
       // 任务结束回调：投递失败不会抛回主流程（emitWebhook 内部消化）。
       void emitWebhook(
         stores,
@@ -475,12 +552,50 @@ export function registerHandlers(ctx: HandlerContext): void {
       )
       return task as TaskRecord
     } finally {
-      if (activeRun === run) activeRun = null
+      if (activeRuns.get(req.profileId) === run) activeRuns.delete(req.profileId)
+      // 任务结束（或被中止）时确保记录不是"运行中"：
+      // 异常路径（页面关闭、模型报错）也要把状态落下来，
+      // 否则任务页会永远挂着一个转圈的"运行中"。
+      const left = stores.tasks.get(taskId)
+      if (left !== null && left.status === 'running') {
+        stores.tasks.update(taskId, { status: 'failed', finishedAt: Date.now() })
+        broadcast(CH.push.taskUpdate, stores.tasks.get(taskId))
+      }
     }
   })
 
-  handle(CH.agent.cancel, () => {
-    activeRun?.controller.abort()
+  /**
+   * 取消任务。
+   *
+   * 带 profileId 就只停**那个环境**的（每个环境窗口停自己那个，互不误杀）；
+   * 不带就全停。
+   */
+  handle(CH.agent.cancel, (_e, profileId) => {
+    const pid = typeof profileId === 'string' ? profileId : ''
+    if (pid !== '') {
+      activeRuns.get(pid)?.controller.abort()
+      return
+    }
+    for (const run of activeRuns.values()) run.controller.abort()
+  })
+
+  /**
+   * 当前正在跑的任务。
+   *
+   * 为什么需要这条通道：任务状态以前只走事件流（`onAgentEvent`），
+   * 渲染层一重载（Ctrl+R / 渲染进程崩了 / 关掉环境窗口再打开），
+   * 事件流就断了 —— 面板回到"还没开始"的欢迎页，
+   * 而主进程里的任务**还在跑、还在烧 token**（用户以为已经停了）。
+   *
+   * 有了这条通道，面板挂载时先拉一次当前状态，再订阅事件。
+   */
+  handle(CH.agent.status, (_e, profileId) => {
+    const pid = typeof profileId === 'string' ? profileId : ''
+    if (pid !== '') {
+      const run = activeRuns.get(pid)
+      return run === undefined ? null : stores.tasks.get(run.taskId)
+    }
+    return stores.tasks.listSummary().filter((t) => t.status === 'running')
   })
 
   /*

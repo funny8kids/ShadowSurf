@@ -1,21 +1,64 @@
 openapi: 3.1.0
 info:
-  title: ShadowSurf Local API
+  title: ShadowSurf Local API — 目标契约（设计稿）
   version: 1.0.0
   description: |
-    ShadowSurf 本地控制面 API。桌面 UI、CLI、SDK、IDE 插件共用同一套契约。
+    **这份文档描述的是目标契约，不等于当前实现。**
 
-    - 仅监听 127.0.0.1，不对外暴露
-    - 所有写操作支持 Idempotency-Key（24h 内幂等）
-    - 任务执行为异步：POST /v1/tasks 返回 202，进度经 WebSocket 推送
+    本文档最初按「下一代本地控制面」写就（spaces / 任务队列 / WebSocket 推送），
+    而实现先落地了另一套更小的接口。两边没有对齐过 ——
+    于是一份"看起来很权威"的文档描述着一堆**调不通**的端点，
+    照着它写脚本的人只会得到一串 404。
+
+    ── 现在真正跑着的端点（实现于 src/main/modules/localapi.ts）──
+
+      GET    /v1/health
+      GET    /v1/profiles
+      POST   /v1/profiles
+      GET    /v1/profiles/{profileId}
+      PATCH  /v1/profiles/{profileId}
+      DELETE /v1/profiles/{profileId}
+      POST   /v1/profiles/{profileId}/launch
+      POST   /v1/profiles/{profileId}/stop
+      GET    /v1/profiles/{profileId}/snapshot
+      GET    /v1/profiles/{profileId}/consistency
+      POST   /v1/profiles/{profileId}/act
+      GET    /v1/tasks
+      GET    /v1/templates
+      GET    /v1/scripts
+      GET    /v1/proxies
+      GET    /v1/audit/verify
+      POST   /v1/backup
+      POST   /v1/restore
+
+    ── 下面这些路径**尚未实现**，是设计稿 ──
+
+      /v1/spaces*、/v1/profiles/batch、/v1/profiles/{id}/duplicate、
+      /v1/profiles/{id}/fingerprint/regenerate、
+      /v1/tasks/{taskId}/pause|resume|cancel|takeover|release|steps|artifacts|replay
+
+    ── 两条现在还做不到的事（不要按文档假设）──
+
+    - 写操作**不支持** `Idempotency-Key`：重复提交会重复执行。
+      （下面各端点里仍保留该参数，是设计稿的一部分。）
+    - 进度**不走 WebSocket**：任务进度用 `GET /v1/tasks` 拉取；
+      Agent 的实时事件走应用内 IPC，不对外暴露。
+
+    ── 共用的事实 ──
+
+    - 仅监听 127.0.0.1，不对外暴露；写操作要 Bearer 令牌，
+      令牌由主进程写进剪贴板，**不经过任何接口返回明文**。
+    - 响应统一是 `{ ok: true, data }` / `{ ok: false, error }`。
+    - 不可逆动作（L2）只能由主进程弹出的**系统原生窗口**取得授权；
+      请求体里的 `confirm` 字段**没有任何效力**。
   contact:
     name: ShadowSurf Engineering
   license:
     name: Proprietary
 
 servers:
-  - url: http://127.0.0.1:7801
-    description: 本地服务
+  - url: http://127.0.0.1:7717
+    description: 本地服务（实现里的默认端口；端口可在界面上改）
 
 security:
   - bearerAuth: []
@@ -340,6 +383,74 @@ paths:
                             id: { type: string }
                             code: { type: string }
                             message: { type: string }
+
+  /v1/backup:
+    post:
+      tags: [audit]
+      summary: 整机备份（把整个数据目录加密成一个文件）
+      description: |
+        备份**整个数据目录**（环境、指纹、代理、团队、脚本、审计），
+        用本机主密钥派生的 AES-256-GCM 加密，因此**只能在同一台机器、
+        同一个系统账户下还原**。换机器请用迁移包（口令封装）。
+
+        备份文件落在 `<userData>/backups/`，返回它的绝对路径。
+      operationId: createBackup
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      path: { type: string, description: 备份文件的绝对路径 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/restore:
+    post:
+      tags: [audit]
+      summary: 整机还原（不可逆）
+      description: |
+        用备份内容**整体替换**当前数据目录：
+
+        - 当前数据目录会被改名保留成 `.bak-<ts>`（不会被自动删除）；
+        - 所有正在运行的环境会被关闭；
+        - 请求体里的 `path` 必须落在备份目录内；
+        - 必须带 `confirm: "RESTORE"`。
+
+        响应里的 `keeperPath` 是旧数据保留的位置。
+      operationId: restoreBackup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path, confirm]
+              properties:
+                path: { type: string, description: 备份文件的绝对路径 }
+                confirm: { type: string, enum: [RESTORE] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      restored: { type: boolean }
+                      keeperPath: { type: string, description: 旧数据保留的位置 }
+                      fileCount: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
 
   /v1/spaces:
     get:

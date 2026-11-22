@@ -19,6 +19,7 @@ import { CH } from '@shared/ipc'
 import type { WebhookEvent, WebhookRecord, WebhookTestResult } from '@shared/types'
 import { CollectionStore } from '@main/store'
 import { appendAudit } from './audit'
+import { MAX_REDIRECTS, assertDeliverableTarget } from './webhook-target'
 import type { ModuleContext } from './context'
 
 const ALL_EVENTS: readonly WebhookEvent[] = ['task.done', 'task.failed', 'schedule.done']
@@ -52,20 +53,55 @@ function asEvents(value: unknown): WebhookEvent[] {
   return out
 }
 
-async function deliver(url: string, payload: unknown): Promise<WebhookTestResult> {
+/**
+ * 投递一次。
+ *
+ * ── 三处与"直接 fetch"不同的地方 ──
+ * 1. **投递前校验目标**：主进程发出的请求绕开了浏览器的 CORS / PNA / 代理策略，
+ *    能打到只对本机开放的管理接口（Docker 2375、各类 admin API），
+ *    也能打到云主机的元数据服务（169.254.169.254）去换 IAM 凭据。
+ *    所以目标不能是回环 / 私网 / 链路本地地址（域名要解析后逐个查）。
+ * 2. **重定向不自动跟随**：跟的话，逐跳重新校验目标 ——
+ *    「一个公网地址 302 到内网」这条路径必须堵住。
+ * 3. 重定向最多跟 MAX_REDIRECTS 跳，避免绕圈。
+ */
+async function deliver(
+  url: string,
+  payload: unknown,
+  allowInternal: boolean
+): Promise<WebhookTestResult> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
   try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'user-agent': 'ShadowSurf-Webhook/0.1'
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal
-    })
-    return { ok: res.ok, status: res.status }
+    let current = url
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+      await assertDeliverableTarget(current, allowInternal)
+      const res = await fetch(current, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'user-agent': 'ShadowSurf-Webhook/0.1'
+        },
+        body: JSON.stringify(payload),
+        // 自己处理重定向：每跳都要重新校验目标
+        redirect: 'manual',
+        signal: controller.signal
+      })
+      if (res.status >= 300 && res.status < 400) {
+        const location = res.headers.get('location')
+        if (location === null) {
+          return { ok: false, status: res.status, error: '目标返回重定向，但没有 Location 头' }
+        }
+        try {
+          current = new URL(location, current).toString()
+        } catch {
+          return { ok: false, status: res.status, error: '目标的重定向地址不合法' }
+        }
+        continue
+      }
+      return { ok: res.ok, status: res.status }
+    }
+    return { ok: false, status: 0, error: `重定向次数超过 ${String(MAX_REDIRECTS)} 跳` }
   } catch (err) {
     return { ok: false, status: 0, error: err instanceof Error ? err.message : String(err) }
   } finally {
@@ -91,7 +127,7 @@ export async function emitWebhook(
   for (const hook of hooks) {
     // 空数组 = 订阅全部
     if (hook.events.length > 0 && !hook.events.includes(event)) continue
-    const result = await deliver(hook.url, payload)
+    const result = await deliver(hook.url, payload, hook.allowInternal === true)
     try {
       appendAudit(
         stores,
@@ -117,6 +153,9 @@ export function registerWebhooksModule(ctx: ModuleContext): void {
       url: asUrl(input.url),
       events: asEvents(input.events),
       enabled: input.enabled === undefined ? true : Boolean(input.enabled),
+      // 默认**不允许**投递到内网：主进程发出的请求能打到本机管理接口
+      // 与云元数据服务，这是防"被攻破的渲染层把本机变成跳板"，不是防用户误操作。
+      allowInternal: input.allowInternal === true,
       createdAt: Date.now()
     }
     hooks.add(record)
@@ -133,6 +172,7 @@ export function registerWebhooksModule(ctx: ModuleContext): void {
     if (patch.url !== undefined) next.url = asUrl(patch.url)
     if (patch.events !== undefined) next.events = asEvents(patch.events)
     if (patch.enabled !== undefined) next.enabled = Boolean(patch.enabled)
+    if (patch.allowInternal !== undefined) next.allowInternal = patch.allowInternal === true
     const updated = hooks.update(id, next)
     appendAudit(ctx.stores, 'Webhook·更新', updated.url, '配置变更')
     return updated
@@ -150,11 +190,15 @@ export function registerWebhooksModule(ctx: ModuleContext): void {
     const id = String(rawId)
     const record = hooks.get(id)
     if (!record) throw new Error('Webhook 不存在')
-    const result = await deliver(record.url, {
-      event: 'task.done',
-      at: Date.now(),
-      data: { test: true, message: 'ShadowSurf Webhook test' }
-    })
+    const result = await deliver(
+      record.url,
+      {
+        event: 'task.done',
+        at: Date.now(),
+        data: { test: true, message: 'ShadowSurf Webhook test' }
+      },
+      record.allowInternal === true
+    )
     appendAudit(
       ctx.stores,
       'Webhook·测试',

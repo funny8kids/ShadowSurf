@@ -17,6 +17,7 @@ import type {
   ProxyGroup,
   ProxyProtocol
 } from '@shared/types'
+import { isMaskedSecret } from '@shared/proxy-secret'
 import { OS_TEMPLATES, PROFILE_COLORS, TIMEZONE_GEO } from '@shared/presets'
 import { Button, Field, Icon, Modal, Toggle, cssVars, useToast } from './ui'
 import { bridge, errorMessage } from '@renderer/lib/api'
@@ -106,6 +107,18 @@ function trapFocus(container: HTMLElement, event: ReactKeyboardEvent): void {
     event.preventDefault()
     first.focus()
   }
+}
+
+/**
+ * 代理密码输入框的显示值。
+ *
+ * 脱敏占位符一律显示成空：它不是密码，只是"这里有一个密码"的标记。
+ * 显示成六个圆点的话，用户会以为那是他自己设的密码，
+ * 改别的字段顺手一保存，占位符就被写回盘上，真密码就此消失。
+ */
+function proxyPasswordValue(password: string | undefined): string {
+  if (password === undefined || isMaskedSecret(password)) return ''
+  return password
 }
 
 export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: FingerprintDrawerProps) {
@@ -1354,11 +1367,24 @@ export function FingerprintDrawer({ profile, onClose, onSaved, onLaunch }: Finge
                 </Field>
 
                 <Field label={t('fp.field.password')}>
+                  {/*
+                    密码框显示的是**脱敏占位符**，不是真密码 ——
+                    界面永远拿不到真密码（那是主进程的事）。
+                    所以这里把它显示成空 + 提示"已配置"：
+                    显示成六个圆点会让人以为那是密码本身，
+                    而点一下保存就会把占位符原样写回盘上（真密码消失）。
+                    主进程那条写路径也做了同样的保护（占位符 = 不改），
+                    两边都堵才靠得住。
+                  */}
                   <input
                     className="val"
                     type="password"
-                    value={draft.proxy?.password ?? ''}
-                    placeholder={t('fp.proxy.optional')}
+                    value={proxyPasswordValue(draft.proxy?.password)}
+                    placeholder={
+                      isMaskedSecret(draft.proxy?.password)
+                        ? t('fp.proxy.keepSecret')
+                        : t('fp.proxy.optional')
+                    }
                     onChange={(e) =>
                       patch({
                         proxy: {

@@ -424,6 +424,17 @@ export interface BrowserTab {
   canGoForward: boolean
   /** 该标签页是否被 Agent 绑定（影子轨默认绑定） */
   agentBound: boolean
+  /**
+   * 加载失败 / 渲染进程崩溃时的说明。
+   *
+   * 没有这一项时，失败的表现是"一块白板"：标签页标题空白、
+   * 地址栏还显示那个打不开的地址、界面上没有任何"加载失败"字样。
+   * 用户分不清是页面本身白还是根本打不开；
+   * Agent 侧则拿着一个空页面继续快照，最终报"找不到元素"这种二次错误。
+   *
+   * 有这一项，界面才能画出一个能看懂、能重试的错误页。
+   */
+  error?: string
 }
 
 export interface WindowState {
@@ -602,6 +613,17 @@ export interface WebhookRecord {
   events: WebhookEvent[]
   enabled: boolean
   createdAt: number
+  /**
+   * 允许投递到**内网 / 本机**地址。
+   *
+   * 默认 false：Webhook 由主进程直接发出，绕开了浏览器的 CORS 与 PNA 策略，
+   * 能打到只对本机开放的管理接口，也能打到云主机的元数据服务换 IAM 凭据。
+   * 这不是"防用户误操作"，是"别让一个被攻破的渲染层把本机变成跳板"。
+   *
+   * 但有些人的回调**就在自己家里**（NAS、家庭服务器）——
+   * 所以留一个显式开关，而不是一刀切禁止。
+   */
+  allowInternal?: boolean
 }
 
 /** Webhook 投递结果（测试按钮用） */

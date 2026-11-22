@@ -22,7 +22,7 @@ import type { Action, AgentStep, StepStatus } from '@shared/protocol'
  * snapshot 缺省时它自己退化成「某个元素」，且**永不**把 `action.id` 印出来。
  */
 import { describeAction } from '@shared/protocol'
-import type { Settings, TestResult } from '@shared/types'
+import type { Settings, TaskRecord, TestResult } from '@shared/types'
 import { PROVIDERS } from '@shared/presets'
 import { Button, Icon, Modal, cx, useToast } from './ui'
 import { bridge, errorMessage, onAgentEvent } from '@renderer/lib/api'
@@ -147,6 +147,40 @@ export function AgentPanel({
     })
     return off
   }, [])
+
+  /**
+   * 挂载时先拉一次当前任务状态。
+   *
+   * 事件流只在**这个渲染进程活着的时候**有效：按 Ctrl+R、渲染进程崩了、
+   * 关掉环境窗口再打开 —— 订阅断了，面板回到"还没开始"的欢迎页，
+   * 而主进程里的任务**还在跑、还在烧 token**（用户以为已经停了）。
+   *
+   * 这条查询通道补的就是那个空档：先问"现在有没有任务在跑"，
+   * 有就把它的计划与步骤显示出来，用户能接着看、也能停。
+   */
+  useEffect(() => {
+    if (!profileId) return
+    let cancelled = false
+    void (async (): Promise<void> => {
+      try {
+        const raw: unknown = await bridge().agent.status(profileId)
+        if (cancelled) return
+        const task = raw as TaskRecord | null
+        if (task === null || typeof task !== 'object') return
+        if (task.status !== 'running') return
+        setStatus('running')
+        if (Array.isArray(task.plan)) setPlan(task.plan)
+        if (Array.isArray(task.steps)) setSteps(task.steps)
+        if (typeof task.intent === 'string' && task.intent !== '') setIntent(task.intent)
+      } catch {
+        // 读不到状态不该报错：面板照常显示"还没开始"，
+        // 真正的任务状态由后续事件补上
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [profileId])
 
   /* ── 自动滚动到底部 ── */
   useEffect(() => {

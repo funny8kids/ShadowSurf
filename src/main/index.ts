@@ -5,7 +5,8 @@
  * 业务逻辑一律在 core / agent / store 里，这里不写。
  */
 
-import { app, BrowserWindow, nativeTheme, dialog } from 'electron'
+import { app, BrowserWindow, nativeTheme, dialog, Menu } from 'electron'
+import type { MenuItemConstructorOptions } from 'electron'
 import { join } from 'node:path'
 import { CH } from '@shared/ipc'
 import { getStores, dataDir, sealLegacyBackups, GATE_ACTION_PREFIX } from '@main/store'
@@ -117,6 +118,45 @@ if (gotLock) {
    *
    * `second-instance` 必须由**持有锁的那个进程**处理（它把控制台窗口带到前台），
    * 第二个进程在 `else` 里直接退出，不需要也不应该注册这些。 */
+
+  /**
+   * 自建应用菜单。
+   *
+   * 不建菜单 = 用 Electron 的**默认菜单**，而默认菜单的加速键是 App 全局的：
+   *   - Ctrl+W（窗口→关闭）关掉的是**整个环境窗口**，不是当前标签页；
+   *   - Ctrl+R（视图→重新加载）重载的是**整个界面**，不是当前网页；
+   *   - Ctrl+Shift+I（视图→开发者工具）能在**网页视图**上打开 DevTools，
+   *     把注入脚本与伪装台账一览无余。
+   *
+   * 菜单栏虽然 `autoHideMenuBar` 藏起来了，但加速键照样生效 ——
+   * 这正是"界面看着没有菜单，行为却像个普通 Electron 应用"的原因。
+   *
+   * 所以这里显式建一个**只有编辑与开发者工具**的菜单：
+   * 撤销/重做/剪切/复制/粘贴/全选留着（浏览器里到处要用），
+   * 冲突的加速键一个不留。
+   */
+  const menuTemplate: MenuItemConstructorOptions[] = []
+  if (process.platform === 'darwin') {
+    // macOS 的应用菜单（关于/退出/服务）不能丢，那是系统约定
+    menuTemplate.push({ role: 'appMenu' })
+  }
+  menuTemplate.push({
+    label: '编辑',
+    submenu: [
+      { role: 'undo' },
+      { role: 'redo' },
+      { type: 'separator' },
+      { role: 'cut' },
+      { role: 'copy' },
+      { role: 'paste' },
+      { role: 'selectAll' }
+    ]
+  })
+  menuTemplate.push({
+    label: '开发者工具',
+    submenu: [{ role: 'toggleDevTools', accelerator: 'F12' }]
+  })
+  Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate))
 
   app.on('second-instance', () => {
     if (consoleWindow && !consoleWindow.isDestroyed()) {

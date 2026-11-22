@@ -162,9 +162,11 @@ export function ApiPanel({ profiles }: PanelProps) {
     void call(() => window.ss.localApi.stop(), t('api.toast.stopped'))
   }
 
-  // 契约里没有单独的 regenerate 通道，主进程把「已运行时再次 start」约定为重掷令牌
+  // 走独立通道重掷：原先借"再点一次启动"来表达，
+  // 于是任何一次"确保服务在跑"的调用都会静默作废全部在用客户端（它们立刻 401，
+  // 而 401 的文案看不出是被轮换了）
   const onRegenerate = (): void => {
-    void call(() => window.ss.localApi.start(), t('api.toast.regenerated'))
+    void call(() => window.ss.localApi.regenerateToken(), t('api.toast.regenerated'))
   }
 
   const onCopy = async (text: string, label: string): Promise<void> => {

@@ -2511,6 +2511,47 @@
   overflow: hidden;
 }
 
+/* 加载失败 / 渲染崩溃的横幅：贴在地址栏下面，把原因和重试摆在浏览器自己的界面上 */
+.bw-error {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--red-2);
+  border-bottom: 1px solid var(--red-line);
+  color: var(--red-ink);
+  font-size: 11.5px;
+}
+
+.bw-error svg {
+  flex: none;
+}
+
+.bw-error .msg {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bw-error .retry {
+  flex: none;
+  height: 20px;
+  padding: 0 9px;
+  border: 1px solid var(--red-line);
+  border-radius: var(--r-xs);
+  background: var(--surface);
+  color: var(--red-ink);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.bw-error .retry:hover {
+  background: var(--red-soft);
+}
+
 .bw-addr.is-shadow::after {
   content: "";
   position: absolute;

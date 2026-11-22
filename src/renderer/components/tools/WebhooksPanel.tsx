@@ -35,6 +35,7 @@ export function WebhooksPanel() {
   const [url, setUrl] = useState('')
   const [events, setEvents] = useState<WebhookEvent[]>([])
   const [enabled, setEnabled] = useState(true)
+  const [allowInternal, setAllowInternal] = useState(false)
   const [editing, setEditing] = useState<WebhookRecord | null>(null)
   const [pendingDelete, setPendingDelete] = useState<WebhookRecord | null>(null)
   const [busy, setBusy] = useState(false)
@@ -57,6 +58,7 @@ export function WebhooksPanel() {
     setUrl(hook?.url ?? '')
     setEvents(hook?.events ?? [])
     setEnabled(hook?.enabled ?? true)
+    setAllowInternal(hook?.allowInternal === true)
     setFormOpen(true)
   }
 
@@ -65,9 +67,9 @@ export function WebhooksPanel() {
     setBusy(true)
     try {
       if (editing) {
-        await bridge().webhooks.update(editing.id, { url, events, enabled })
+        await bridge().webhooks.update(editing.id, { url, events, enabled, allowInternal })
       } else {
-        await bridge().webhooks.create({ url, events, enabled })
+        await bridge().webhooks.create({ url, events, enabled, allowInternal })
         toast.push(t('wh.created'), 'ok')
       }
       setFormOpen(false)
@@ -210,6 +212,15 @@ export function WebhooksPanel() {
               placeholder={t('wh.urlPlaceholder')}
               onChange={(e) => setUrl(e.target.value)}
             />
+          </label>
+          <label className="wh-field wh-field-check">
+            <input
+              type="checkbox"
+              checked={allowInternal}
+              onChange={(e) => setAllowInternal(e.target.checked)}
+            />
+            <span>{t('wh.allowInternal')}</span>
+            <small>{t('wh.allowInternalHint')}</small>
           </label>
           <div className="wh-field">
             <span>{t('wh.events')}</span>

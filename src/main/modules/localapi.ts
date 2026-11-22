@@ -46,6 +46,7 @@ import { isSealed, openText, sealText } from '@main/store/seed-seal'
 import { migrateSecretAtRest, writeFileAtomic } from '@main/store/secret-at-rest'
 import { bridgeFor } from '@main/core/cdp'
 import { captureSnapshot } from '@main/agent/snapshot'
+import { retargetApprovedAction } from '@main/agent/retarget'
 import { ApprovalRequiredError, AuditUnavailableError, MaskIncompleteError, executeAction } from '@main/agent/actions'
 import { assessRisk } from '@main/agent/risk'
 import { requestConsent } from '@main/agent/consent'
@@ -129,14 +130,33 @@ function writeTokenFile(token: string): void {
 /**
  * 生成并落盘新令牌。
  * 32 字节随机：足够长到不可猜测，hex 编码后 64 字符，粘进 curl 也不会被转义。
+ *
+ * ── 失败即不改（fail-closed）──
+ * 落盘失败时**不替换内存里的令牌**。
+ *
+ * 原先的写法是「写盘失败也照样换掉内存里的令牌」：于是盘上还是旧令牌、
+ * 内存里已经是新令牌 —— 当前进程里所有在用客户端立刻 401，
+ * 而下次启动 `loadToken()` 读的是**盘上**那份，旧令牌重新生效，
+ * 新令牌谁也不知道。用户看到的是「我明明点了重新生成，令牌怎么还是旧的」。
+ *
+ * 现在写盘失败就保留旧令牌（服务继续可用），并把失败如实报出去。
+ * 换令牌是一次**有后果**的操作，不能做一半。
  */
 function createToken(): string {
   const token = randomBytes(32).toString('hex')
   try {
     writeTokenFile(token)
   } catch (err) {
-    // 落盘失败仍然返回令牌：本次进程内可用，只是下次启动会换一个新的
-    console.error('[localapi] 令牌写入失败', err)
+    // 落盘失败：保留旧令牌，本次进程继续用它
+    console.error(
+      '[localapi] 令牌写入失败，本次仍沿用旧令牌：' +
+        (err instanceof Error ? err.message : String(err))
+    )
+    if (secret !== '') return secret
+    // 连旧令牌都没有（首次运行就写不进去）：内存里用新的，
+    // 但如实记一条 —— 下次启动会再生成一次
+    secret = token
+    return token
   }
   secret = token
   return token
@@ -309,6 +329,19 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
     const chunks: Buffer[] = []
     let size = 0
     let done = false
+
+    // 先看 Content-Length：超限**在收任何字节之前**就拒掉。
+    // 原先只靠累计字节数判断，于是超限的请求已经进了内存才开始拒绝 ——
+    // N 个并发 × 512KB 的请求能把主进程的内存吃掉一截。
+    // （声明的 Content-Length 不可信，所以这只是第一道；
+    //  下面累计字节数那道仍然保留 —— 它才是真正兜底的那道。）
+    const declared = Number(req.headers['content-length'])
+    if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+      done = true
+      req.resume()
+      reject(new ApiError(400, 'E_BODY_TOO_LARGE', '请求体过大，上限 512KB'))
+      return
+    }
 
     const fail = (err: ApiError): void => {
       if (done) return
@@ -556,7 +589,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
   // 预检不鉴权：浏览器发预检时不带 Authorization，要求鉴权会让所有跨域调用直接失败
   if (method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    // 允许的方法要和实现一致：PATCH / DELETE 都被实现了（改环境 / 删环境），
+    // 但预检只放行 GET/POST 的话，浏览器端的调用会被 CORS 挡掉，
+    // 而 curl 能用 —— 同一份契约两种行为，最难查的一类不一致。
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS')
     res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type')
     res.setHeader('Access-Control-Max-Age', '600')
     res.writeHead(204)
@@ -681,9 +717,80 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendError(res, err.status, err.code, err.message)
       return
     }
-    const message = err instanceof Error ? err.message : String(err)
-    console.error('[localapi] 处理请求失败', err)
-    sendError(res, 500, 'E_INTERNAL', message)
+    const v = classifyError(err)
+    sendError(res, v.status, v.code, v.message)
+  }
+}
+
+/**
+ * 已知用户错误 → HTTP 状态与错误码。
+ *
+ * 这些前缀来自存储层自己抛的中文句子（见 store/profiles.ts、store/collection.ts）。
+ *
+ * 靠前缀匹配确实脆 —— 但比"全部 500"强得多：至少
+ * 「你传的东西不存在」和「服务端内部坏了」能被区分开，
+ * 调用方也才知道自己该改请求还是该重试。
+ *
+ * 匹配不上的一律当 500（见 classifyError 的兜底）：
+ * 宁可把用户错报成服务端错，也不能把内部细节（绝对路径、errno 原文）回传出去。
+ */
+const USER_ERRORS: ReadonlyArray<{ prefix: string; status: number; code: string }> = [
+  { prefix: '记录不存在', status: 404, code: 'E_NOT_FOUND' },
+  { prefix: '环境不存在', status: 404, code: 'E_NOT_FOUND' },
+  { prefix: '不支持的字段', status: 400, code: 'E_BAD_INPUT' },
+  { prefix: 'seed 不可直接修改', status: 400, code: 'E_BAD_INPUT' },
+  { prefix: 'proxyGroupId 必须是', status: 400, code: 'E_BAD_INPUT' },
+  { prefix: 'extensionIds 必须是', status: 400, code: 'E_BAD_INPUT' },
+  { prefix: 'fingerprint', status: 400, code: 'E_BAD_INPUT' },
+  { prefix: 'platform 由 fingerprint 决定', status: 400, code: 'E_BAD_INPUT' },
+  { prefix: 'browserVersion 由 fingerprint 决定', status: 400, code: 'E_BAD_INPUT' }
+]
+
+/** 内部错误的编号：给用户一句可以引用的编号，细节只进主进程日志 */
+let errorSeq = 0
+function nextErrorId(): string {
+  errorSeq += 1
+  return `E${String(errorSeq).padStart(4, '0')}-${randomBytes(3).toString('hex')}`
+}
+
+/**
+ * 把一个异常分类成「用户的错」还是「我们的错」。
+ *
+ * 为什么必须分类：原来除 ApiError 外的一切都走 500，**并且把原始 message
+ * 原样回传** —— 包括绝对路径与 Node 的 errno 原文
+ * （ENOENT: no such file or directory, open 'C:Users<user>...'）。
+ *
+ * 两个后果：
+ * 1. 调用方拿到 500 只能理解成"服务端坏了"，而其实是他自己传错了路径 ——
+ *    该改请求的变成了该重试的；
+ * 2. 那条路径把他的用户目录结构泄给了任何持有令牌的脚本。
+ *
+ * 分三类处理：
+ * - ENOENT → 404，**不回传路径**；
+ * - 已知用户错误前缀 → 4xx + 我们自己的那句话；
+ * - 其余 → 500 + 一个可引用的编号，原始信息只进日志。
+ */
+function classifyError(err: unknown): { status: number; code: string; message: string } {
+  const raw = err instanceof Error ? err.message : String(err)
+  const errno = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined
+
+  if (errno === 'ENOENT') {
+    return { status: 404, code: 'E_NOT_FOUND', message: '请求的文件或记录不存在' }
+  }
+
+  for (const rule of USER_ERRORS) {
+    if (raw.startsWith(rule.prefix)) {
+      console.warn(`[localapi] 调用方请求有误：${raw}`)
+      return { status: rule.status, code: rule.code, message: raw }
+    }
+  }
+
+  const id = nextErrorId()
+  console.error(`[localapi] ${id} 处理请求失败`, err)
+  return {
+    status: 500,
+    code: 'E_INTERNAL',
+    message: `内部错误（编号 ${id}），详见主进程日志`
   }
 }
 
@@ -783,7 +890,8 @@ async function handleProfiles(
     requireProfile(id)
     const body = await readJsonBody(req)
     const payload = body !== null && typeof body === 'object' ? (body as Record<string, unknown>) : {}
-    const action = toAction(payload.action)
+    // let：同意之后要重新定位目标，元素编号会换成新快照里的（见 retarget.ts）
+    let action = toAction(payload.action)
     // 外部调用方没有「用户意图」可传，所以这里**不传 intent**：
     // 执行器会按空意图重算，得到永不降级的最保守等级。
     //
@@ -800,7 +908,8 @@ async function handleProfiles(
     await cdp.attach()
     // 外部调用方手里没有当轮快照，但编号校验是防幻觉的唯一闸门，不能因为走 API 就绕过：
     // 这里现采一帧再交给执行器，元素编号必须真实存在于当前页面。
-    const snap = await captureSnapshot(cdp)
+    // let：拿到用户同意之后要重新采一帧并重新定位目标（见 retarget.ts）
+    let snap = await captureSnapshot(cdp)
 
     // 先自己判一次等级：只有知道「这是不是 L2」才谈得上要不要弹确认。
     // 语义来源必须与执行器一致 —— 都从快照取元素可读名，不吃调用方输入。
@@ -845,6 +954,29 @@ async function handleProfiles(
         )
       }
       ticket = outcome.ticket
+
+      /**
+       * 拿到同意票之后、执行之前：**重新采一帧并重新定位目标**。
+       *
+       * 确认窗口最多等 120 秒。这段时间里页面可能把按钮换掉
+       * （"加入购物车" → "立即支付"），而任何一次新快照都会重新分配元素编号
+       * （编号是按位置给的，页面多一个横幅，后面全部往后挪一位）——
+       * 本地 API 自己就暴露了快照端点，同一个环境上的并发调用就能触发漂移。
+       *
+       * 风险等级与确认框文案都是用**旧快照**算的 —— 于是会出现
+       * "用户批准的是 A，系统点的是 B"。这里重新定位：找不到同名元素就 409，
+       * 让调用方重新拿快照再确认，绝不沿用旧编号点下去。
+       */
+      const retarget = await retargetApprovedAction(cdp, action, snap)
+      if (!retarget.ok) {
+        throw new ApiError(
+          409,
+          'E_TARGET_CHANGED',
+          `目标在确认期间发生变化，已中止执行：${retarget.reason ?? '未知原因'}。请重新获取快照再试。`
+        )
+      }
+      action = retarget.action
+      snap = retarget.snapshot
     }
 
     let result
@@ -956,19 +1088,68 @@ function buildServer(): Server {
   srv.on('clientError', (_err, socket) => {
     if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\n\r\n')
   })
+  /**
+   * 连接数与超时。
+   *
+   * 没有上限的话，一个持令牌的脚本（或一个拿不到令牌但想耗死服务的人）
+   * 可以开几百条慢连接 —— 每条都占着套接字和事件循环的注意力。
+   * `requestTimeout` 管的是「请求体发得太慢」这类半开连接。
+   *
+   * 上限取 64：本地 API 是给脚本调用的，正常并发远小于这个数，
+   * 而 64 条足够把服务打满之前先被拒绝。
+   */
+  srv.maxConnections = 64
+  srv.requestTimeout = 30_000
+  srv.headersTimeout = 20_000
   return srv
 }
 
-async function startService(port?: number): Promise<LocalApiState> {
+/**
+ * start / stop 的串行化。
+ *
+ * 原先两者都能并发进入：`stopService` 把 `server` 置空后进入 await，
+ * 这时另一个 `start` 看到 `server === null` 就成功起了一个新监听；
+ * 随后 stopService 恢复执行，用 `state = {...state, running:false}` 覆盖掉
+ * 刚写入的 `running:true` ——
+ * 结果是**新服务在监听、状态却说已停止**。
+ *
+ * 用户以为本地控制面已经关了，实际端口还在接受带令牌的指令。
+ *
+ * 这里用一条 promise 链把两者串起来：同一时刻只有一个在跑。
+ */
+let serviceChain: Promise<unknown> = Promise.resolve()
+
+function enqueueService<T>(fn: () => Promise<T>): Promise<T> {
+  const next = serviceChain.then(fn, fn)
+  // 链本身不能被一次失败卡死：只保留"串行"这件事，不保留失败
+  serviceChain = next.then(
+    () => undefined,
+    () => undefined
+  )
+  return next
+}
+
+function startService(port?: number): Promise<LocalApiState> {
+  return enqueueService(() => startServiceInner(port))
+}
+
+function stopService(): Promise<LocalApiState> {
+  return enqueueService(stopServiceInner)
+}
+
+async function startServiceInner(port?: number): Promise<LocalApiState> {
   const target = resolvePort(port)
 
-  // 已在运行：契约里没有独立的 regenerate 通道，而「重复启动」本来没有别的语义，
-  // 所以约定为重掷令牌（UI 的「重新生成」走这条路）。
   if (server !== null) {
     if (target === state.port) {
-      // 同端口只换令牌，不重建监听：重启监听会打断客户端已经建立的 keep-alive 连接
-      createToken()
-      emit()
+      // 已经在跑、端口也一样 → **什么都不做**。
+      //
+      // 原先这里会重掷令牌，于是"确保服务在跑"（界面上再点一次启动、
+      // 外部脚本顺手调一次）会静默作废全部在用客户端：它们立刻 401，
+      // 而 401 的文案是「缺少或错误的 Bearer 令牌」——
+      // 调用方分不清是自己写错了令牌，还是被轮换了。
+      //
+      // 要重掷请走独立的 regenerateToken 通道（界面上那个按钮）。
       return snapshot()
     }
     // 换端口时先起新监听再关旧的，新端口起不来时旧服务继续可用，
@@ -1003,7 +1184,7 @@ async function startService(port?: number): Promise<LocalApiState> {
   return snapshot()
 }
 
-async function stopService(): Promise<LocalApiState> {
+async function stopServiceInner(): Promise<LocalApiState> {
   if (emitTimer !== null) {
     clearTimeout(emitTimer)
     emitTimer = null
@@ -1032,6 +1213,18 @@ export function registerLocalApiModule(ctx: ModuleContext): void {
     startService(typeof port === 'number' ? port : undefined)
   )
   ctx.handle(CH.localApi.stop, () => stopService())
+
+  /**
+   * 显式重掷令牌。
+   *
+   * 独立于 start：只有用户明确按下"重新生成"才轮换，
+   * 不会因为某次"确保服务在跑"而让在用客户端集体 401。
+   */
+  ctx.handle(CH.localApi.regenerateToken, () => {
+    createToken()
+    emit()
+    return snapshot()
+  })
 
   /**
    * 把令牌写进剪贴板，**但不把它交给渲染层**。

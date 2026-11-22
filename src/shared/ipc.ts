@@ -114,13 +114,23 @@ export const CH = {
     forward: 'ss:window:forward',
     reload: 'ss:window:reload',
     stopLoading: 'ss:window:stopLoading',
+    /** 重新打开最近关闭的标签（Ctrl+Shift+T） */
+    reopenClosedTab: 'ss:window:reopenClosedTab',
     setBounds: 'ss:window:setBounds',
     setContentInsets: 'ss:window:setContentInsets'
   },
   agent: {
     run: 'ss:agent:run',
+    /** 取消任务：带 profileId 就只停那个环境的，不带就全停 */
     cancel: 'ss:agent:cancel',
-    snapshot: 'ss:agent:snapshot'
+    snapshot: 'ss:agent:snapshot',
+    /**
+     * 当前正在跑的任务（带 profileId 查单个，不带查全部）。
+     *
+     * 存在的理由：任务状态以前只走事件流，渲染层一重载事件流就断了 ——
+     * 面板回到"还没开始"，而主进程里的任务还在跑、还在烧 token。
+     */
+    status: 'ss:agent:status'
   },
   tasks: {
     list: 'ss:tasks:list',
@@ -262,6 +272,15 @@ export const CH = {
     state: 'ss:localApi:state',
     start: 'ss:localApi:start',
     stop: 'ss:localApi:stop',
+    /**
+     * 单独的重掷令牌。
+     *
+     * 为什么不能靠「重复调用 start」来表达：原先"已经在跑且端口相同"时
+     * start 的语义就是**重掷令牌** —— 于是任何一次"确保服务在跑"的调用
+     * 都会静默作废全部在用客户端（它们立刻 401），而 401 的文案是
+     * 「缺少或错误的 Bearer 令牌」，调用方分不清是自己写错了还是被轮换了。
+     */
+    regenerateToken: 'ss:localApi:regenerate-token',
     /** 把令牌写进剪贴板；不返回令牌本身 —— 渲染层永远拿不到明文 */
     copyToken: 'ss:localApi:copyToken'
   },
@@ -412,6 +431,8 @@ export interface WindowAPI {
   forward(windowId: string, tabId: string): Promise<void>
   reload(windowId: string, tabId: string): Promise<void>
   stopLoading(windowId: string, tabId: string): Promise<void>
+  /** 重新打开最近关闭的标签（Ctrl+Shift+T）。栈空时返回 false */
+  reopenClosedTab(windowId: string): Promise<boolean>
   /**
    * 渲染层把网页容器的矩形报给主进程。
    * 主进程据此给 WebContentsView 设 bounds —— 网页铺不准基本都是这里没调。
@@ -433,7 +454,24 @@ export interface ContentInsetsPayload {
 
 export interface AgentAPI {
   run(req: RunRequest): Promise<void>
-  cancel(): Promise<void>
+  /**
+   * 取消任务。
+   *
+   * 带 profileId 只停**那个环境**的任务 —— 每个环境窗口停自己那个，
+   * 不会误杀别的窗口正在跑的任务。不带就全停。
+   */
+  cancel(profileId?: string): Promise<void>
+  /**
+   * 当前正在跑的任务。
+   *
+   * 带 profileId 查单个（返回 null 表示这个环境没在跑），
+   * 不带则返回全部运行中的任务。
+   *
+   * 渲染层挂载时先拉一次再订阅事件：事件流在渲染进程重载后就断了，
+   * 只靠它的话，任务跑到一半按 Ctrl+R，面板会回到"还没开始"，
+   * 而任务其实还在跑、还在烧 token。
+   */
+  status(profileId?: string): Promise<TaskRecord | TaskRecord[] | null>
   /**
    * 这里**没有 `confirm()`**。
    *
@@ -707,8 +745,16 @@ export interface LocalApiAPI {
    * 零交互就能拿到凭证。要拿令牌请用 `copyToken()`，它只写剪贴板。
    */
   state(): Promise<LocalApiState>
+  /**
+   * 启动服务。
+   *
+   * 已经在跑且端口相同 → **什么都不做**（原样返回当前状态），
+   * 不会重掷令牌。要重掷请用 `regenerateToken()`。
+   */
   start(port?: number): Promise<LocalApiState>
   stop(): Promise<LocalApiState>
+  /** 显式重掷令牌：所有在用客户端会立刻失效（这是预期行为） */
+  regenerateToken(): Promise<LocalApiState>
   /** 由主进程把令牌写进剪贴板；令牌本身不会经过 IPC 回到渲染层 */
   copyToken(): Promise<{ copied: boolean }>
   onState(cb: (s: LocalApiState) => void): () => void
@@ -800,10 +846,12 @@ export interface ProxyGroupsAPI {
 
 export interface WebhooksAPI {
   list(): Promise<WebhookRecord[]>
-  create(input: { url: string; events?: WebhookEvent[]; enabled?: boolean }): Promise<WebhookRecord>
+  create(
+    input: { url: string; events?: WebhookEvent[]; enabled?: boolean; allowInternal?: boolean }
+  ): Promise<WebhookRecord>
   update(
     id: string,
-    patch: Partial<Pick<WebhookRecord, 'url' | 'events' | 'enabled'>>
+    patch: Partial<Pick<WebhookRecord, 'url' | 'events' | 'enabled' | 'allowInternal'>>
   ): Promise<WebhookRecord>
   remove(id: string): Promise<void>
   /** 手动发一次测试事件，返回真实 HTTP 状态 */
