@@ -72,3 +72,25 @@ test('界面不把占位符当成密码显示或写回', () => {
   )
   assert.match(src, /proxyPasswordValue\(/, '密码框必须走 proxyPasswordValue 过滤占位符')
 })
+
+/* ────────────── 代理池的密封点：四条写路径都要加密 ────────────── */
+
+test('代理池所有写路径都经过加密，不能有一条漏网', () => {
+  const src = read('src/main/modules/proxy.ts')
+  // create / update / import / checkAll 四条写路径，每条都要有 encryptSecret。
+  // 之前 import 那条直接写明文，而 reveal() 对裸串原样返回 ——
+  // 功能完全正常，只有看盘才能发现，所以必须靠结构断言钉住。
+  const total = (src.match(/encryptSecret\(/g) ?? []).length
+  assert.ok(
+    total >= 4,
+    `encryptSecret 至少出现 4 次（create / update / import / checkAll），实际 ${String(total)} 次`
+  )
+  // 存量密码迁移用的幂等密封
+  assert.match(src, /sealIfPlain\(r\.password\)/, '存量明文密码必须在启动时封存')
+  // 导入路径必须是加密的（紧挨着 parsed.value.password 的那一行）
+  assert.match(
+    src,
+    /parsed\.value\.password\)\s*record\.password = encryptSecret\(/,
+    'proxies.import 必须加密密码，不能写明文'
+  )
+})

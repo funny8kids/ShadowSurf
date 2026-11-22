@@ -836,7 +836,45 @@ function normalizeInput(input: ProxyInput): ProxyInput {
 
 /* ────────────────────────────── 注册 ────────────────────────────── */
 
+function migrateProxyPasswords(ctx: ModuleContext): void {
+  try {
+    const all = ctx.stores.proxies.list()
+    const patched = all.map((r) =>
+      typeof r.password === 'string' && r.password.length > 0
+        ? { ...r, password: sealIfPlain(r.password) }
+        : r
+    )
+    // 只在不真的有变化时写盘：每次启动都重写一遍 proxies.json
+    // 会在没改任何东西的情况下消耗一次原子写，还让 mtime 一直变。
+    const changed = patched.filter((r, i) => r.password !== all[i].password).length
+    if (changed > 0) {
+      ctx.stores.proxies.replaceAll(patched)
+      console.warn(`[proxy] 已封存 ${String(changed)} 条历史明文代理密码`)
+    }
+  } catch (err) {
+    console.error(
+      '[proxy] 存量代理密码封存失败（下次启动会重试）：' +
+        (err instanceof Error ? err.message : String(err))
+    )
+  }
+}
+
 export function registerProxyModule(ctx: ModuleContext): void {
+  /**
+   * 一次性把历史明文密码封存。
+   *
+   * 为什么要迁移而不是"下次编辑时自然就加密了"：
+   * 从 `proxies.import` 导入的用户，可能几个月都不会再碰那条记录 ——
+   * 那几个月里盘上一直是明文，而界面上什么都看不出来。
+   *
+   * `sealIfPlain` 是幂等的：`enc:` / `raw:` 原样放过，只对裸字符串加密，
+   * 所以重复启动不会把密文再封一层。
+   *
+   * 失败不阻断模块注册：加密后端不可用（Linux 无 keyring）时保持明文才是
+   * 正确的降级，下次启动时再试。
+   */
+  migrateProxyPasswords(ctx)
+
   ctx.handle(CH.proxies.list, () =>
     // 渲染层不该拿到密码明文；空串表示「这条代理没有密码」。
     // 详情见 store/profiles.ts 的 toPublicProfile（那里对 profile.proxy 做同样处理）。
@@ -969,7 +1007,15 @@ export function registerProxyModule(ctx: ModuleContext): void {
         createdAt: Date.now()
       }
       if (parsed.value.username) record.username = parsed.value.username
-      if (parsed.value.password) record.password = parsed.value.password
+      // 密码必须和 create / update / checkAll 走同一个密封点。
+      //
+      // 这条路径原先直接写明文 —— 而"批量导入"恰恰是代理最多的时候，
+      // 于是用了导入的用户盘上全是明文密码，而用单条新建的用户是密文。
+      // 同一条凭据两种落盘形态，取决于"从哪个按钮进来的"，没有道理。
+      //
+      // 当前功能不会出错（reveal() 对裸字符串原样返回），
+      // 所以这个洞只能靠看盘发现 —— 也正因如此它一直没被注意到。
+      if (parsed.value.password) record.password = encryptSecret(parsed.value.password)
 
       ctx.stores.proxies.add(record)
       existing.add(key)
