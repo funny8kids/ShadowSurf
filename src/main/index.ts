@@ -238,6 +238,32 @@ if (gotLock) {
     const stores = getStores()
 
     /**
+     * 启动时校验「当前操作者」。
+     *
+     * activeMemberId 可能指向一个**不存在或已禁用**的成员：
+     * 手工改过 settings.json、从旧版本数据迁上来、或还原了一份成员列表
+     * 与设置不一致的备份。而 resolveActor() 对这种情况是抛错的（fail-closed，
+     * 正确），于是所有走 ACL 的操作全部失效，用户看到的只是莫名其妙的报错。
+     *
+     * 复位到空 = 本机所有者（全权限），与"删/禁成员时复位"同一条规则。
+     */
+    try {
+      const active = stores.settings.get().activeMemberId
+      if (active !== undefined && active !== '') {
+        const member = stores.members.list().find((m) => m.id === active)
+        if (member === undefined || member.disabled) {
+          stores.settings.set({ activeMemberId: '' })
+          console.warn(`[boot] 当前操作者 ${active} 已不存在或已禁用，已复位为所有者`)
+        }
+      }
+    } catch (err) {
+      // 校验失败不阻断启动：成员/设置文件读不出来时后续路径会各自报错
+      console.error(
+        '[boot] 当前操作者校验失败：' + (err instanceof Error ? err.message : String(err))
+      )
+    }
+
+    /**
      * 启动时把残留的「运行中」归零。
      *
      * 进程刚起来时不可能有环境在跑（窗口都还没建），
