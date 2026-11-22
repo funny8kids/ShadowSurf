@@ -43,6 +43,14 @@ const PROBE_TIMEOUT_MS = 8000
 /** 导入失败的行只回报前 10 条：粘贴 500 行时刷屏没有意义，用户要的是「去改哪几行」 */
 const MAX_IMPORT_ERRORS = 10
 /**
+ * 导入文本的体积上限（8MB）。
+ *
+ * 导入是同步的：split → 逐行 parse → 逐条写盘。
+ * 一个几百 MB 的误粘贴会让主进程卡死几分钟，中途点取消也没用。
+ * 8MB 够装几万条代理，远超真实用量。
+ */
+const MAX_IMPORT_CHARS = 8 * 1024 * 1024
+/**
  * 「全部检测」的并发度。
  *
  * 原来是严格串行（`for await`）：50 条代理 × 每条最坏 8 秒 ≈ 400 秒，
@@ -976,6 +984,16 @@ export function registerProxyModule(ctx: ModuleContext): void {
 
   ctx.handle(CH.proxies.import, (_event, rawText): ProxyImportResult => {
     const text = typeof rawText === 'string' ? rawText : ''
+    if (text.length > MAX_IMPORT_CHARS) {
+      return {
+        added: 0,
+        skipped: 0,
+        errors: [
+          `导入内容过大（${(text.length / 1024 / 1024).toFixed(1)}MB，上限 8MB）。` +
+            '请确认选对了文件。'
+        ]
+      }
+    }
     const existing = new Set(
       ctx.stores.proxies.list().map((item) => addressKey(item.host, item.port))
     )
