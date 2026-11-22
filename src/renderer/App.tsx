@@ -460,6 +460,10 @@ function Shell() {
       // 环境窗口永远停在 browser 视图：导航会卸载 BrowserShell，
       // 而切回来的时机不受控（见 Ctrl+K 那段注释）。
       if (isBrowserWindow) return
+      // 切视图时关掉指纹抽屉：否则用户从环境卡片打开抽屉后点了侧栏导航，
+      // 抽屉会继续盖在新页面上 —— 而它显示的是上一个视图里那个环境的配置，
+      // 用户会以为自己在编辑当前页面的某个东西。
+      setDrawerId(null)
       setView(key)
       setSelected(new Set())
     },
