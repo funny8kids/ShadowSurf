@@ -604,14 +604,20 @@ function Shell() {
       try {
         if (action === 'start') {
           await Promise.all(ids.map((id) => bridge().profiles.launch(id)))
-          toast.push(`已启动 ${ids.length} 个环境`, 'ok')
+          toast.push(t('app.toast.batchStarted', { n: ids.length }), 'ok')
         } else if (action === 'stop') {
           await Promise.all(ids.map((id) => bridge().profiles.stop(id)))
-          toast.push(`已停止 ${ids.length} 个环境`, 'ok')
+          toast.push(t('app.toast.batchStopped', { n: ids.length }), 'ok')
         } else if (action === 'move' && value) {
           // 走批量通道：一次 IPC + 一次落盘，而不是 N 次全量重写。
           const n = await bridge().profiles.batchUpdate(ids, { group: value })
-          toast.push(`已移到分组「${value}」${n < ids.length ? `（${n}/${ids.length}）` : ''}`, 'ok')
+          toast.push(
+            t('app.toast.batchMoved', {
+              group: value,
+              detail: n < ids.length ? `（${n}/${ids.length}）` : ''
+            }),
+            'ok'
+          )
         } else if (action === 'proxy' && value) {
           const proxy = parseProxy(value)
           const n = await bridge().profiles.batchUpdate(ids, { proxy })
@@ -624,7 +630,7 @@ function Shell() {
         } else if (action === 'remove') {
           await Promise.all(ids.map((id) => bridge().profiles.remove(id)))
           setSelected(new Set())
-          toast.push(`已删除 ${ids.length} 个环境`, 'ok')
+          toast.push(t('app.toast.batchRemoved', { n: ids.length }), 'ok')
         }
         await refreshProfiles()
       } catch (err) {

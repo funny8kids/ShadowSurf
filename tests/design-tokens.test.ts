@@ -51,3 +51,25 @@ test('所有 var(--x) 引用都必须有定义、fallback 或运行时注入', (
 
   assert.deepEqual(missing, [], `发现未定义且无 fallback 的 CSS 变量：\n${missing.join('\n')}`)
 })
+
+/**
+ * 用户可见文案不能硬编码中文：产品有完整的 zh/en 词条，
+ * 硬编码的那几句在英文界面下会突然冒出中文。
+ *
+ * 只扫 toast.push / 标题这类"直接给最终用户看"的调用，
+ * 不扫代码注释与 i18n 目录本身。
+ */
+test('渲染层没有硬编码的中文 toast', () => {
+  const offenders: string[] = []
+  for (const file of walk(join(ROOT, 'src/renderer'))) {
+    if (file.includes('i18n')) continue
+    const src = readFileSync(file, 'utf8')
+    // toast.push('中文') / toast.push(`中文...`) —— 排除 t('...') 与 errorMessage(err)
+    const re = /toast\.push\(\s*[`'\"]([^`'\"]*[\u4e00-\u9fff][^`'\"]*)[`'\"]/g
+    for (const m of src.matchAll(re)) {
+      const line = src.slice(0, m.index).split('\n').length
+      offenders.push(`${file.replace(ROOT, '')}:${line} — ${m[1].slice(0, 40)}`)
+    }
+  }
+  assert.deepEqual(offenders, [], `发现硬编码中文 toast：\n${offenders.join('\n')}`)
+})
